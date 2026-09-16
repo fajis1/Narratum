@@ -37,6 +37,7 @@ import {
   foreignWordCandidateCacheKey,
   GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA,
   GeminiHttpError,
+  type GeminiForeignWordResult,
   mergeGeminiPronunciationRepairResults,
   isRejectedLatinTransliteration,
   isUsableForeignWordCandidate,
@@ -48,6 +49,9 @@ import {
   shouldOmitDictionaryDefinition,
 } from '@/lib/shared/dictionary-definition-policy';
 import { findTransliterationLibraryMatch } from '@/lib/server/smart-audio/transliteration-library-match';
+import { fetchGroqForeignWordBatch } from '@/lib/server/smart-audio/groq-foreign-word-scan';
+import { fetchLexiconEntries } from '@/lib/server/smart-audio/sefaria-lexicon';
+import { DEFAULT_PROVIDER_ORDER } from '@/types/client';
 
 const execFileAsync = util.promisify(execFile);
 const GREEK = /[\u0370-\u03ff\u1f00-\u1fff]/u;
@@ -357,6 +361,13 @@ export async function POST(req: NextRequest) {
         );
         const rejectedLatinTransliterations = new Set<string>();
 
+        // Pre-fetch Sefaria (and Perseus for Greek) lexicon data for biblical-language words.
+        // Best-effort: failures are non-fatal and return null for that word.
+        const biblicalWordLanguages = words
+          .filter((w: any) => typeof w.word === 'string')
+          .map((w: any) => ({ word: w.word as string, language: languageForTerm(w.word) }));
+        const lexiconEnrichments = await fetchLexiconEntries(biblicalWordLanguages);
+
         const wordsMissingOptions = words
           .filter((w: any) => {
             if (automaticOcrFragments.has(w.word)) return false;
@@ -459,8 +470,8 @@ export async function POST(req: NextRequest) {
 
 
         if (wordsMissingOptions.length > 0) {
-          if (!activeProfile?.geminiApiKey && !activeProfile?.backupGeminiApiKey) {
-            throw new Error('Gemini API key is not configured for the selected Smart Audio profile.');
+          if (!activeProfile?.geminiApiKey && !activeProfile?.backupGeminiApiKey && !activeProfile?.groqApiKey) {
+            throw new Error('No API key is configured for the selected Smart Audio profile. Add a Gemini key or a free Groq API key in Smart Audio Settings.');
           }
           const model = resolvePronunciationAiModel(activeProfile);
           let effectiveModel = model;
@@ -487,6 +498,7 @@ export async function POST(req: NextRequest) {
             || (transliterationPronunciation && isKokoroSafePronunciation(word, transliterationPronunciation)
               ? transliterationPronunciation
               : null);
+          const wordLexicon = lexiconEnrichments.get(word) ?? null;
           return {
             term: word,
             contexts: Array.isArray(scanned?.contexts) ? scanned.contexts.slice(0, 2) : [],
@@ -495,11 +507,14 @@ export async function POST(req: NextRequest) {
             ocrEvidence: Array.isArray(scanned?.ocrEvidence) ? scanned.ocrEvidence.slice(0, 2) : [],
             editorialSpellings: Array.isArray(scanned?.editorialSpellings) ? scanned.editorialSpellings.slice(0, 2) : [],
             latinTransliterationCandidate: scanned?.latinTransliterationCandidate === true,
+            // Sefaria / Perseus lexicon enrichment (null when not available)
+            ...(wordLexicon ? { lexiconEntry: wordLexicon } : {}),
           };
         });
         const prompt = `${buildKokoroPronunciationInstructions(activeProfile)}
 
 Create pronunciation choices and short audiobook definitions for these terms.
+Where a "lexiconEntry" field is present in a term's data, it contains ground-truth lexical data from academic sources (BDB, Jastrow, LSJ, or Perseus). Treat the provided definitions as authoritative; generate IPA consistent with the supplied transliteration and morphology. Do not contradict or override the lexicon definitions.
 Internal Greek/Hebrew editorial parentheses have been expanded for lookup: θε(οῦ) requests θεοῦ as one word. editorialSpellings preserves the printed notation. Include those letters in the complete pronunciation; this is a narration convention, not a manuscript judgment. Never pronounce only the prefix or suffix.
 For each term without currentPronunciation, return 5 distinct, plausible Kokoro IPA pronunciation variations and put the best first, except for a rejected Latin transliteration candidate as described below.
 If currentPronunciation is supplied, preserve it exactly and return it as the only pronunciation; do not generate extra variations.
@@ -518,68 +533,127 @@ Return a JSON array with exactly one result object per requested term. Copy each
 Terms:
 ${JSON.stringify(terms)}`;
         
-        const requestGeminiResults = async (
+        // requestGeminiResults is assigned per-batch to whichever Gemini provider
+        // succeeds, so the quality-repair pass reuses the same key automatically.
+        let requestGeminiResults: (
           requestPrompt: string,
           pass: 'pronunciation_definition_scan' | 'pronunciation_quality_repair',
-        ) => {
-          const { response: res, usedBackup, usedModel } = await fetchGeminiWithRateLimitFallback({
-            primaryApiKey: apiKey,
-            backupApiKey: activeProfile?.backupGeminiApiKey,
-            requestedModel: model,
-            onStatusUpdate: async (statusMessage) => {
-              await saveJob({ statusMessage });
-            },
-            request: (requestApiKey, requestModel) => fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(requestModel || model)}:generateContent?key=${encodeURIComponent(requestApiKey)}`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  contents: [{ role: 'user', parts: [{ text: requestPrompt }] }],
-                  generationConfig: {
-                    responseMimeType: 'application/json',
-                    maxOutputTokens: 8192,
-                    responseJsonSchema: GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA,
-                  },
-                }),
-              },
-            ),
-          });
-          const data = await res.json().catch(() => null);
-          effectiveModel = usedModel || model;
-          if (!res.ok) {
-            throw createGeminiHttpError(res.status, data, [
-              apiKey,
-              activeProfile?.backupGeminiApiKey || '',
-            ]);
-          }
-          serverLogger.info({
-            event: 'pdf.scan.gemini.usage',
-            jobId,
-            documentId,
-            model: usedModel || model,
-            requestedModel: model,
-            usedBackup,
-            pass,
-            batch: i / chunkSize + 1,
-            tokens: normalizeGeminiTokenUsage(data?.usageMetadata),
-          }, 'Recorded Gemini pronunciation and definition scan token usage.');
-          const generatedText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!generatedText) {
-            throw new Error('Gemini returned no pronunciation choices.');
-          }
-          const { results, repaired } = parseGeminiForeignWordResults(generatedText);
-          if (repaired) {
-            serverLogger.warn(
-              { event: 'pdf.scan.gemini.json_repaired', jobId, pass, batch: i / chunkSize + 1 },
-              'Recovered complete results from a truncated Gemini JSON array',
-            );
-          }
-          return results;
-        };
+        ) => Promise<GeminiForeignWordResult[]> = async () => [];
 
         try {
-          let generated = await requestGeminiResults(prompt, 'pronunciation_definition_scan');
+          // Build the effective provider sequence from the profile's providerOrder
+          // (or the default), skipping any provider whose key isn't configured.
+          const orderedProviders = (activeProfile?.providerOrder ?? DEFAULT_PROVIDER_ORDER)
+            .filter((provider) => {
+              if (provider === 'gemini_primary') return Boolean(activeProfile?.geminiApiKey);
+              if (provider === 'gemini_backup') return Boolean(activeProfile?.backupGeminiApiKey);
+              if (provider === 'groq') return Boolean(activeProfile?.groqApiKey);
+              return false;
+            });
+
+          if (orderedProviders.length === 0) {
+            throw new Error('No configured API key matched the selected provider order. Check your Smart Audio Profile settings.');
+          }
+
+          let generated: GeminiForeignWordResult[] = [];
+          let lastError: unknown = null;
+          let providerSucceeded = false;
+
+          for (const provider of orderedProviders) {
+            try {
+              if (provider === 'groq') {
+                await saveJob({ statusMessage: `Trying Groq (${orderedProviders.indexOf(provider) + 1}/${orderedProviders.length})…` });
+                generated = await fetchGroqForeignWordBatch(prompt, activeProfile!.groqApiKey!);
+              } else {
+                // Gemini providers each get their own single key; internal retry/model
+                // fallback is still handled by fetchGeminiWithRateLimitFallback.
+                const geminiKey = provider === 'gemini_primary'
+                  ? activeProfile!.geminiApiKey!
+                  : activeProfile!.backupGeminiApiKey!;
+                const providerLabel = provider === 'gemini_primary' ? 'Gemini primary' : 'Gemini backup';
+                const requestGeminiSingleKey = async (
+                  requestPrompt: string,
+                  pass: 'pronunciation_definition_scan' | 'pronunciation_quality_repair',
+                ) => {
+                  const { response: res, usedModel } = await fetchGeminiWithRateLimitFallback({
+                    primaryApiKey: geminiKey,
+                    requestedModel: model,
+                    onStatusUpdate: async (statusMessage) => { await saveJob({ statusMessage }); },
+                    request: (requestApiKey, requestModel) => fetch(
+                      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(requestModel || model)}:generateContent?key=${encodeURIComponent(requestApiKey)}`,
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          contents: [{ role: 'user', parts: [{ text: requestPrompt }] }],
+                          generationConfig: {
+                            responseMimeType: 'application/json',
+                            maxOutputTokens: 8192,
+                            responseJsonSchema: GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA,
+                          },
+                        }),
+                      },
+                    ),
+                  });
+                  const data = await res.json().catch(() => null);
+                  effectiveModel = usedModel || model;
+                  if (!res.ok) throw createGeminiHttpError(res.status, data, [geminiKey]);
+                  serverLogger.info({
+                    event: 'pdf.scan.gemini.usage',
+                    jobId, documentId,
+                    model: usedModel || model,
+                    requestedModel: model,
+                    provider,
+                    pass,
+                    batch: i / chunkSize + 1,
+                    tokens: normalizeGeminiTokenUsage(data?.usageMetadata),
+                  }, 'Recorded Gemini pronunciation and definition scan token usage.');
+                  const generatedText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                  if (!generatedText) throw new Error('Gemini returned no pronunciation choices.');
+                  const { results, repaired } = parseGeminiForeignWordResults(generatedText);
+                  if (repaired) {
+                    serverLogger.warn(
+                      { event: 'pdf.scan.gemini.json_repaired', jobId, pass, batch: i / chunkSize + 1 },
+                      'Recovered complete results from a truncated Gemini JSON array',
+                    );
+                  }
+                  return results;
+                };
+                // Expose this key's request function as the batch-level requestGeminiResults
+                // so the repair pass below can reuse it for the same provider.
+                // We store it on a mutable ref scoped to this iteration.
+                requestGeminiResults = requestGeminiSingleKey;
+                await saveJob({ statusMessage: `Trying ${providerLabel} key (${orderedProviders.indexOf(provider) + 1}/${orderedProviders.length})…` });
+                generated = await requestGeminiSingleKey(prompt, 'pronunciation_definition_scan');
+              }
+              providerSucceeded = true;
+              await saveJob({ statusMessage: null });
+              break; // success — stop trying providers
+            } catch (providerErr) {
+              lastError = providerErr;
+              const isLast = provider === orderedProviders.at(-1);
+              const errMsg = providerErr instanceof Error ? providerErr.message : String(providerErr);
+              serverLogger.warn({
+                event: 'pdf.scan.provider.failed',
+                jobId,
+                provider,
+                batch: i / chunkSize + 1,
+                error: errMsg.slice(0, 300),
+                willTryNext: !isLast,
+              }, isLast
+                ? 'All configured providers failed for this batch'
+                : `Provider failed; advancing to next in order`);
+              if (!isLast) {
+                const nextProvider = orderedProviders[orderedProviders.indexOf(provider) + 1];
+                await saveJob({ statusMessage: `${provider.replace('_', ' ')} failed — trying ${nextProvider?.replace('_', ' ')}…` });
+              }
+            }
+          }
+
+          if (!providerSucceeded) {
+            throw lastError ?? new Error('All configured providers failed.');
+          }
+
           const repairRequests = collectGeminiPronunciationRepairRequests(terms, generated);
           if (repairRequests.length > 0) {
             const repairPrompt = `${buildKokoroPronunciationInstructions(activeProfile)}
@@ -685,7 +759,7 @@ ${JSON.stringify(repairRequests)}`;
                   && isKokoroSafePronunciation(w, transliterationMatches.get(w)?.pronunciation)
                   ? transliterationMatches.get(w)?.pronunciation
                   : null)
-                || prons.find((candidate) => isKokoroSafePronunciation(w, candidate));
+                || prons.find((candidate: string) => isKokoroSafePronunciation(w, candidate));
               if (pronunciation) {
                 if (!geminiRecommendations[w] && !compatibleOverrides[w] && !preExistingCompatibleGlobalWords.has(w)) {
                   geminiRecommendations[w] = pronunciation;
@@ -783,6 +857,27 @@ ${JSON.stringify(repairRequests)}`;
               batch: i / chunkSize + 1,
               persistedDefinitions: persistedDefinitions.length,
             }, 'Persisted generated global definitions for completed batch');
+          }
+          // Also persist Sefaria-sourced definitions for biblical words that
+          // don't already have a definition stored in the global library.
+          const sefariaDefinitions: Record<string, string> = {};
+          for (const word of chunk) {
+            const lex = lexiconEnrichments.get(word);
+            if (lex && lex.definitions.length > 0 && !globalDefinitions[word] && !batchDefinitions[word]) {
+              const primaryDef = lex.definitions[0];
+              if (primaryDef && primaryDef.length > 2) {
+                sefariaDefinitions[word] = primaryDef;
+              }
+            }
+          }
+          if (Object.keys(sefariaDefinitions).length > 0) {
+            await mergeGlobalDefinitions(sefariaDefinitions);
+            serverLogger.info({
+              event: 'pdf.scan.sefaria_definitions.batch_persisted',
+              jobId,
+              batch: i / chunkSize + 1,
+              count: Object.keys(sefariaDefinitions).length,
+            }, 'Persisted Sefaria lexicon definitions for completed batch');
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Unknown Gemini error';

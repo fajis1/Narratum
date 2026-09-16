@@ -3,7 +3,8 @@ import path from 'path';
 import { db } from '@/db';
 import { userPreferences } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
-import type { SmartAudioProfile } from '@/types/client';
+import type { SmartAudioProfile, ScanProvider } from '@/types/client';
+import { DEFAULT_PROVIDER_ORDER } from '@/types/client';
 import { serverLogger } from '@/lib/server/logger';
 import {
   DEFAULT_CLEANUP_AI_MODEL,
@@ -94,6 +95,8 @@ export function redactSmartAudioProfileSecrets(profile: SmartAudioProfile): Smar
       : undefined,
     geminiApiKeySourceProfileId: profile.geminiApiKeySourceProfileId || profile.id,
     backupGeminiApiKeySourceProfileId: profile.backupGeminiApiKeySourceProfileId || profile.id,
+    groqApiKeyConfigured: Boolean(profile.groqApiKey),
+    groqApiKeyLast4: profile.groqApiKey ? profile.groqApiKey.slice(-4) : undefined,
   };
 }
 
@@ -122,11 +125,13 @@ export function mergeStoredSmartAudioProfileSecrets(
       : storedProfile;
     const suppliedPrimaryKey = (profile.geminiApiKey || '').trim();
     const suppliedBackupKey = (profile.backupGeminiApiKey || '').trim();
+    const suppliedGroqKey = (profile.groqApiKey || '').trim();
 
     return {
       ...profile,
       geminiApiKey: suppliedPrimaryKey || primarySourceProfile?.geminiApiKey,
       backupGeminiApiKey: suppliedBackupKey || backupSourceProfile?.backupGeminiApiKey,
+      groqApiKey: suppliedGroqKey || storedProfile?.groqApiKey,
     };
   });
 }
@@ -162,6 +167,18 @@ function sanitizeProfile(profile: Partial<SmartAudioProfile> & { id?: string; na
     // Keep the key if already stored; never default to a non-empty string
     geminiApiKey: (profile.geminiApiKey || '').trim() || undefined,
     backupGeminiApiKey: (profile.backupGeminiApiKey || '').trim() || undefined,
+    // Keep the key if already stored; never default to a non-empty string
+    groqApiKey: (profile.groqApiKey || '').trim() || undefined,
+    // Validate and persist provider order; fall back to default if invalid
+    providerOrder: (() => {
+      const valid: ScanProvider[] = ['gemini_primary', 'gemini_backup', 'groq'];
+      const order = Array.isArray(profile.providerOrder) ? profile.providerOrder : null;
+      if (!order) return undefined;
+      const sanitized = order.filter((p): p is ScanProvider => valid.includes(p as ScanProvider));
+      // Must have at least one entry and no duplicates
+      const deduped = [...new Set(sanitized)];
+      return deduped.length > 0 ? deduped : undefined;
+    })(),
   };
 }
 

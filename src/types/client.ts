@@ -73,6 +73,12 @@ export interface CreateChapterPayload {
   settings?: AudiobookGenerationSettings;
 }
 
+/** Identifies an LLM provider slot in the scan provider order. */
+export type ScanProvider = 'gemini_primary' | 'gemini_backup' | 'groq';
+
+/** Default provider order when none is configured. */
+export const DEFAULT_PROVIDER_ORDER: ScanProvider[] = ['gemini_primary', 'gemini_backup', 'groq'];
+
 export interface SmartAudioProfile {
   id: string;
   name: string;
@@ -101,9 +107,21 @@ export interface SmartAudioProfile {
   /** Safe client metadata returned instead of the stored backup key. */
   backupGeminiApiKeyConfigured?: boolean;
   backupGeminiApiKeyLast4?: string;
+  /** Per-profile Groq API key used as a free-tier fallback after both Gemini keys are exhausted. Never exposed to other users. */
+  groqApiKey?: string;
+  /** Safe client metadata returned instead of the stored Groq key. */
+  groqApiKeyConfigured?: boolean;
+  groqApiKeyLast4?: string;
   /** Write-only request metadata for copying a stored key without exposing it. */
   geminiApiKeySourceProfileId?: string;
   backupGeminiApiKeySourceProfileId?: string;
+  /**
+   * Ordered list of LLM providers for the foreign-word scan.
+   * The scan tries each in order, advancing to the next on any failure.
+   * Omitted providers (no key configured) are automatically skipped.
+   * Default when absent: ['gemini_primary', 'gemini_backup', 'groq']
+   */
+  providerOrder?: ScanProvider[];
   /**
    * Whether locally cached book definitions should be spoken during the
    * single Smart Audio cleanup pass.

@@ -111,6 +111,9 @@ export function SmartAudioSettings() {
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
   const [backupApiKey, setBackupApiKey] = useState('');
   const [maskedBackupKey, setMaskedBackupKey] = useState<string | null>(null);
+  const [groqApiKey, setGroqApiKey] = useState('');
+  const [maskedGroqKey, setMaskedGroqKey] = useState<string | null>(null);
+  const [providerOrder, setProviderOrder] = useState<Array<'gemini_primary' | 'gemini_backup' | 'groq'>>(['gemini_primary', 'gemini_backup', 'groq']);
   const [profiles, setProfiles] = useState<SmartAudioProfile[]>([]);
   const [workerMode, setWorkerMode] = useState<'standard' | 'scholar' | 'bibliography-catcher' | 'multi-voice'>('standard');
   const [useGlobalPronunciations, setUseGlobalPronunciations] = useState<boolean>(true);
@@ -832,6 +835,12 @@ export function SmartAudioSettings() {
       activeProfile.backupGeminiApiKeyConfigured,
       activeProfile.backupGeminiApiKeyLast4,
     ));
+    setGroqApiKey(activeProfile.groqApiKey || '');
+    setMaskedGroqKey(formatMaskedKey(
+      activeProfile.groqApiKeyConfigured,
+      activeProfile.groqApiKeyLast4,
+    ));
+    setProviderOrder(activeProfile.providerOrder ?? ['gemini_primary', 'gemini_backup', 'groq']);
   }, [activeProfile]);
 
   const buildCurrentProfile = useCallback((): SmartAudioProfile | null => {
@@ -863,13 +872,17 @@ export function SmartAudioSettings() {
       geminiApiKeyLast4: activeProfile?.geminiApiKeyLast4,
       backupGeminiApiKeyConfigured: activeProfile?.backupGeminiApiKeyConfigured,
       backupGeminiApiKeyLast4: activeProfile?.backupGeminiApiKeyLast4,
+      groqApiKeyConfigured: activeProfile?.groqApiKeyConfigured,
+      groqApiKeyLast4: activeProfile?.groqApiKeyLast4,
       geminiApiKeySourceProfileId: activeProfile?.geminiApiKeySourceProfileId,
       backupGeminiApiKeySourceProfileId: activeProfile?.backupGeminiApiKeySourceProfileId,
       // Blank/omitted key fields tell the server to preserve the stored secrets.
       ...(apiKey.trim() ? { geminiApiKey: apiKey.trim() } : {}),
       ...(backupApiKey.trim() ? { backupGeminiApiKey: backupApiKey.trim() } : {}),
+      ...(groqApiKey.trim() ? { groqApiKey: groqApiKey.trim() } : {}),
+      providerOrder,
     };
-  }, [apiKey, backupApiKey, aiModel, customModelId, fallbackAiModels, customFallbackModelIds, pronunciationAiModel, customPronunciationModelId, profileName, selectedProfileId, prompt, abbreviations, pronunciations, books, useGlobalPronunciations, pronunciationPromptMode, customPronunciationPrompt, workerMode, activeProfile]);
+  }, [apiKey, backupApiKey, groqApiKey, providerOrder, aiModel, customModelId, fallbackAiModels, customFallbackModelIds, pronunciationAiModel, customPronunciationModelId, profileName, selectedProfileId, prompt, abbreviations, pronunciations, books, useGlobalPronunciations, pronunciationPromptMode, customPronunciationPrompt, workerMode, activeProfile]);
 
   // When the user clicks a worker mode card, always switch to the matching
   // preset for that engine. This ensures clicking a card is always a clean
@@ -1393,6 +1406,68 @@ export function SmartAudioSettings() {
             <p className="text-xs text-gray-400">
               {maskedKey || maskedBackupKey ? 'Leave blank to keep using the saved key for this profile.' : 'Required. Keys are saved securely to this profile. The backup key is automatically used if the primary key hits a rate limit.'}
             </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex justify-between items-end gap-2">
+              <label className="block text-sm font-semibold">Groq API Key (Free Fallback)</label>
+              {maskedGroqKey && (
+                <span className="text-xs font-mono bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400 px-2 py-0.5 rounded">Active: {maskedGroqKey}</span>
+              )}
+            </div>
+            <input
+              type="password"
+              className="w-full p-2 border rounded bg-gray-50 dark:bg-gray-800 dark:border-gray-700 text-gray-900 dark:text-gray-100"
+              placeholder={maskedGroqKey ? 'Enter a new Groq key to overwrite...' : 'Enter your free Groq API key...'}
+              value={groqApiKey}
+              onChange={(e) => setGroqApiKey(e.target.value)}
+            />
+            <p className="text-xs text-gray-400">
+              Optional free fallback used automatically if both Gemini keys exhaust their billing quota. Get a free key at{' '}
+              <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer" className="underline">console.groq.com</a>.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-sm font-semibold">Scan Provider Order</label>
+            <p className="text-xs text-gray-400 mb-2">
+              Set the order in which providers are tried for each scan batch. Any provider whose key isn&apos;t configured is automatically skipped.
+            </p>
+            <div className="flex flex-col gap-2">
+              {([0, 1, 2] as const).map((slot) => {
+                const PROVIDER_LABELS: Record<string, string> = {
+                  gemini_primary: 'Gemini — Primary Key',
+                  gemini_backup: 'Gemini — Backup Key',
+                  groq: 'Groq (Free)',
+                };
+                const others = providerOrder.filter((_, idx) => idx !== slot);
+                return (
+                  <div key={slot} className="flex items-center gap-2">
+                    <span className="text-xs font-mono text-gray-500 w-5 shrink-0">{slot + 1}.</span>
+                    <select
+                      className="flex-1 p-2 border rounded bg-gray-50 dark:bg-gray-800 dark:border-gray-700 text-gray-900 dark:text-gray-100 text-sm cursor-pointer"
+                      value={providerOrder[slot] ?? ''}
+                      onChange={(e) => {
+                        const chosen = e.target.value as 'gemini_primary' | 'gemini_backup' | 'groq';
+                        const next = [...providerOrder] as typeof providerOrder;
+                        // Swap if the chosen value is already in another slot
+                        const existingSlot = next.findIndex((p, i) => i !== slot && p === chosen);
+                        if (existingSlot !== -1) next[existingSlot] = next[slot];
+                        next[slot] = chosen;
+                        setProviderOrder(next);
+                      }}
+                    >
+                      {(['gemini_primary', 'gemini_backup', 'groq'] as const).map((p) => (
+                        <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
+                      ))}
+                    </select>
+                    {others.includes(providerOrder[slot]) && (
+                      <span className="text-xs text-amber-600 dark:text-amber-400">duplicate</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 

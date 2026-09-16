@@ -159,7 +159,7 @@ describe('Kokoro pronunciation policy', () => {
     expect(source).toContain('after(async () =>');
     expect(source).toContain('Object.entries(geminiRecommendations)');
     expect(source).toContain('Warm only Gemini');
-    expect(source).toContain('Gemini API key is not configured');
+    expect(source).toContain('No API key is configured for the selected Smart Audio profile');
     expect(source).toContain("event: 'pdf.scan.gemini.batch.failed'");
     expect(source).toContain('acceptedChoices += 1');
     expect(source).toContain('generatedChoices: acceptedChoices');
