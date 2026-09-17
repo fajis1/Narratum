@@ -3,7 +3,7 @@ import type { GeminiForeignWordResult } from './gemini-foreign-word-scan';
 import { parseGeminiForeignWordResults } from './gemini-foreign-word-scan';
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-export const GROQ_DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+export const GROQ_DEFAULT_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
 /**
  * Sends a foreign-word pronunciation/definition batch to Groq's free-tier API.
@@ -15,13 +15,14 @@ export async function fetchGroqForeignWordBatch(
   prompt: string,
   groqApiKey: string,
   signal?: AbortSignal,
+  model: string = GROQ_DEFAULT_MODEL,
 ): Promise<GeminiForeignWordResult[]> {
   const maskedKey = groqApiKey.length >= 4 ? `...${groqApiKey.slice(-4)}` : 'Key';
 
   serverLogger.info({
     event: 'pdf.scan.groq.request',
     maskedKey,
-    model: GROQ_DEFAULT_MODEL,
+    model,
   }, 'Sending foreign-word batch to Groq fallback API');
 
   const response = await fetch(GROQ_API_URL, {
@@ -31,7 +32,7 @@ export async function fetchGroqForeignWordBatch(
       Authorization: `Bearer ${groqApiKey}`,
     },
     body: JSON.stringify({
-      model: GROQ_DEFAULT_MODEL,
+      model,
       messages: [
         {
           role: 'system',
@@ -93,7 +94,7 @@ export async function fetchGroqForeignWordBatch(
   serverLogger.info({
     event: 'pdf.scan.groq.success',
     maskedKey,
-    model: GROQ_DEFAULT_MODEL,
+    model,
     resultCount: results.length,
     inputTokens: data?.usage?.prompt_tokens,
     outputTokens: data?.usage?.completion_tokens,
