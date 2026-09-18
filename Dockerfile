@@ -57,12 +57,14 @@ FROM node:lts-slim AS runner
 
 # Add runtime OS dependencies:
 # - libreoffice-writer: required for DOCX → PDF conversion
+# - pandoc: required for publication-grade EPUB eBook generation
 # - python3, python3-pip, python3-venv: required for smart audio worker (audiobook_worker.py)
 # ffmpeg is provided by ffmpeg-static from node_modules.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         libreoffice-writer \
+        pandoc \
         python3 \
         python3-pip \
         python3-venv && \

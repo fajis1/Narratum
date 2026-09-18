@@ -179,6 +179,11 @@ export function AudiobookshelfModal({
     return lib?.folders || [];
   }, [libraries, libraryId]);
 
+  const candidateHasEbook = useMemo(
+    () => Boolean(mergeIntoExisting && matchResult?.matchFound && matchResult.candidate?.hasEbook),
+    [mergeIntoExisting, matchResult],
+  );
+
   const handleLibraryChange = (newLibId: string) => {
     setLibraryId(newLibId);
     const lib = libraries.find((l) => l.id === newLibId);
@@ -242,7 +247,9 @@ export function AudiobookshelfModal({
     setStatusMessage('Assembling audio and uploading to Audiobookshelf... (this may take a minute)');
 
     try {
+      const candidateHasEbook = Boolean(mergeIntoExisting && matchResult?.matchFound && matchResult.candidate?.hasEbook);
       const isUnifiedMerge = mergeIntoExisting && matchResult?.matchFound && Boolean(matchResult.candidate);
+      const effectiveIncludeCompanion = candidateHasEbook ? false : includeCompanion;
       const res = await fetch('/api/audiobook/audiobookshelf', {
         method: 'POST',
         headers: {
@@ -254,7 +261,7 @@ export function AudiobookshelfModal({
           title: title.trim(),
           author: author.trim() || undefined,
           series: series.trim() || undefined,
-          includeCompanionDocument: includeCompanion,
+          includeCompanionDocument: effectiveIncludeCompanion,
           libraryId: libraryId || undefined,
           folderId: folderId || undefined,
           smartMatchExistingBook: mergeIntoExisting,
@@ -513,22 +520,31 @@ export function AudiobookshelfModal({
               </div>
             )}
 
-            {/* Include companion document checkbox */}
+            {/* Include companion eBook (.epub) checkbox */}
             <div className="pt-2 border-t border-line-soft">
-              <label className="flex items-start gap-2.5 cursor-pointer text-xs text-foreground">
+              <label className={`flex items-start gap-2.5 ${candidateHasEbook ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'} text-xs text-foreground`}>
                 <input
                   type="checkbox"
-                  checked={includeCompanion}
+                  checked={!candidateHasEbook && includeCompanion}
                   onChange={(e) => setIncludeCompanion(e.target.checked)}
-                  disabled={isUploading}
-                  className="mt-0.5 rounded border-line-soft text-accent focus:ring-accent"
+                  disabled={isUploading || candidateHasEbook}
+                  className="mt-0.5 rounded border-line-soft text-accent focus:ring-accent disabled:opacity-50"
                 />
                 <div>
-                  <span className="font-medium">
-                    Include original {documentType.toUpperCase()} document
-                  </span>
-                  <p className="text-[11px] text-muted">
-                    Saves the original {documentType.toUpperCase()} alongside the audiobook so Audiobookshelf pairs the text with the audio.
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">
+                      Include companion eBook (.epub)
+                    </span>
+                    {candidateHasEbook && (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-400 font-semibold border border-emerald-500/30">
+                        ✓ Existing eBook already in Audiobookshelf (will not overwrite)
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted mt-0.5">
+                    {candidateHasEbook
+                      ? 'The matched book in Audiobookshelf already has an eBook/PDF. OpenReader will attach the new audiobook while keeping your existing eBook intact.'
+                      : 'Compiles a reflowable publication-grade .epub with digital table of contents and cover so Audiobookshelf pairs the text with the audio for seamless read & listen.'}
                   </p>
                 </div>
               </label>

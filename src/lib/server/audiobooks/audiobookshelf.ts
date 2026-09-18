@@ -10,9 +10,10 @@ import {
 import { getDocumentBlob } from '@/lib/server/documents/blobstore';
 import { executeAudiobookCombine } from './combine';
 import { listChapterObjects } from './chapters';
-import type { TTSAudiobookFormat } from '@/types/tts';
 import { fetchGeminiWithRateLimitFallback, GEMINI_MODEL_FALLBACKS } from '@/lib/server/smart-audio/gemini-failover';
 import { readSmartAudioProfilesDocument } from '@/lib/server/smart-audio-profiles';
+import { compileDocumentToEpub } from './epub-generator';
+import type { TTSAudiobookFormat } from '@/types/tts';
 
 export interface AudiobookshelfFolder {
   id: string;
@@ -596,13 +597,43 @@ export async function matchAudiobookshelfCandidateWithGemini(
 }
 
 /**
+ * Checks whether an existing item in Audiobookshelf already contains an eBook file.
+ */
+export async function checkAudiobookshelfItemHasEbook(
+  url: string,
+  token: string,
+  itemId: string,
+): Promise<boolean> {
+  try {
+    const normalizedUrl = url.trim().replace(/\/+$/, '');
+    const res = await fetch(`${normalizedUrl}/api/items/${encodeURIComponent(itemId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return false;
+    const itemData = (await res.json()) as Record<string, unknown>;
+    const media = (itemData?.media as Record<string, unknown>) || {};
+    return Boolean(
+      media.ebookFile ||
+      (Array.isArray(media.ebookFiles) && media.ebookFiles.length > 0) ||
+      media.hasEbook,
+    );
+  } catch (err) {
+    serverLogger.warn(
+      { event: 'audiobookshelf.check_ebook.failed', error: errorToLog(err), itemId },
+      'Failed to query Audiobookshelf item for existing eBook',
+    );
+    return false;
+  }
+}
+
+/**
  * Updates an existing item in Audiobookshelf with unification tags.
  */
 export async function tagAudiobookshelfItem(
   url: string,
   token: string,
   itemId: string,
-  newTags: string[] = ['Audiobook', 'Companion Audiobook', 'OpenReader'],
+  newTags: string[] = ['Audiobook', 'Companion Audiobook', 'Companion eBook', 'EPUB', 'OpenReader'],
 ): Promise<boolean> {
   try {
     const normalizedUrl = url.trim().replace(/\/+$/, '');
@@ -764,39 +795,11 @@ export async function uploadBookToAudiobookshelf(
 
   const filesUploaded: string[] = [audioFileName];
 
-  // 4. Retrieve companion document if requested and available
-  let companionBuffer: Buffer | null = null;
-  let companionFileName: string | null = null;
-  let companionMime = 'application/octet-stream';
-
-  const shouldIncludeCompanion = options.includeCompanionDocument !== false && doc;
-  if (shouldIncludeCompanion) {
-    try {
-      companionBuffer = await getDocumentBlob(doc.id, namespace);
-      const rawExt = doc.name.includes('.') ? doc.name.split('.').pop()?.toLowerCase() : doc.type;
-      const cleanExt = rawExt && /^[a-z0-9]+$/.test(rawExt) ? rawExt : 'pdf';
-      companionFileName = `${cleanTitle}.${cleanExt}`;
-
-      if (cleanExt === 'pdf') companionMime = 'application/pdf';
-      else if (cleanExt === 'epub') companionMime = 'application/epub+zip';
-      else if (cleanExt === 'docx') companionMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-      else if (cleanExt === 'txt') companionMime = 'text/plain';
-
-      filesUploaded.push(companionFileName);
-    } catch (err) {
-      serverLogger.warn(
-        { event: 'audiobookshelf.companion_fetch_failed', error: errorToLog(err), bookId },
-        'Failed to fetch companion original document; proceeding with audio only',
-      );
-      companionBuffer = null;
-      companionFileName = null;
-    }
-  }
-
-  // 5. Check for smart match unification with existing Audiobookshelf book
+  // 4. Check for smart match unification with existing Audiobookshelf book
   let destinationFolderTitle = cleanTitle;
   let matchedItemId: string | null = null;
   let isUnified = false;
+  let matchedCandidate: AudiobookshelfSearchCandidate | null = null;
 
   if (options.targetFolderName) {
     destinationFolderTitle = sanitizeFilenameForAudiobookshelf(options.targetFolderName);
@@ -821,6 +824,7 @@ export async function uploadBookToAudiobookshelf(
         if (matchResult.isMatch && matchResult.matchedFolderName) {
           destinationFolderTitle = sanitizeFilenameForAudiobookshelf(matchResult.matchedFolderName);
           matchedItemId = matchResult.matchedItemId;
+          matchedCandidate = candidates.find((c) => c.id === matchedItemId) || null;
           isUnified = true;
           serverLogger.info(
             {
@@ -839,6 +843,97 @@ export async function uploadBookToAudiobookshelf(
         { event: 'audiobookshelf.smart_match_failed', error: errorToLog(err) },
         'Smart candidate matching encountered an error; proceeding with standard upload',
       );
+    }
+  }
+
+  // 5. Existing eBook guardrail & companion document preparation
+  let existingEbookAlreadyInAbs = false;
+  if (isUnified && matchedItemId) {
+    if (matchedCandidate && typeof matchedCandidate.hasEbook === 'boolean') {
+      existingEbookAlreadyInAbs = matchedCandidate.hasEbook;
+    } else {
+      existingEbookAlreadyInAbs = await checkAudiobookshelfItemHasEbook(
+        config.url,
+        config.token,
+        matchedItemId,
+      );
+    }
+  }
+
+  let companionBuffer: Buffer | null = null;
+  let companionFileName: string | null = null;
+  let companionMime = 'application/octet-stream';
+
+  const shouldIncludeCompanion =
+    options.includeCompanionDocument !== false && doc && !existingEbookAlreadyInAbs;
+
+  if (existingEbookAlreadyInAbs) {
+    serverLogger.info(
+      {
+        event: 'audiobookshelf.companion_skipped_already_exists',
+        bookId,
+        matchedItemId,
+      },
+      'Companion eBook omitted because target Audiobookshelf item already contains an eBook',
+    );
+  } else if (shouldIncludeCompanion) {
+    const rawExt = doc.name.includes('.') ? doc.name.split('.').pop()?.toLowerCase() : doc.type;
+    const cleanExt = rawExt && /^[a-z0-9]+$/.test(rawExt) ? rawExt : 'pdf';
+
+    if (cleanExt === 'epub') {
+      try {
+        companionBuffer = await getDocumentBlob(doc.id, namespace);
+        companionFileName = `${cleanTitle}.epub`;
+        companionMime = 'application/epub+zip';
+        filesUploaded.push(companionFileName);
+      } catch (err) {
+        serverLogger.warn(
+          { event: 'audiobookshelf.companion_fetch_failed', error: errorToLog(err), bookId },
+          'Failed to fetch companion EPUB document; proceeding with audio only',
+        );
+        companionBuffer = null;
+        companionFileName = null;
+      }
+    } else {
+      // PDF, DOCX, or TXT: convert to reflowable publication-grade EPUB via Pandoc
+      try {
+        serverLogger.info(
+          { event: 'audiobookshelf.compiling_companion_epub', bookId, sourceExt: cleanExt },
+          'Compiling companion EPUB for Audiobookshelf export',
+        );
+        companionBuffer = await compileDocumentToEpub({
+          bookId,
+          userId,
+          title: cleanTitle,
+          author: cleanAuthor,
+          namespace,
+        });
+        companionFileName = `${cleanTitle}.epub`;
+        companionMime = 'application/epub+zip';
+        filesUploaded.push(companionFileName);
+      } catch (epubErr) {
+        serverLogger.warn(
+          { event: 'audiobookshelf.epub_generation_failed', error: errorToLog(epubErr), bookId },
+          'EPUB compilation failed; falling back to original document blob',
+        );
+        try {
+          companionBuffer = await getDocumentBlob(doc.id, namespace);
+          companionFileName = `${cleanTitle}.${cleanExt}`;
+          if (cleanExt === 'pdf') companionMime = 'application/pdf';
+          else if (cleanExt === 'docx')
+            companionMime =
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          else if (cleanExt === 'txt') companionMime = 'text/plain';
+          filesUploaded.push(companionFileName);
+        } catch (rawErr) {
+          serverLogger.warn(
+            { event: 'audiobookshelf.companion_fetch_failed', error: errorToLog(rawErr), bookId },
+            'Failed to fetch original document blob fallback; proceeding with audio only',
+          );
+          companionBuffer = null;
+          companionFileName = null;
+        }
+      }
     }
   }
 

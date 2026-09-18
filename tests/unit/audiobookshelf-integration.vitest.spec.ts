@@ -10,8 +10,18 @@ import {
   matchCandidatesDeterministically,
   matchAudiobookshelfCandidateWithGemini,
   tagAudiobookshelfItem,
+  checkAudiobookshelfItemHasEbook,
   type AudiobookshelfSearchCandidate,
 } from '@/lib/server/audiobooks/audiobookshelf';
+import {
+  clean_tex,
+  clean_block_text,
+  clean_toc_text,
+  stitch_paragraphs,
+  placeFootnoteInText,
+  cleanChapterTextForEpub,
+  buildEpubMarkdown,
+} from '@/lib/server/audiobooks/epub-generator';
 import { RUNTIME_CONFIG_SCHEMA } from '@/lib/server/admin/settings';
 
 describe('Audiobookshelf Integration', () => {
@@ -401,7 +411,280 @@ describe('Audiobookshelf Integration', () => {
       expect(patchedBody.tags).toContain('Theology');
       expect(patchedBody.tags).toContain('Audiobook');
       expect(patchedBody.tags).toContain('Companion Audiobook');
+      expect(patchedBody.tags).toContain('Companion eBook');
+      expect(patchedBody.tags).toContain('EPUB');
       expect(patchedBody.tags).toContain('OpenReader');
+    });
+  });
+
+  describe('checkAudiobookshelfItemHasEbook', () => {
+    test('returns true when media.ebookFile is present', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            media: {
+              ebookFile: { ino: '1', filename: 'book.epub' },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+
+      const result = await checkAudiobookshelfItemHasEbook(
+        'http://abs.test:13378',
+        'token-123',
+        'item-with-ebook',
+      );
+      expect(result).toBe(true);
+    });
+
+    test('returns true when media.ebookFiles contains entries', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            media: {
+              ebookFiles: [{ ino: '1', filename: 'book.pdf' }],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+
+      const result = await checkAudiobookshelfItemHasEbook(
+        'http://abs.test:13378',
+        'token-123',
+        'item-with-ebook-array',
+      );
+      expect(result).toBe(true);
+    });
+
+    test('returns true when media.hasEbook flag is true', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            media: {
+              hasEbook: true,
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+
+      const result = await checkAudiobookshelfItemHasEbook(
+        'http://abs.test:13378',
+        'token-123',
+        'item-flagged-ebook',
+      );
+      expect(result).toBe(true);
+    });
+
+    test('returns false when no ebook is associated with the item', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            media: {
+              audioFiles: [{ ino: '2', filename: 'audio.m4b' }],
+              numTracks: 1,
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+
+      const result = await checkAudiobookshelfItemHasEbook(
+        'http://abs.test:13378',
+        'token-123',
+        'item-audio-only',
+      );
+      expect(result).toBe(false);
+    });
+
+    test('returns false when the API request errors', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('Network error'));
+
+      const result = await checkAudiobookshelfItemHasEbook(
+        'http://abs.test:13378',
+        'token-123',
+        'item-error',
+      );
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('EPUB Text & Markdown Pipeline', () => {
+    describe('1. TeX Sanitization (clean_tex)', () => {
+      test('converts Greek TeX symbols, unwraps macros, and strips OCR noise', () => {
+        const raw = 'The symbol \\Sigma and \\Theta with \\Delta form \\widetilde{ KA\\Theta\\Upsilon } and \\dots';
+        const cleaned = clean_tex(raw);
+        expect(cleaned).toContain('Σ');
+        expect(cleaned).toContain('Θ');
+        expect(cleaned).toContain('Δ');
+        expect(cleaned).toContain('KAΘΥ');
+        expect(cleaned).toContain('...');
+        expect(cleaned).not.toContain('\\widetilde');
+      });
+
+      test('strips dangling unclosed macro prefixes caused by OCR noise', () => {
+        const raw = 'Text with dangling \\widetilde{ KA\\Theta\\Upsilon without closing brace';
+        const cleaned = clean_tex(raw);
+        expect(cleaned).toBe('Text with dangling  KAΘΥ without closing brace');
+        expect(cleaned).not.toContain('\\widetilde');
+      });
+    });
+
+    describe('2. Intra-Block Line Reflow & Hyphen Healing (clean_block_text)', () => {
+      test('joins lines with single space and heals line-end hyphens', () => {
+        const block = [
+          'Paul argues in his epistle that',
+          'the believers are granted full',
+          'adop-',
+          'tion according to law.',
+        ].join('\n');
+
+        const cleaned = clean_block_text(block);
+        expect(cleaned).toBe('Paul argues in his epistle that the believers are granted full adoption according to law.');
+      });
+
+      test('heals remaining cross-line word hyphens and Greek script', () => {
+        const block = 'The doctrine of υἱοθε-\nσία is central.';
+        const cleaned = clean_block_text(block);
+        expect(cleaned).toBe('The doctrine of υἱοθεσία is central.');
+      });
+    });
+
+    describe('3. Preserving Table of Contents & Chapter Lists (clean_toc_text)', () => {
+      test('formats TOC entries with Markdown hard line breaks (two spaces + newline)', () => {
+        const tocRaw = [
+          'Chapter 1: The Meaning of Adoption . . . 15',
+          'Chapter 2: The Roman Law of Adoption . . . 45',
+          'Chapter 3: Adoption in Galatians . . . 85',
+        ].join('\n');
+
+        const cleaned = clean_toc_text(tocRaw);
+        expect(cleaned).toBe(
+          'Chapter 1: The Meaning of Adoption . . . 15  \nChapter 2: The Roman Law of Adoption . . . 45  \nChapter 3: Adoption in Galatians . . . 85',
+        );
+      });
+
+      test('wraps subtitles within the same entry cleanly', () => {
+        const tocRaw = [
+          'Chapter 1: The Meaning of Adoption',
+          'A Theological Analysis . . . 15',
+          'Chapter 2: The Law . . . 45',
+        ].join('\n');
+
+        const cleaned = clean_toc_text(tocRaw);
+        expect(cleaned).toContain('Chapter 1: The Meaning of Adoption A Theological Analysis . . . 15  \nChapter 2: The Law . . . 45');
+      });
+    });
+
+    describe('4. Page-Spanning Paragraph Stitcher (stitch_paragraphs)', () => {
+      test('merges mid-sentence paragraph breaks across page boundaries when no terminal punctuation', () => {
+        const paragraphs = [
+          { text: 'Paul argues in his epistle that' },
+          { text: 'the believers are granted full sonship.' },
+        ];
+
+        const stitched = stitch_paragraphs(paragraphs);
+        expect(stitched).toHaveLength(1);
+        expect(stitched[0].text).toBe('Paul argues in his epistle that the believers are granted full sonship.');
+      });
+
+      test('heals line-break hyphen across page transitions', () => {
+        const paragraphs = [
+          { text: 'This was the Roman law of adop-' },
+          { text: 'tion which governed inheritance.' },
+        ];
+
+        const stitched = stitch_paragraphs(paragraphs);
+        expect(stitched).toHaveLength(1);
+        expect(stitched[0].text).toBe('This was the Roman law of adoption which governed inheritance.');
+      });
+
+      test('Critical Guardrail: NEVER stitches list or TOC items into adjacent paragraphs or across pages', () => {
+        const paragraphs = [
+          { text: 'Chapter 1: The Meaning of Adoption . . . 15', isList: true },
+          { text: 'Chapter 2: The Roman Law . . . 45', isList: true },
+          { text: 'Chapter 1 begins with a discussion of terminology.' },
+        ];
+
+        const stitched = stitch_paragraphs(paragraphs);
+        expect(stitched).toHaveLength(3);
+        expect(stitched[0].text).toBe('Chapter 1: The Meaning of Adoption . . . 15');
+        expect(stitched[1].text).toBe('Chapter 2: The Roman Law . . . 45');
+        expect(stitched[2].text).toBe('Chapter 1 begins with a discussion of terminology.');
+      });
+    });
+
+    describe('5. The 4-Tier Regex Footnote Placement Engine (with Verse-Collision Guard)', () => {
+      test('Tier 1: replaces explicit superscript carets or braces', () => {
+        const text = 'According to Hort^{12}, the text was written in Rome.';
+        const result = placeFootnoteInText(text, '12', '[^c1_12]');
+        expect(result.placed).toBe(true);
+        expect(result.newText).toBe('According to Hort[^c1_12], the text was written in Rome.');
+      });
+
+      test('Tier 2: replaces punctuation followed by footnote number with verse-collision guard', () => {
+        const text = 'This was the Roman law of adoption.12 It provided legal protection.';
+        const result = placeFootnoteInText(text, '12', '[^c1_12]');
+        expect(result.placed).toBe(true);
+        expect(result.newText).toBe('This was the Roman law of adoption.[^c1_12] It provided legal protection.');
+      });
+
+      test('Verse-Collision Guard: Does NOT match colon-separated Bible verses (Romans 8:15)', () => {
+        const text = 'See Romans 8:15 for Paul’s doctrine of adoption.';
+        const result = placeFootnoteInText(text, '15', '[^c1_15]');
+        // Should not match 8:15 as footnote 15
+        expect(result.placed).toBe(false);
+        expect(result.newText).toBe('See Romans 8:15 for Paul’s doctrine of adoption.');
+      });
+
+      test('Tier 3: replaces word immediately followed by footnote number', () => {
+        const text = 'Paul discusses adoption12 in his theological work.';
+        const result = placeFootnoteInText(text, '12', '[^c1_12]');
+        expect(result.placed).toBe(true);
+        expect(result.newText).toBe('Paul discusses adoption[^c1_12] in his theological work.');
+      });
+
+      test('Tier 4: replaces section decimal numbers', () => {
+        const text = 'Section 1.2^3 outlines the Roman background.';
+        const result = placeFootnoteInText(text, '3', '[^c1_3]');
+        expect(result.placed).toBe(true);
+        expect(result.newText).toBe('Section 1.2[^c1_3] outlines the Roman background.');
+      });
+    });
+
+    describe('6. buildEpubMarkdown with Footnotes & Delimited Unplaced Fallback', () => {
+      test('places footnotes, scopes keys to chapter, prevents clumping on unplaced notes, and emits definitions', () => {
+        const chapters = [
+          {
+            title: 'Introduction',
+            text: 'Paul wrote concerning adoption.12 He was writing to Gentiles. The context was Roman law.',
+            footnotes: [
+              { num: '12', text: 'F. J. A. Hort, *Prolegomena*, p. 111.' },
+              { num: '13', text: 'Unreferenced OCR footnote citation.' },
+              { num: '14', text: 'Another unreferenced citation.' },
+            ],
+          },
+        ];
+
+        const markdown = buildEpubMarkdown(chapters);
+
+        // Heading
+        expect(markdown).toContain('# Introduction\n\n');
+
+        // Placed footnote in body text
+        expect(markdown).toContain('adoption.[^c1_12]');
+
+        // Delimited fallback for unplaced notes: comma-space separated (preventing clumping bug)
+        expect(markdown).toContain('[^c1_13], [^c1_14]');
+        expect(markdown).not.toContain('[^c1_13][^c1_14]');
+
+        // Interactive definitions at bottom
+        expect(markdown).toContain('[^c1_12]: F. J. A. Hort, *Prolegomena*, p. 111.');
+        expect(markdown).toContain('[^c1_13]: Unreferenced OCR footnote citation.');
+        expect(markdown).toContain('[^c1_14]: Another unreferenced citation.');
+      });
     });
   });
 
