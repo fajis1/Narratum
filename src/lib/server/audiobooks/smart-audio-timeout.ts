@@ -2,7 +2,7 @@ import { isScholarLikeSmartAudioMode } from '@/lib/shared/smart-audio-cleanup';
 import { MULTI_VOICE_WORKER_MODE } from '@/lib/shared/multi-voice';
 
 const STANDARD_SMART_AUDIO_NATS_TIMEOUT_MS = 120_000;
-const SCHOLAR_SMART_AUDIO_NATS_TIMEOUT_MS = 300_000;
+const SCHOLAR_SMART_AUDIO_NATS_TIMEOUT_MS = 600_000;
 const MIN_SMART_AUDIO_NATS_TIMEOUT_MS = 30_000;
 const MAX_SMART_AUDIO_NATS_TIMEOUT_MS = 900_000;
 

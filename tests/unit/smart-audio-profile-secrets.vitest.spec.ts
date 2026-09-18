@@ -234,6 +234,38 @@ describe('Smart Audio profile secret boundary', () => {
     expect(JSON.stringify(safeProfiles)).not.toContain('stored-primary');
   });
 
+  it('preserves aiModelFallbacks and providerOrder in redacted profiles', () => {
+    const safeProfile = redactSmartAudioProfileSecrets(makeProfile({
+      aiModelFallbacks: ['gemini-3.1-flash-lite', 'gemini-3.7-flash'],
+      providerOrder: ['gemini_primary', 'groq', 'gemini_backup'],
+      geminiApiKey: 'test-key-1234',
+    }));
+
+    expect(safeProfile.aiModelFallbacks).toEqual(['gemini-3.1-flash-lite', 'gemini-3.7-flash']);
+    expect(safeProfile.providerOrder).toEqual(['gemini_primary', 'groq', 'gemini_backup']);
+    expect(safeProfile).not.toHaveProperty('geminiApiKey');
+    expect(safeProfile.geminiApiKeyConfigured).toBe(true);
+  });
+
+  it('preserves stored fallbacks and providerOrder when incoming profile omits them', () => {
+    const stored = makeProfile({
+      aiModelFallbacks: ['gemini-3.1-flash-lite'],
+      providerOrder: ['groq', 'gemini_primary', 'gemini_backup'],
+      geminiApiKey: 'stored-primary',
+    });
+    const incoming = makeProfile({
+      id: stored.id,
+      name: 'Updated Name',
+      aiModelFallbacks: undefined,
+      providerOrder: undefined,
+    });
+
+    const [merged] = mergeStoredSmartAudioProfileSecrets([incoming], [stored]);
+
+    expect(merged.aiModelFallbacks).toEqual(['gemini-3.1-flash-lite']);
+    expect(merged.providerOrder).toEqual(['groq', 'gemini_primary', 'gemini_backup']);
+  });
+
   it('falls back to each stored key when a requested source id is unresolved', () => {
     const first = makeProfile({ geminiApiKey: 'first-primary' });
     const second = makeProfile({

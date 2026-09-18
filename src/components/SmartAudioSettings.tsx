@@ -939,6 +939,12 @@ export function SmartAudioSettings() {
       geminiApiKeySourceProfileId: current.geminiApiKeySourceProfileId || current.id,
       backupGeminiApiKeySourceProfileId:
         current.backupGeminiApiKeySourceProfileId || current.id,
+      groqApiKeyConfigured: Boolean(
+        current.groqApiKey || current.groqApiKeyConfigured,
+      ),
+      groqApiKeyLast4: current.groqApiKey
+        ? current.groqApiKey.slice(-4)
+        : current.groqApiKeyLast4,
     };
     setProfiles((existing) => [duplicate, ...existing]);
     setSelectedProfileId(duplicate.id);
@@ -988,6 +994,7 @@ export function SmartAudioSettings() {
       );
       setApiKey('');
       setBackupApiKey('');
+      setGroqApiKey('');
       alert('Smart audio profile saved.');
       window.dispatchEvent(new CustomEvent('smart-audio-profiles-updated'));
     } catch (error) {

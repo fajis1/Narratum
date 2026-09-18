@@ -97,6 +97,9 @@ export function redactSmartAudioProfileSecrets(profile: SmartAudioProfile): Smar
     backupGeminiApiKeySourceProfileId: profile.backupGeminiApiKeySourceProfileId || profile.id,
     groqApiKeyConfigured: Boolean(profile.groqApiKey),
     groqApiKeyLast4: profile.groqApiKey ? profile.groqApiKey.slice(-4) : undefined,
+    aiModelFallbacks: profile.aiModelFallbacks ? [...profile.aiModelFallbacks] : undefined,
+    providerOrder: profile.providerOrder ? [...profile.providerOrder] : undefined,
+    resolvedDictionaryHash: profile.resolvedDictionaryHash,
   };
 }
 
@@ -127,8 +130,17 @@ export function mergeStoredSmartAudioProfileSecrets(
     const suppliedBackupKey = (profile.backupGeminiApiKey || '').trim();
     const suppliedGroqKey = (profile.groqApiKey || '').trim();
 
+    const incomingFallbacks = profile.aiModelFallbacks !== undefined
+      ? profile.aiModelFallbacks
+      : storedProfile?.aiModelFallbacks;
+    const incomingProviderOrder = profile.providerOrder !== undefined
+      ? profile.providerOrder
+      : storedProfile?.providerOrder;
+
     return {
       ...profile,
+      aiModelFallbacks: incomingFallbacks,
+      providerOrder: incomingProviderOrder,
       geminiApiKey: suppliedPrimaryKey || primarySourceProfile?.geminiApiKey,
       backupGeminiApiKey: suppliedBackupKey || backupSourceProfile?.backupGeminiApiKey,
       groqApiKey: suppliedGroqKey || storedProfile?.groqApiKey,
@@ -214,6 +226,8 @@ function cloneSmartAudioProfile(profile: SmartAudioProfile): SmartAudioProfile {
     abbreviations: { ...(profile.abbreviations || {}) },
     pronunciations: { ...(profile.pronunciations || {}) },
     books: { ...(profile.books || {}) },
+    aiModelFallbacks: profile.aiModelFallbacks ? [...profile.aiModelFallbacks] : undefined,
+    providerOrder: profile.providerOrder ? [...profile.providerOrder] : undefined,
   };
 }
 

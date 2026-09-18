@@ -303,6 +303,99 @@ class GeminiCapacityFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(a[1] == "model-2" for a in attempts))
         self.assertTrue(any(a[1] == "model-3" for a in attempts))
 
+    async def test_advances_to_fallback_model_when_in_flight_delay_exceeded(self):
+        attempts = []
+        delays = []
+
+        async def mock_sleep(seconds):
+            delays.append(seconds)
+
+        async def request(api_key, model):
+            attempts.append((api_key, model))
+            if model == "primary":
+                raise RuntimeError("429 quota exceeded")
+            return "fallback-success"
+
+        result = await call_gemini_with_capacity_fallback(
+            api_states={},
+            api_keys=["key"],
+            models=["primary", "backup"],
+            request=request,
+            min_delay=5,
+            max_delay=300,
+            max_in_flight_delay=20,
+            sleep_fn=mock_sleep,
+        )
+
+        self.assertEqual(result, ("fallback-success", "backup"))
+        # Primary retried at 5s, 10s, 20s. On next doubling (40s > 20s), it advanced immediately to backup
+        self.assertEqual(delays, [5, 10, 20])
+        self.assertEqual([a[1] for a in attempts], ["primary", "primary", "primary", "primary", "backup"])
+
+    async def test_yields_none_when_in_flight_delay_exceeded_on_all_models(self):
+        attempts = []
+        delays = []
+
+        async def mock_sleep(seconds):
+            delays.append(seconds)
+
+        async def request(api_key, model):
+            attempts.append((api_key, model))
+            raise RuntimeError("429 quota exceeded")
+
+        api_states = {}
+        result = await call_gemini_with_capacity_fallback(
+            api_states=api_states,
+            api_keys=["key"],
+            models=["only-model"],
+            request=request,
+            min_delay=5,
+            max_delay=300,
+            max_in_flight_delay=20,
+            sleep_fn=mock_sleep,
+        )
+
+        self.assertIsNone(result)
+        # Did not sleep through 40s, 80s, 160s, 300s!
+        self.assertEqual(delays, [5, 10, 20])
+        # State retains the full spiked delay for subsequent cooldown checks
+        state = api_states[("key", "only-model")]
+        self.assertEqual(state["current_delay"], 40)
+
+    async def test_skips_model_when_initial_equilibrium_wait_exceeds_in_flight_limit(self):
+        delays = []
+
+        async def mock_sleep(seconds):
+            delays.append(seconds)
+
+        async def request(api_key, model):
+            return f"{model}-ok"
+
+        import time
+        # Simulate primary model already in a 300s cooldown from earlier
+        api_states = {
+            ("key", "primary"): {
+                "current_delay": 300,
+                "last_attempt_time": time.time(),
+            }
+        }
+
+        result = await call_gemini_with_capacity_fallback(
+            api_states=api_states,
+            api_keys=["key"],
+            models=["primary", "fallback"],
+            request=request,
+            min_delay=5,
+            max_delay=300,
+            max_in_flight_delay=20,
+            sleep_fn=mock_sleep,
+        )
+
+        # Primary was skipped without sleeping 300s, and fallback succeeded immediately
+        self.assertEqual(result, ("fallback-ok", "fallback"))
+        self.assertEqual(delays, [])
+
 
 if __name__ == "__main__":
     unittest.main()
+

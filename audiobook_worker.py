@@ -16,6 +16,7 @@ from gemini_rate_limiter import (
 API_STATES = {}
 MAX_DELAY = 300            # 5 minutes (in seconds)
 MIN_DELAY = 5              # The starting penalty
+MAX_IN_FLIGHT_DELAY = 20   # Maximum delay to sleep within a single NATS request
 QUALITY_REPAIR_MODEL = "gemini-3.8-flash"
 
 def academic_pre_clean(text, user_abbreviations, biblical_books):
@@ -124,11 +125,13 @@ async def process_message(msg):
             request=request_content,
             min_delay=MIN_DELAY,
             max_delay=MAX_DELAY,
+            max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
         )
         if generated is None:
             await msg.respond(json.dumps({
                 "status": "rate_limit",
                 "message": "All configured Gemini cleanup models are rate limited.",
+                "cooldownSeconds": MAX_DELAY,
             }).encode())
             return
         response, ai_model = generated
@@ -142,11 +145,13 @@ async def process_message(msg):
                     request=request_content,
                     min_delay=MIN_DELAY,
                     max_delay=MAX_DELAY,
+                    max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
                 )
                 if repaired is None:
                     await msg.respond(json.dumps({
                         "status": "rate_limit",
                         "message": "The Gemini quality-repair model is rate limited.",
+                        "cooldownSeconds": MAX_DELAY,
                     }).encode())
                     return
                 response, ai_model = repaired
@@ -240,11 +245,13 @@ async def generate_multivoice_content(msg, api_key, backup_api_key, model, model
         request=request_content,
         min_delay=MIN_DELAY,
         max_delay=MAX_DELAY,
+        max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
     )
     if generated is None:
         await msg.respond(json.dumps({
             "status": "rate_limit",
             "message": "All configured Gemini cleanup models are rate limited.",
+            "cooldownSeconds": MAX_DELAY,
         }).encode())
         return None
     response, active_model = generated
@@ -257,11 +264,13 @@ async def generate_multivoice_content(msg, api_key, backup_api_key, model, model
                 request=request_content,
                 min_delay=MIN_DELAY,
                 max_delay=MAX_DELAY,
+                max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
             )
             if generated is None:
                 await msg.respond(json.dumps({
                     "status": "rate_limit",
                     "message": "The Gemini quality-repair model is rate limited.",
+                    "cooldownSeconds": MAX_DELAY,
                 }).encode())
                 return None
             response, active_model = generated

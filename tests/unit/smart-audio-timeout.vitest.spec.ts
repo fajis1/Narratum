@@ -3,9 +3,9 @@ import { resolveSmartAudioNatsTimeoutMs } from '../../src/lib/server/audiobooks/
 
 describe('Smart Audio NATS timeout', () => {
   test('allows longer scholarly cleanup by default', () => {
-    expect(resolveSmartAudioNatsTimeoutMs('scholar', undefined)).toBe(300_000);
-    expect(resolveSmartAudioNatsTimeoutMs('bibliography-catcher', undefined)).toBe(300_000);
-    expect(resolveSmartAudioNatsTimeoutMs('multi-voice', undefined)).toBe(300_000);
+    expect(resolveSmartAudioNatsTimeoutMs('scholar', undefined)).toBe(600_000);
+    expect(resolveSmartAudioNatsTimeoutMs('bibliography-catcher', undefined)).toBe(600_000);
+    expect(resolveSmartAudioNatsTimeoutMs('multi-voice', undefined)).toBe(600_000);
   });
 
   test('keeps standard cleanup at two minutes by default', () => {
@@ -16,6 +16,6 @@ describe('Smart Audio NATS timeout', () => {
     expect(resolveSmartAudioNatsTimeoutMs('scholar', '450000')).toBe(450_000);
     expect(resolveSmartAudioNatsTimeoutMs('scholar', '1000')).toBe(30_000);
     expect(resolveSmartAudioNatsTimeoutMs('scholar', '9999999')).toBe(900_000);
-    expect(resolveSmartAudioNatsTimeoutMs('scholar', 'invalid')).toBe(300_000);
+    expect(resolveSmartAudioNatsTimeoutMs('scholar', 'invalid')).toBe(600_000);
   });
 });

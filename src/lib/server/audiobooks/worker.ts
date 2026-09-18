@@ -22,6 +22,7 @@ import { encodeChapterFileName } from '@/lib/server/audiobooks/chapters';
 import { createOrReuseCurrentPdfParseOperation } from '@/lib/server/pdf-parse/operation';
 import { extractPdfToc, computeTocBoundaries } from '@/lib/server/pdf-parse/toc';
 import type { ParsedPdfDocument } from '@/types/parsed-pdf';
+import type { TaskContext } from '@/lib/server/tasks/types';
 import { serverLogger, errorToLog } from '@/lib/server/logger';
 import { INTERNAL_WORKER_SECRET } from '@/lib/server/internal-secret';
 import {
@@ -32,6 +33,8 @@ import {
   AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
   GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
 } from '@/lib/shared/audiobook-job-status';
+import { isAudiobookJobEligibleToRun } from './queue-eligibility';
+export { isAudiobookJobEligibleToRun } from './queue-eligibility';
 import {
   resolveCleanupAiModel,
   resolveCleanupAiModels,
@@ -471,7 +474,19 @@ export async function resumeWaitingAudioDramaJobs(): Promise<number> {
   return resumedCount;
 }
 
-export async function processAudiobookQueue() {
+const MAX_CONCURRENT_JOBS = 3;
+const activeRunningJobs = new Map<string, Promise<void>>();
+let isQueueLoopRunning = false;
+let wakeQueueResolve: (() => void) | null = null;
+
+export function wakeAudiobookQueue() {
+  if (wakeQueueResolve) {
+    wakeQueueResolve();
+    wakeQueueResolve = null;
+  }
+}
+
+export async function processAudiobookQueue(context?: TaskContext) {
   if (!globalWorkerState.__worker_booted) {
     globalWorkerState.__worker_booted = true;
     serverLogger.info({ event: 'audiobook.queue.boot' }, 'Worker booted. Resetting any orphaned running jobs to queued.');
@@ -484,10 +499,16 @@ export async function processAudiobookQueue() {
     await resumeWaitingAudioDramaJobs();
   } else {
     // Reset any jobs that have been "running" for over 15 minutes without an update (stale crash recovery)
+    // Only reset jobs that are not actively running in this process
     const staleThreshold = Date.now() - 15 * 60 * 1000;
-    await db.update(audiobookJobs)
-      .set({ status: 'queued', progress: 0 })
+    const runningInDb = await db.select({ id: audiobookJobs.id }).from(audiobookJobs)
       .where(and(eq(audiobookJobs.status, 'running'), lt(audiobookJobs.updatedAt, staleThreshold)));
+    const trulyStale = runningInDb.filter((r: { id: string }) => !activeRunningJobs.has(r.id)).map((r: { id: string }) => r.id);
+    if (trulyStale.length > 0) {
+      await db.update(audiobookJobs)
+        .set({ status: 'queued', progress: 0 })
+        .where(inArray(audiobookJobs.id, trulyStale));
+    }
   }
 
   const resources = await checkSystemResources();
@@ -496,43 +517,73 @@ export async function processAudiobookQueue() {
     return;
   }
 
-  const MAX_CONCURRENT_JOBS = 3;
+  if (isQueueLoopRunning) {
+    wakeAudiobookQueue();
+    return;
+  }
 
+  isQueueLoopRunning = true;
   const RATE_LIMIT_BACKOFF_MS = 24 * 60 * 60 * 1000; // 24 hours
   const backoffThreshold = Date.now() - RATE_LIMIT_BACKOFF_MS;
 
-  const queuedRows = await db.select()
-    .from(audiobookJobs)
-    .where(
-      and(
-        inArray(audiobookJobs.status, ['queued', 'waiting_for_pdf']),
-        or(
-          sql`${audiobookJobs.error} IS NULL`,
-          sql`${audiobookJobs.error} != ${GEMINI_RATE_LIMIT_PAUSE_MESSAGE}`,
-          lt(audiobookJobs.updatedAt, backoffThreshold)
-        )
-      )
-    )
-    .orderBy(asc(audiobookJobs.createdAt))
-    .limit(100);
-  const rows = queuedRows.filter((row: typeof queuedRows[0]) => {
-    try {
-      const settings = typeof row.settingsJson === 'string' ? JSON.parse(row.settingsJson) : row.settingsJson;
-      return settings?.jobType !== 'pronunciation-repair' || !(settings.nextAttemptAt > Date.now());
-    } catch { return true; }
-  }).slice(0, MAX_CONCURRENT_JOBS);
-  
-  if (rows.length === 0) return;
-  
-  const jobIds = rows.map((r: typeof rows[0]) => r.id);
-  const updateResult = await db.update(audiobookJobs)
-    .set({ status: 'running', startedAt: Date.now(), error: null })
-    .where(and(inArray(audiobookJobs.id, jobIds), inArray(audiobookJobs.status, ['queued', 'waiting_for_pdf'])))
-    .returning();
-    
-  if (updateResult.length === 0) return;
-  
-  await Promise.allSettled(updateResult.map((job: typeof updateResult[0]) => processSingleAudiobookJob(job)));
+  try {
+    while (!context?.signal?.aborted && (!context?.deadlineAt || Date.now() < context.deadlineAt)) {
+      const availableSlots = Math.max(0, MAX_CONCURRENT_JOBS - activeRunningJobs.size);
+      if (availableSlots > 0) {
+        const queuedRows = await db.select()
+          .from(audiobookJobs)
+          .where(
+            inArray(audiobookJobs.status, ['queued', 'waiting_for_pdf']),
+          )
+          .orderBy(asc(audiobookJobs.createdAt))
+          .limit(100);
+
+        const now = Date.now();
+        const eligibleRows = queuedRows.filter((row: typeof queuedRows[0]) =>
+          isAudiobookJobEligibleToRun(row, activeRunningJobs, now, backoffThreshold)
+        );
+
+        const toClaim = eligibleRows.slice(0, availableSlots);
+        if (toClaim.length > 0) {
+          const jobIds = toClaim.map((r: { id: string }) => r.id);
+          const updateResult = await db.update(audiobookJobs)
+            .set({ status: 'running', startedAt: Date.now(), error: null })
+            .where(and(inArray(audiobookJobs.id, jobIds), inArray(audiobookJobs.status, ['queued', 'waiting_for_pdf'])))
+            .returning();
+
+          for (const job of updateResult) {
+            const jobPromise = (async () => {
+              try {
+                await processSingleAudiobookJob(job);
+              } catch (err) {
+                serverLogger.error({ event: 'audiobook.queue.job_unhandled_error', jobId: job.id, error: errorToLog(err) }, 'Unhandled error in processSingleAudiobookJob');
+              } finally {
+                activeRunningJobs.delete(job.id);
+                wakeAudiobookQueue();
+              }
+            })();
+            activeRunningJobs.set(job.id, jobPromise);
+          }
+        }
+      }
+
+      if (activeRunningJobs.size === 0) {
+        break;
+      }
+
+      const wakePromise = new Promise<void>((resolve) => {
+        wakeQueueResolve = resolve;
+      });
+
+      await Promise.race([
+        Promise.race(Array.from(activeRunningJobs.values())),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+        wakePromise,
+      ]);
+    }
+  } finally {
+    isQueueLoopRunning = false;
+  }
 }
 
 async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect) {
@@ -961,11 +1012,14 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (/\bHTTP (429|503)\b/.test(message)) {
+          const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
+          jobSettingsParsed.nextAttemptAt = Date.now() + 300 * 1000;
           await updateClaimedAudiobookJob(job.id, 'running', {
             status: 'queued',
-            createdAt: Date.now(),
+            createdAt: job.createdAt,
             updatedAt: Date.now(),
             error: GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
+            settingsJson: JSON.stringify(jobSettingsParsed),
           });
           serverLogger.warn({
             event: 'audiobook.queue.scholar_lexicon.rate_limit',
@@ -1234,13 +1288,19 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
           let workerResult = applyAuthoritativeBookTags(JSON.parse(sc.decode(msg.data))) as Record<string, unknown>;
 
           if (workerResult.status === "rate_limit") {
-            serverLogger.warn({ event: 'audiobook.queue.smart_audio.rate_limit', bookId }, 'Python worker reported rate limit. Moving job to back of queue.');
+            const cooldownSeconds = typeof workerResult.cooldownSeconds === 'number' && workerResult.cooldownSeconds > 0
+              ? workerResult.cooldownSeconds
+              : 300;
+            serverLogger.warn({ event: 'audiobook.queue.smart_audio.rate_limit', bookId, chapter: chapter.index, cooldownSeconds }, `Python worker reported rate limit. Yielding job with ${cooldownSeconds}s cooldown.`);
             if (nc) await nc.close();
+            const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
+            jobSettingsParsed.nextAttemptAt = Date.now() + cooldownSeconds * 1000;
             await updateClaimedAudiobookJob(job.id, 'running', {
               status: 'queued',
-              createdAt: Date.now(),
+              createdAt: job.createdAt,
               updatedAt: Date.now(),
               error: GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
+              settingsJson: JSON.stringify(jobSettingsParsed),
             });
             return;
           }
@@ -1508,6 +1568,31 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
             }, 'Skipping one unrecoverable chapter and continuing audiobook generation.');
             await markChapterForReview(chapter.index, chapter.text.length);
             continue;
+          }
+
+          const isNatsTimeout = e instanceof Error && (
+            e.message.includes('TIMEOUT') ||
+            ('code' in e && (e as { code: string }).code === 'TIMEOUT')
+          );
+
+          if (isNatsTimeout) {
+            serverLogger.warn({
+              event: 'audiobook.queue.smart_audio.nats_timeout_yield',
+              jobId: job.id,
+              bookId,
+              chapter: chapter.index,
+            }, 'Smart Audio NATS request timed out. Yielding job to queue with 5-minute cooldown instead of aborting.');
+            if (nc) await nc.close();
+            const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
+            jobSettingsParsed.nextAttemptAt = Date.now() + 300 * 1000;
+            await updateClaimedAudiobookJob(job.id, 'running', {
+              status: 'queued',
+              createdAt: job.createdAt,
+              updatedAt: Date.now(),
+              error: GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
+              settingsJson: JSON.stringify(jobSettingsParsed),
+            });
+            return;
           }
 
           serverLogger.error({ event: 'audiobook.queue.smart_audio.failed', error: e }, 'Smart audio processing failed. Aborting generation.');

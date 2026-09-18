@@ -77,6 +77,7 @@ async def call_gemini_with_capacity_fallback(
     min_delay: int,
     max_delay: int,
     max_top_delays: int = 3,
+    max_in_flight_delay: int | None = None,
     sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> tuple[T, str] | None:
     """Try each model across configured keys with doubling backoff, equilibrium recovery, and fallback models."""
@@ -101,9 +102,10 @@ async def call_gemini_with_capacity_fallback(
                 },
             )
 
-            lock = api_state["lock"]
+            lock = api_state.setdefault("lock", asyncio.Lock())
             if not isinstance(lock, asyncio.Lock):
-                raise TypeError("Gemini limiter lock is invalid")
+                lock = asyncio.Lock()
+                api_state["lock"] = lock
 
             async with lock:
                 # Equilibrium pacing: only on initial request entry, ensure at least current_delay has elapsed
@@ -115,6 +117,9 @@ async def call_gemini_with_capacity_fallback(
                     elapsed = now - last_time if last_time > 0 else float(current_delay)
                     needed_wait = float(current_delay) - elapsed
                     if needed_wait > 0:
+                        if max_in_flight_delay is not None and needed_wait > max_in_flight_delay:
+                            print(f"  -> [⚠️] Model {model} equilibrium wait ({needed_wait:.1f}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
+                            break
                         print(f"  -> [⏳] Rate Limiter Pacing: Pausing for {needed_wait:.1f}s equilibrium delay ({model})...")
                         await sleep_fn(needed_wait)
 
@@ -145,6 +150,10 @@ async def call_gemini_with_capacity_fallback(
                     api_state["resume_at"] = time.time() + next_delay
 
                     print(f"  -> [🛑] API Limit Hit ({model})! Spiking cooldown to {next_delay} seconds.")
+
+                    if max_in_flight_delay is not None and next_delay > max_in_flight_delay:
+                        print(f"  -> [⚠️] Model {model} cooldown ({next_delay}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
+                        break
 
                     if next_delay >= max_delay:
                         consecutive = int(api_state.get("consecutive_max_delays", 0) or 0) + 1

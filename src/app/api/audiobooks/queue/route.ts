@@ -7,6 +7,7 @@ import { requireAuthContext } from '@/lib/server/auth/auth';
 import { serverLogger, errorToLog } from '@/lib/server/logger';
 import { errorResponse } from '@/lib/server/errors/next-response';
 import { runTaskNow } from '@/lib/server/tasks/engine';
+import { wakeAudiobookQueue } from '@/lib/server/audiobooks/worker';
 import {
   checkMonthlyAudiobookQuota,
   consumeAudiobookCredit,
@@ -286,6 +287,7 @@ export async function POST(req: NextRequest) {
     }
 
     runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
+    wakeAudiobookQueue();
     return NextResponse.json({ jobId });
   } catch (error) {
     serverLogger.error({ event: 'audiobook.queue.post.error', error: errorToLog(error) }, 'Failed to queue audiobook');
@@ -415,6 +417,7 @@ export async function PUT(req: NextRequest) {
       .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId)));
       
     runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
+    wakeAudiobookQueue();
     return NextResponse.json({ success: true });
   } catch (error) {
     serverLogger.error({ event: 'audiobook.queue.put.error', error: errorToLog(error) }, 'Failed to requeue audiobook job');
@@ -440,10 +443,11 @@ export async function PATCH(req: NextRequest) {
         .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId), inArray(audiobookJobs.status, ['queued', 'running', 'waiting_for_pdf'])));
     } else if (action === 'resume') {
       await db.update(audiobookJobs)
-        .set({ status: 'queued', updatedAt: Date.now() })
+        .set({ status: 'queued', error: null, updatedAt: Date.now() })
         .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId), eq(audiobookJobs.status, 'paused')));
       
       runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
+      wakeAudiobookQueue();
     }
 
     return NextResponse.json({ success: true });
