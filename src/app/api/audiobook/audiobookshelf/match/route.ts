@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as {
       bookId?: string;
+      userId?: string;
       libraryId?: string;
       title?: string;
       author?: string;
@@ -32,6 +33,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required parameter: bookId' }, { status: 400 });
     }
 
+    const isAdmin = Boolean((ctxOrRes.user as unknown as { isAdmin?: boolean | null })?.isAdmin);
+    let ownerUserId = ctxOrRes.userId;
+
+    if (isAdmin) {
+      if (body.userId && body.userId.trim()) {
+        ownerUserId = body.userId.trim();
+      } else {
+        const bookRows = await db
+          .select({ userId: audiobooks.userId })
+          .from(audiobooks)
+          .where(eq(audiobooks.id, bookId))
+          .limit(1);
+        if (bookRows.length > 0 && bookRows[0].userId) {
+          ownerUserId = bookRows[0].userId;
+        } else {
+          const docRows = await db
+            .select({ userId: documents.userId })
+            .from(documents)
+            .where(eq(documents.id, bookId))
+            .limit(1);
+          if (docRows.length > 0 && docRows[0].userId) {
+            ownerUserId = docRows[0].userId;
+          }
+        }
+      }
+    }
+
     // 1. Resolve title and author if not supplied
     let title = (body.title || '').trim();
     let author = (body.author || '').trim();
@@ -40,7 +68,7 @@ export async function POST(req: NextRequest) {
       const bookRows = await db
         .select({ title: audiobooks.title, author: audiobooks.author })
         .from(audiobooks)
-        .where(and(eq(audiobooks.id, bookId), eq(audiobooks.userId, ctxOrRes.userId)));
+        .where(and(eq(audiobooks.id, bookId), eq(audiobooks.userId, ownerUserId)));
 
       if (bookRows.length > 0) {
         title = bookRows[0].title || '';
@@ -49,7 +77,7 @@ export async function POST(req: NextRequest) {
         const docRows = await db
           .select({ name: documents.name })
           .from(documents)
-          .where(and(eq(documents.id, bookId), eq(documents.userId, ctxOrRes.userId)));
+          .where(and(eq(documents.id, bookId), eq(documents.userId, ownerUserId)));
         if (docRows.length > 0) {
           title = docRows[0].name.replace(/\.[a-zA-Z0-9]+$/, '');
         }
@@ -118,7 +146,7 @@ export async function POST(req: NextRequest) {
       title,
       author || undefined,
       {
-        userId: ctxOrRes.userId,
+        userId: ownerUserId,
         model: body.model?.trim() || 'gemini-3.1-flash-lite',
       },
     );

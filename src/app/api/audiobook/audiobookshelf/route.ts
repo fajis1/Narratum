@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 export const maxDuration = 300; // 5 minute max duration for large audiobook combine and upload
+import { eq } from 'drizzle-orm';
+import { db } from '@/db';
+import { audiobooks, documents } from '@/db/schema';
 import { requireAuthContext } from '@/lib/server/auth/auth';
+import { recordSupportAudit } from '@/lib/server/admin/support';
 import {
   fetchAudiobookshelfLibraries,
   resolveAudiobookshelfConfig,
@@ -56,6 +60,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as {
       bookId?: string;
+      userId?: string;
       title?: string;
       author?: string;
       series?: string;
@@ -78,11 +83,38 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required parameter: title' }, { status: 400 });
     }
 
+    const isAdmin = Boolean((ctxOrRes.user as unknown as { isAdmin?: boolean | null })?.isAdmin);
+    let ownerUserId = ctxOrRes.userId;
+
+    if (isAdmin) {
+      if (body.userId && body.userId.trim()) {
+        ownerUserId = body.userId.trim();
+      } else {
+        const bookRows = await db
+          .select({ userId: audiobooks.userId })
+          .from(audiobooks)
+          .where(eq(audiobooks.id, bookId))
+          .limit(1);
+        if (bookRows.length > 0 && bookRows[0].userId) {
+          ownerUserId = bookRows[0].userId;
+        } else {
+          const docRows = await db
+            .select({ userId: documents.userId })
+            .from(documents)
+            .where(eq(documents.id, bookId))
+            .limit(1);
+          if (docRows.length > 0 && docRows[0].userId) {
+            ownerUserId = docRows[0].userId;
+          }
+        }
+      }
+    }
+
     const namespace = getOpenReaderTestNamespace(req.headers);
 
     const result = await uploadBookToAudiobookshelf({
       bookId,
-      userId: ctxOrRes.userId,
+      userId: ownerUserId,
       title,
       author: body.author?.trim(),
       series: body.series?.trim(),
@@ -95,6 +127,21 @@ export async function POST(req: NextRequest) {
       model: body.model?.trim(),
       namespace,
     });
+
+    if (isAdmin && (ownerUserId !== ctxOrRes.userId || body.userId)) {
+      await recordSupportAudit({
+        adminUserId: ctxOrRes.userId,
+        targetUserId: ownerUserId,
+        action: 'audiobookshelf_upload',
+        resourceId: bookId,
+        note: `Exported audiobook "${title}" to Audiobookshelf${result.unified ? ' (merged into existing card)' : ''}`,
+      }).catch((auditError) => {
+        serverLogger.warn(
+          { event: 'support.audit.audiobookshelf_failed', error: errorToLog(auditError) },
+          'Failed to record support audit for Audiobookshelf export',
+        );
+      });
+    }
 
     const successMessage = result.unified
       ? `Successfully unified "${result.title}" with existing Audiobookshelf book!`

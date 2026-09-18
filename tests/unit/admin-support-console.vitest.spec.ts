@@ -137,4 +137,29 @@ describe('admin support console', () => {
     expect(consoleSource).toContain('reversalShortfall');
     expect(consoleSource).toContain('Pause requested. The worker will stop at its next safe checkpoint.');
   });
+
+  test('integrates Audiobookshelf exports into the admin support console with audit tracking', () => {
+    const consoleSource = source('src/components/admin/support/SupportConsole.tsx');
+    const uploadRoute = source('src/app/api/audiobook/audiobookshelf/route.ts');
+    const matchRoute = source('src/app/api/audiobook/audiobookshelf/match/route.ts');
+    const inferRoute = source('src/app/api/audiobook/metadata/infer-title/route.ts');
+    const modal = source('src/components/audiobooks/AudiobookshelfModal.tsx');
+
+    expect(consoleSource).toContain("import { AudiobookshelfModal } from '@/components/audiobooks/AudiobookshelfModal'");
+    expect(consoleSource).toContain('Push to Audiobookshelf');
+    expect(consoleSource).toContain('audiobookshelfJob.documentId');
+    expect(consoleSource).toContain('audiobookshelfJob.userId');
+    expect(consoleSource).toContain('audiobookshelfTarget.bookId');
+    expect(consoleSource).toContain('audiobookshelfTarget.userId');
+
+    expect(modal).toContain('userId?: string');
+    expect(modal).toContain('userId: userId || undefined');
+
+    expect(uploadRoute).toContain('recordSupportAudit');
+    expect(uploadRoute).toContain("action: 'audiobookshelf_upload'");
+    expect(uploadRoute).toContain('ownerUserId');
+
+    expect(matchRoute).toContain('ownerUserId');
+    expect(inferRoute).toContain('ownerUserId');
+  });
 });

@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
 import toast from 'react-hot-toast';
 import { Button, Input, SidebarNavItem, cn } from '@/components/ui';
+import { AudiobookshelfModal } from '@/components/audiobooks/AudiobookshelfModal';
 import type {
   AdminSupportView,
   SupportAuditResponse,
@@ -419,6 +420,12 @@ function UserDetailPanel({ userId, onChanged }: { userId: string | null; onChang
   const [credits, setCredits] = useState(1);
   const [note, setNote] = useState('');
   const [granting, setGranting] = useState(false);
+  const [audiobookshelfTarget, setAudiobookshelfTarget] = useState<{
+    bookId: string;
+    userId: string;
+    title: string;
+    documentType?: string;
+  } | null>(null);
   const grantAttemptRef = useRef<{ signature: string; key: string } | null>(null);
 
   useEffect(() => {
@@ -575,7 +582,16 @@ function UserDetailPanel({ userId, onChanged }: { userId: string | null; onChang
           ) : (
             <div className="space-y-2">
               {data.recentJobs.map((job) => (
-                <JobCard key={job.id} job={job} onChanged={() => mutate()} />
+                <JobCard
+                  key={job.id}
+                  job={job}
+                  onChanged={() => mutate()}
+                  onPushToAudiobookshelf={() => setAudiobookshelfTarget({
+                    bookId: job.documentId,
+                    userId: job.userId,
+                    title: job.documentTitle,
+                  })}
+                />
               ))}
             </div>
           )}
@@ -589,18 +605,41 @@ function UserDetailPanel({ userId, onChanged }: { userId: string | null; onChang
             ) : (
               <div className="overflow-hidden rounded-xl border border-line">
                 <div className="divide-y divide-line">
-                  {data.recentDocuments.map((document) => (
-                    <div key={document.id} className="flex items-center justify-between gap-4 bg-surface-sunken px-3 py-2.5">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-foreground">{document.name}</p>
-                        <p className="text-xs uppercase text-soft">{document.type}</p>
+                  {data.recentDocuments.map((document) => {
+                    const completedJob = data.recentJobs.find(
+                      (j) => j.documentId === document.id && j.status === 'completed',
+                    );
+                    return (
+                      <div key={document.id} className="flex items-center justify-between gap-4 bg-surface-sunken px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-foreground">{document.name}</p>
+                          <p className="text-xs uppercase text-soft">{document.type}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {completedJob && (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              className="text-xs h-7 px-2 border border-line bg-surface hover:bg-accent-wash hover:text-accent hover:border-accent-line"
+                              onClick={() => setAudiobookshelfTarget({
+                                bookId: document.id,
+                                userId: user.id,
+                                title: completedJob.documentTitle || document.name.replace(/\.[^/.]+$/, ''),
+                                documentType: document.type,
+                              })}
+                              title="Push completed audiobook to Audiobookshelf"
+                            >
+                              📚 Audiobookshelf
+                            </Button>
+                          )}
+                          <div className="text-right text-xs text-soft">
+                            <p>{formatBytes(document.size)}</p>
+                            <p>{formatRelative(document.lastModified)}</p>
+                          </div>
+                        </div>
                       </div>
-                      <div className="shrink-0 text-right text-xs text-soft">
-                        <p>{formatBytes(document.size)}</p>
-                        <p>{formatRelative(document.lastModified)}</p>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -630,11 +669,30 @@ function UserDetailPanel({ userId, onChanged }: { userId: string | null; onChang
           </section>
         </div>
       </div>
+
+      {audiobookshelfTarget && (
+        <AudiobookshelfModal
+          open={true}
+          onClose={() => setAudiobookshelfTarget(null)}
+          bookId={audiobookshelfTarget.bookId}
+          userId={audiobookshelfTarget.userId}
+          initialTitle={audiobookshelfTarget.title}
+          documentType={audiobookshelfTarget.documentType}
+        />
+      )}
     </section>
   );
 }
 
-function JobCard({ job, onChanged }: { job: SupportJob; onChanged: () => void }) {
+function JobCard({
+  job,
+  onChanged,
+  onPushToAudiobookshelf,
+}: {
+  job: SupportJob;
+  onChanged: () => void;
+  onPushToAudiobookshelf?: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const action = job.status === 'error'
     ? 'retry'
@@ -681,11 +739,18 @@ function JobCard({ job, onChanged }: { job: SupportJob; onChanged: () => void })
           </p>
           {job.error ? <p className="mt-2 break-words text-xs text-danger">{job.error}</p> : null}
         </div>
-        {action ? (
-          <Button size="sm" onClick={update} disabled={busy} variant={action === 'retry' ? 'primary' : 'secondary'}>
-            {busy ? 'Working…' : humanizeAction(action)}
-          </Button>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {job.status === 'completed' && onPushToAudiobookshelf && (
+            <Button size="sm" variant="secondary" onClick={onPushToAudiobookshelf}>
+              📚 Push to Audiobookshelf
+            </Button>
+          )}
+          {action ? (
+            <Button size="sm" onClick={update} disabled={busy} variant={action === 'retry' ? 'primary' : 'secondary'}>
+              {busy ? 'Working…' : humanizeAction(action)}
+            </Button>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -696,6 +761,7 @@ function JobsPanel() {
   const [searchInput, setSearchInput] = useState('');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
+  const [audiobookshelfJob, setAudiobookshelfJob] = useState<SupportJob | null>(null);
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       setQuery(searchInput.trim());
@@ -758,7 +824,18 @@ function JobsPanel() {
                 <p>{job.voice || 'Default voice'}{job.model ? ` · ${job.model}` : ''}{job.monthlyQuotaCharge ? ' · Counts toward allowance' : ' · Included repair/retry'}</p>
                 {job.error ? <p className="mt-2 max-w-4xl break-words text-danger">{job.error}</p> : null}
               </div>
-              <JobCardActions job={job} onChanged={() => mutate()} />
+              <div className="flex items-center gap-2">
+                {job.status === 'completed' && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setAudiobookshelfJob(job)}
+                  >
+                    📚 Push to Audiobookshelf
+                  </Button>
+                )}
+                <JobCardActions job={job} onChanged={() => mutate()} />
+              </div>
             </div>
           </div>
         ))}
@@ -770,6 +847,15 @@ function JobsPanel() {
           <Button size="sm" disabled={page >= data.totalPages} onClick={() => setPage((value) => value + 1)}>Next</Button>
         </div>
       ) : null}
+      {audiobookshelfJob && (
+        <AudiobookshelfModal
+          open={true}
+          onClose={() => setAudiobookshelfJob(null)}
+          bookId={audiobookshelfJob.documentId}
+          userId={audiobookshelfJob.userId}
+          initialTitle={audiobookshelfJob.documentTitle}
+        />
+      )}
     </div>
   );
 }

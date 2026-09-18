@@ -8,6 +8,7 @@ export interface AudiobookshelfModalProps {
   open: boolean;
   onClose: () => void;
   bookId: string;
+  userId?: string;
   initialTitle?: string;
   initialAuthor?: string;
   documentType?: string;
@@ -63,6 +64,7 @@ export function AudiobookshelfModal({
   open,
   onClose,
   bookId,
+  userId,
   initialTitle = '',
   initialAuthor = '',
   documentType = 'pdf',
@@ -105,6 +107,7 @@ export function AudiobookshelfModal({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             bookId,
+            userId: userId || undefined,
             libraryId: targetLibId || libraryId || undefined,
             title: targetTitle.trim(),
             author: targetAuthor?.trim() || undefined,
@@ -124,7 +127,7 @@ export function AudiobookshelfModal({
         setIsCheckingMatch(false);
       }
     },
-    [bookId, libraryId, aiModel],
+    [bookId, userId, libraryId, aiModel],
   );
 
   // Load ABS config when modal opens
@@ -196,7 +199,9 @@ export function AudiobookshelfModal({
       setStatusMessage('Analyzing document with Gemini to infer canonical title and metadata...');
 
       try {
-        const res = await fetch(`/api/audiobook/metadata/infer-title?bookId=${encodeURIComponent(bookId)}`);
+        const queryParams = new URLSearchParams({ bookId });
+        if (userId) queryParams.set('userId', userId);
+        const res = await fetch(`/api/audiobook/metadata/infer-title?${queryParams.toString()}`);
         const data = await res.json();
         if (res.ok && data.success && data.metadata) {
           const meta = data.metadata;
@@ -224,7 +229,7 @@ export function AudiobookshelfModal({
         setIsInferring(false);
       }
     },
-    [bookId, title, author, libraryId, runCheckExistingBook],
+    [bookId, userId, title, author, libraryId, runCheckExistingBook],
   );
 
   const handleUpload = async () => {
@@ -245,6 +250,7 @@ export function AudiobookshelfModal({
         },
         body: JSON.stringify({
           bookId,
+          userId: userId || undefined,
           title: title.trim(),
           author: author.trim() || undefined,
           series: series.trim() || undefined,
