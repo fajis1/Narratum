@@ -204,6 +204,34 @@ export async function triggerAudiobookshelfScan(
 }
 
 /**
+ * Triggers an instant targeted re-scan on a specific book in Audiobookshelf.
+ * Completes in milliseconds rather than waiting for an entire library crawl.
+ */
+export async function triggerAudiobookshelfItemScan(
+  url: string,
+  token: string,
+  itemId: string,
+): Promise<boolean> {
+  try {
+    const normalizedUrl = url.trim().replace(/\/+$/, '');
+    const res = await fetch(`${normalizedUrl}/api/items/${encodeURIComponent(itemId)}/scan`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    return res.ok;
+  } catch (err) {
+    serverLogger.warn({
+      event: 'audiobookshelf.item_scan.trigger_failed',
+      error: errorToLog(err),
+      itemId,
+    }, 'Failed to trigger Audiobookshelf targeted item scan');
+    return false;
+  }
+}
+
+/**
  * Strips scanner noise, release notes, file extensions, and extra punctuation from titles
  * to generate high-yield search queries for Audiobookshelf.
  */
@@ -992,12 +1020,14 @@ export async function uploadBookToAudiobookshelf(
     throw new Error(`Audiobookshelf upload failed (${uploadResponse.status}): ${errText || uploadResponse.statusText}`);
   }
 
-  // 7. Trigger library scan in background
-  const scanTriggered = await triggerAudiobookshelfScan(config.url, config.token, targetLibraryId);
-
-  // 8. Tag unified book item if match was unified
+  // 7. Trigger targeted item scan or library scan
+  let scanTriggered = false;
   if (matchedItemId) {
+    scanTriggered = await triggerAudiobookshelfItemScan(config.url, config.token, matchedItemId);
+    // 8. Tag unified book item if match was unified
     await tagAudiobookshelfItem(config.url, config.token, matchedItemId);
+  } else {
+    scanTriggered = await triggerAudiobookshelfScan(config.url, config.token, targetLibraryId);
   }
 
   serverLogger.info(

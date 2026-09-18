@@ -40,10 +40,12 @@ vi.mock('@/lib/server/audiobooks/epub-generator', () => ({
 
 describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
   let uploadedFormDataEntries: Array<[string, any]> = [];
+  let fetchedUrls: string[] = [];
 
   beforeEach(() => {
     vi.clearAllMocks();
     uploadedFormDataEntries = [];
+    fetchedUrls = [];
 
     // Mock Audiobookshelf config
     process.env.AUDIOBOOKSHELF_URL = 'http://abs.test:13378';
@@ -95,6 +97,7 @@ describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
     // Mock fetch for /api/upload
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = String(url);
+      fetchedUrls.push(urlStr);
       if (urlStr.endsWith('/api/upload')) {
         const body = init?.body as FormData;
         if (body && typeof body.forEach === 'function') {
@@ -119,10 +122,11 @@ describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
     });
   });
 
-  test('Guardrail: When matched candidate has an existing eBook (hasEbook: true), companion upload is omitted', async () => {
+  test('Guardrail: When matched candidate has an existing eBook (hasEbook: true), companion upload is omitted and triggers targeted item scan', async () => {
     // Audiobookshelf search returns an existing book that already has an eBook
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = String(url);
+      fetchedUrls.push(urlStr);
       if (urlStr.includes('/api/libraries/lib-1/search')) {
         return new Response(
           JSON.stringify({
@@ -185,12 +189,16 @@ describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
     // Returned files list must not list companion
     expect(result.files).toContain('The Way of Kings.m4b');
     expect(result.files.some((f) => f.endsWith('.epub') || f.endsWith('.pdf'))).toBe(false);
+
+    // Targeted item-level scan must be triggered on the matched item
+    expect(fetchedUrls).toContain('http://abs.test:13378/api/items/abs-item-123/scan');
   });
 
-  test('Publication-Grade EPUB: When no eBook exists in Audiobookshelf, compiles and attaches reflowable .epub companion', async () => {
+  test('Publication-Grade EPUB: When no eBook exists in Audiobookshelf, compiles and attaches reflowable .epub companion and triggers library scan', async () => {
     // Audiobookshelf search returns empty or candidate without eBook
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
       const urlStr = String(url);
+      fetchedUrls.push(urlStr);
       if (urlStr.includes('/api/libraries/lib-1/search')) {
         return new Response(JSON.stringify({ book: [] }), { status: 200 });
       }
@@ -232,6 +240,9 @@ describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
     expect(companionBlob.type).toBe('application/epub+zip');
 
     expect(result.files).toContain('The Way of Kings.epub');
+
+    // Full library scan must be triggered for new book
+    expect(fetchedUrls).toContain('http://abs.test:13378/api/libraries/lib-1/scan');
   });
 
   test('Original EPUB: When original document is already .epub, uploads directly without compilation', async () => {

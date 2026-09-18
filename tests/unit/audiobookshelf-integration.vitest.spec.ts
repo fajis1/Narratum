@@ -4,6 +4,7 @@ import {
   resolveAudiobookshelfConfig,
   fetchAudiobookshelfLibraries,
   triggerAudiobookshelfScan,
+  triggerAudiobookshelfItemScan,
   sanitizeSearchTitle,
   buildAudiobookshelfSearchQueries,
   searchAudiobookshelfCandidates,
@@ -134,6 +135,31 @@ describe('Audiobookshelf Integration', () => {
           headers: { Authorization: 'Bearer token-123' },
         }),
       );
+    });
+  });
+
+  describe('triggerAudiobookshelfItemScan', () => {
+    test('posts to /api/items/:itemId/scan for targeted instant re-scan', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true }), { status: 200 }),
+      );
+
+      const success = await triggerAudiobookshelfItemScan('http://192.168.90.244:13378', 'token-123', 'item-xyz');
+      expect(success).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'http://192.168.90.244:13378/api/items/item-xyz/scan',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-123' },
+        }),
+      );
+    });
+
+    test('returns false when targeted item scan request fails', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('Network offline'));
+
+      const success = await triggerAudiobookshelfItemScan('http://192.168.90.244:13378', 'token-123', 'item-xyz');
+      expect(success).toBe(false);
     });
   });
 
