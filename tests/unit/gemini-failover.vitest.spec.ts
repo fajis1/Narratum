@@ -149,9 +149,10 @@ describe('Gemini key failover', () => {
     );
   });
 
-  test('falls back to the next model after sustained HTTP 503 overload', async () => {
+  test('falls back to the next model after sustained HTTP 503 overload (fast failover within 2 attempts per key)', async () => {
     const request = vi.fn();
-    for (let i = 0; i < 16; i += 1) {
+    // 2 attempts on primary key, 2 attempts on backup key, then 5th call on fallback model succeeds
+    for (let i = 0; i < 4; i += 1) {
       request.mockResolvedValueOnce(new Response('model is overloaded', { status: 503 }));
     }
     request.mockResolvedValueOnce(new Response('ok', { status: 200 }));
@@ -172,11 +173,49 @@ describe('Gemini key failover', () => {
     expect(result.usedModel).toBe('gemini-3.6-flash');
     expect(result.usedModelFallback).toBe(true);
     expect(request).toHaveBeenNthCalledWith(1, 'primary-placeholder', 'gemini-3.7-flash');
-    expect(request).toHaveBeenNthCalledWith(9, 'backup-placeholder', 'gemini-3.7-flash');
-    expect(request).toHaveBeenNthCalledWith(17, 'primary-placeholder', 'gemini-3.6-flash');
+    expect(request).toHaveBeenNthCalledWith(2, 'primary-placeholder', 'gemini-3.7-flash');
+    expect(request).toHaveBeenNthCalledWith(3, 'backup-placeholder', 'gemini-3.7-flash');
+    expect(request).toHaveBeenNthCalledWith(4, 'backup-placeholder', 'gemini-3.7-flash');
+    expect(request).toHaveBeenNthCalledWith(5, 'primary-placeholder', 'gemini-3.6-flash');
     expect(onStatusUpdate).toHaveBeenCalledWith(
       'gemini-3.7-flash remained overloaded after retries. Using gemini-3.6-flash for this request.',
     );
+  });
+
+  test('fast-fails over within 2 attempts on HTTP 503 when hasAlternativeProvider is enabled', async () => {
+    const request = vi.fn().mockResolvedValue(new Response('service overloaded', { status: 503 }));
+    const onStatusUpdate = vi.fn();
+
+    const result = await fetchGeminiWithRateLimitFallback({
+      primaryApiKey: 'primary-placeholder',
+      requestedModel: 'custom-single-model',
+      fallbackModels: [],
+      hasAlternativeProvider: true,
+      request,
+      onStatusUpdate,
+      initialDelayMs: 0,
+    });
+
+    expect(result.response.status).toBe(503);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(1, 'primary-placeholder', 'custom-single-model');
+    expect(request).toHaveBeenNthCalledWith(2, 'primary-placeholder', 'custom-single-model');
+  });
+
+  test('honors explicit maxOverloadAttempts override on HTTP 503', async () => {
+    const request = vi.fn().mockResolvedValue(new Response('service overloaded', { status: 503 }));
+
+    const result = await fetchGeminiWithRateLimitFallback({
+      primaryApiKey: 'primary-placeholder',
+      requestedModel: 'custom-single-model',
+      fallbackModels: [],
+      maxOverloadAttempts: 1,
+      request,
+      initialDelayMs: 0,
+    });
+
+    expect(result.response.status).toBe(503);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   test('does not change models after HTTP 429 quota exhaustion', async () => {

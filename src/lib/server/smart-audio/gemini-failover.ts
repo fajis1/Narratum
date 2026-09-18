@@ -35,6 +35,13 @@ export interface GeminiFallbackOptions {
   initialDelayMs?: number;
   signal?: AbortSignal;
   maxAttempts?: number;
+  /**
+   * Maximum retry attempts on HTTP 503 before failing over to the backup key, next model,
+   * or alternative provider. Defaults to 2 when fallbacks (models or providers) exist.
+   */
+  maxOverloadAttempts?: number;
+  /** Set to true when an alternative provider (e.g. Groq) is configured for failover. */
+  hasAlternativeProvider?: boolean;
 }
 
 async function fetchWithExponentialBackoff(
@@ -46,6 +53,7 @@ async function fetchWithExponentialBackoff(
   signal?: AbortSignal,
   maxAttempts = MAX_ATTEMPTS,
   retryQuotaErrors = false,
+  maxOverloadAttempts?: number,
 ): Promise<Response> {
   let delayMs = customInitialDelayMs ?? INITIAL_DELAY_MS;
   const maskedKey = apiKey.length >= 4 ? `...${apiKey.slice(-4)}` : 'Key';
@@ -55,6 +63,17 @@ async function fetchWithExponentialBackoff(
     try {
       const response = await request(apiKey);
       if (!BACKUP_ELIGIBLE_STATUSES.has(response.status) || attempt === maxAttempts) {
+        return response;
+      }
+      if (response.status === 503 && maxOverloadAttempts !== undefined && attempt >= maxOverloadAttempts) {
+        serverLogger.warn({
+          event: 'gemini.overload.fast_failover',
+          keyType,
+          maskedKey,
+          httpStatus: response.status,
+          attempt,
+          maxOverloadAttempts,
+        }, 'Gemini model/server overloaded (HTTP 503); failing over early instead of exhausting exponential backoff');
         return response;
       }
       // Opt-in callers pace every request, including key/model transitions.
@@ -128,7 +147,7 @@ async function fetchGeminiWithKeyFallback(
   const backupApiKey = (input.backupApiKey || '').trim();
   input.signal?.throwIfAborted();
   if (!primaryApiKey && backupApiKey) {
-    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels), usedBackup: true };
+    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels, input.maxOverloadAttempts), usedBackup: true };
   }
 
   let primaryResponse: Response;
@@ -141,11 +160,12 @@ async function fetchGeminiWithKeyFallback(
     input.signal,
     input.maxAttempts,
     input.retryRateLimitedModels,
+    input.maxOverloadAttempts,
   ); } catch (error) {
     input.signal?.throwIfAborted();
     if (!backupApiKey || backupApiKey === primaryApiKey || (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))) throw error;
     await input.onStatusUpdate?.('Gemini network retries exhausted; trying the backup key.');
-    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels), usedBackup: true };
+    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels, input.maxOverloadAttempts), usedBackup: true };
   }
 
   if (
@@ -178,6 +198,7 @@ async function fetchGeminiWithKeyFallback(
     input.signal,
     input.maxAttempts,
     input.retryRateLimitedModels,
+    input.maxOverloadAttempts,
   );
 
   return {
@@ -227,6 +248,9 @@ export async function fetchGeminiWithRateLimitFallback(
   const models: Array<string | undefined> = requestedModel
     ? [...new Set([requestedModel, ...(input.fallbackModels ?? GEMINI_MODEL_FALLBACKS[requestedModel] ?? [])])]
     : [undefined];
+  const hasFallback = models.length > 1 || Boolean(input.hasAlternativeProvider);
+  const effectiveMaxOverloadAttempts = input.maxOverloadAttempts
+    ?? (input.maxAttempts !== undefined ? input.maxAttempts : (hasFallback ? 2 : undefined));
   let lastResult: { response: Response; usedBackup: boolean } | null = null;
   let backupBlocked = false;
   let nextDelayMs = Math.min(input.initialDelayMs ?? INITIAL_DELAY_MS, MAX_DELAY_MS);
@@ -258,6 +282,7 @@ export async function fetchGeminiWithRateLimitFallback(
     input.signal?.throwIfAborted();
     const result = await fetchGeminiWithKeyFallback({
       ...input,
+      maxOverloadAttempts: effectiveMaxOverloadAttempts,
       backupApiKey: backupBlocked ? undefined : input.backupApiKey,
       request: (apiKey) => input.retryRateLimitedModels ? pacedRequest(apiKey, candidateModel) : candidateModel
         ? input.request(apiKey, candidateModel)

@@ -563,7 +563,9 @@ ${JSON.stringify(terms)}`;
             try {
               if (provider === 'groq') {
                 await saveJob({ statusMessage: `Trying Groq (${orderedProviders.indexOf(provider) + 1}/${orderedProviders.length})…` });
-                generated = await fetchGroqForeignWordBatch(prompt, activeProfile!.groqApiKey!);
+                generated = await fetchGroqForeignWordBatch(prompt, activeProfile!.groqApiKey!, {
+                  onStatusUpdate: async (statusMessage) => { await saveJob({ statusMessage }); },
+                });
               } else {
                 // Gemini providers each get their own single key; internal retry/model
                 // fallback is still handled by fetchGeminiWithRateLimitFallback.
@@ -578,6 +580,8 @@ ${JSON.stringify(terms)}`;
                   const { response: res, usedModel } = await fetchGeminiWithRateLimitFallback({
                     primaryApiKey: geminiKey,
                     requestedModel: model,
+                    hasAlternativeProvider: orderedProviders.indexOf(provider) < orderedProviders.length - 1,
+                    maxOverloadAttempts: 2,
                     onStatusUpdate: async (statusMessage) => { await saveJob({ statusMessage }); },
                     request: (requestApiKey, requestModel) => fetch(
                       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(requestModel || model)}:generateContent?key=${encodeURIComponent(requestApiKey)}`,
