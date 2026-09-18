@@ -62,6 +62,10 @@ export async function POST(req: NextRequest) {
       includeCompanionDocument?: boolean;
       libraryId?: string;
       folderId?: string;
+      smartMatchExistingBook?: boolean;
+      targetItemId?: string;
+      targetFolderName?: string;
+      model?: string;
     };
 
     const bookId = body.bookId;
@@ -85,12 +89,20 @@ export async function POST(req: NextRequest) {
       includeCompanionDocument: body.includeCompanionDocument ?? true,
       libraryId: body.libraryId?.trim(),
       folderId: body.folderId?.trim(),
+      smartMatchExistingBook: body.smartMatchExistingBook,
+      targetItemId: body.targetItemId?.trim(),
+      targetFolderName: body.targetFolderName?.trim(),
+      model: body.model?.trim(),
       namespace,
     });
 
+    const successMessage = result.unified
+      ? `Successfully unified "${result.title}" with existing Audiobookshelf book!`
+      : `Successfully uploaded "${result.title}" to Audiobookshelf!`;
+
     return NextResponse.json({
       success: true,
-      message: `Successfully uploaded "${result.title}" to Audiobookshelf!`,
+      message: successMessage,
       result,
     });
   } catch (error) {

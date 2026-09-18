@@ -13,6 +13,8 @@ export const GEMINI_MODEL_FALLBACKS: Readonly<Record<string, readonly string[]>>
   'gemini-3.6-flash': ['gemini-3.5-flash'],
   'gemini-3.5-flash': ['gemini-2.5-flash'],
   'gemini-3.5-flash-lite': ['gemini-3.1-flash-lite'],
+  'gemini-3.1-flash-lite': ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+  'gemini-2.5-flash-lite': ['gemini-2.5-flash'],
 };
 
 const sleep = async (ms: number, signal?: AbortSignal) => {

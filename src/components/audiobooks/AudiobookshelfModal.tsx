@@ -35,6 +35,30 @@ interface AudiobookshelfConfigResponse {
   message?: string;
 }
 
+interface MatchCandidate {
+  id: string;
+  title: string;
+  author: string;
+  folderName: string;
+  hasAudio: boolean;
+  hasEbook: boolean;
+}
+
+interface MatchResult {
+  matchFound: boolean;
+  candidate: MatchCandidate | null;
+  confidence: number;
+  reasoning: string;
+}
+
+const AI_MODEL_OPTIONS = [
+  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (Default)' },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite' },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (High Accuracy)' },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+];
+
 export function AudiobookshelfModal({
   open,
   onClose,
@@ -52,6 +76,11 @@ export function AudiobookshelfModal({
   const [folderId, setFolderId] = useState('');
   const [includeCompanion, setIncludeCompanion] = useState(true);
 
+  const [aiModel, setAiModel] = useState('gemini-3.1-flash-lite');
+  const [isCheckingMatch, setIsCheckingMatch] = useState(false);
+  const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
+  const [mergeIntoExisting, setMergeIntoExisting] = useState(true);
+
   const [isInferring, setIsInferring] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -62,8 +91,41 @@ export function AudiobookshelfModal({
       if (initialTitle) setTitle(initialTitle);
       if (initialAuthor) setAuthor(initialAuthor);
       setStatusMessage(null);
+      setMatchResult(null);
     }
   }, [open, initialTitle, initialAuthor]);
+
+  const runCheckExistingBook = useCallback(
+    async (targetTitle: string, targetAuthor?: string, targetLibId?: string, modelToUse = aiModel) => {
+      if (!bookId || !targetTitle.trim()) return;
+      setIsCheckingMatch(true);
+      try {
+        const res = await fetch('/api/audiobook/audiobookshelf/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bookId,
+            libraryId: targetLibId || libraryId || undefined,
+            title: targetTitle.trim(),
+            author: targetAuthor?.trim() || undefined,
+            model: modelToUse,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data) {
+          setMatchResult(data);
+          if (data.matchFound) {
+            setMergeIntoExisting(true);
+          }
+        }
+      } catch (err) {
+        console.warn('Audiobookshelf match check failed:', err);
+      } finally {
+        setIsCheckingMatch(false);
+      }
+    },
+    [bookId, libraryId, aiModel],
+  );
 
   // Load ABS config when modal opens
   useEffect(() => {
@@ -88,7 +150,9 @@ export function AudiobookshelfModal({
 
           // If auto-detect metadata is enabled, trigger Gemini inference
           if (data.autoDetectMetadata) {
-            void runInferMetadata();
+            void runInferMetadata(initialLibId);
+          } else if (title.trim()) {
+            void runCheckExistingBook(title, author, initialLibId);
           }
         }
       })
@@ -120,36 +184,48 @@ export function AudiobookshelfModal({
     } else {
       setFolderId('');
     }
+    if (title.trim()) {
+      void runCheckExistingBook(title, author, newLibId);
+    }
   };
 
-  const runInferMetadata = useCallback(async () => {
-    if (!bookId) return;
-    setIsInferring(true);
-    setStatusMessage('Analyzing document with Gemini to infer canonical title and metadata...');
+  const runInferMetadata = useCallback(
+    async (libIdOverride?: string) => {
+      if (!bookId) return;
+      setIsInferring(true);
+      setStatusMessage('Analyzing document with Gemini to infer canonical title and metadata...');
 
-    try {
-      const res = await fetch(`/api/audiobook/metadata/infer-title?bookId=${encodeURIComponent(bookId)}`);
-      const data = await res.json();
-      if (res.ok && data.success && data.metadata) {
-        const meta = data.metadata;
-        if (meta.title) setTitle(meta.title);
-        if (meta.author) setAuthor(meta.author);
-        if (meta.series) {
-          const seriesStr = meta.seriesIndex ? `${meta.series} #${meta.seriesIndex}` : meta.series;
-          setSeries(seriesStr);
+      try {
+        const res = await fetch(`/api/audiobook/metadata/infer-title?bookId=${encodeURIComponent(bookId)}`);
+        const data = await res.json();
+        if (res.ok && data.success && data.metadata) {
+          const meta = data.metadata;
+          const nextTitle = meta.title || title;
+          const nextAuthor = meta.author || author;
+          if (meta.title) setTitle(meta.title);
+          if (meta.author) setAuthor(meta.author);
+          if (meta.series) {
+            const seriesStr = meta.seriesIndex ? `${meta.series} #${meta.seriesIndex}` : meta.series;
+            setSeries(seriesStr);
+          }
+          toast.success('Inferred title and author with Gemini!');
+          setStatusMessage(null);
+          void runCheckExistingBook(nextTitle, nextAuthor, libIdOverride || libraryId);
+        } else {
+          setStatusMessage(null);
+          if (title.trim()) {
+            void runCheckExistingBook(title, author, libIdOverride || libraryId);
+          }
         }
-        toast.success('Inferred title and author with Gemini!');
+      } catch (err) {
+        console.warn('Metadata inference failed:', err);
         setStatusMessage(null);
-      } else {
-        setStatusMessage(null);
+      } finally {
+        setIsInferring(false);
       }
-    } catch (err) {
-      console.warn('Metadata inference failed:', err);
-      setStatusMessage(null);
-    } finally {
-      setIsInferring(false);
-    }
-  }, [bookId]);
+    },
+    [bookId, title, author, libraryId, runCheckExistingBook],
+  );
 
   const handleUpload = async () => {
     if (!title.trim()) {
@@ -161,6 +237,7 @@ export function AudiobookshelfModal({
     setStatusMessage('Assembling audio and uploading to Audiobookshelf... (this may take a minute)');
 
     try {
+      const isUnifiedMerge = mergeIntoExisting && matchResult?.matchFound && Boolean(matchResult.candidate);
       const res = await fetch('/api/audiobook/audiobookshelf', {
         method: 'POST',
         headers: {
@@ -174,6 +251,10 @@ export function AudiobookshelfModal({
           includeCompanionDocument: includeCompanion,
           libraryId: libraryId || undefined,
           folderId: folderId || undefined,
+          smartMatchExistingBook: mergeIntoExisting,
+          targetItemId: isUnifiedMerge ? matchResult?.candidate?.id : undefined,
+          targetFolderName: isUnifiedMerge ? matchResult?.candidate?.folderName : undefined,
+          model: aiModel,
         }),
       });
 
@@ -245,7 +326,7 @@ export function AudiobookshelfModal({
                 type="button"
                 variant="ghost"
                 size="xs"
-                onClick={runInferMetadata}
+                onClick={() => void runInferMetadata()}
                 disabled={isInferring || isUploading}
                 className="text-accent hover:text-accent font-medium flex items-center gap-1"
               >
@@ -302,6 +383,92 @@ export function AudiobookshelfModal({
                 disabled={isUploading}
               />
             </div>
+
+            {/* AI Model selector */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-foreground">AI Matching Model</label>
+                <span className="text-[11px] text-muted">For existing book detection</span>
+              </div>
+              <select
+                className="w-full rounded-md border border-line-soft bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-accent"
+                value={aiModel}
+                onChange={(e) => {
+                  const newModel = e.target.value;
+                  setAiModel(newModel);
+                  if (title.trim()) {
+                    void runCheckExistingBook(title, author, libraryId, newModel);
+                  }
+                }}
+                disabled={isUploading || isCheckingMatch}
+              >
+                {AI_MODEL_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Existing Book Detection & Unification Banner */}
+            {isCheckingMatch ? (
+              <div className="rounded-md border border-line-soft bg-surface-raised px-3 py-2 text-xs text-muted flex items-center gap-2">
+                <svg className="animate-spin h-3.5 w-3.5 text-accent" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                <span>Scanning Audiobookshelf for existing book matches...</span>
+              </div>
+            ) : matchResult?.matchFound && matchResult.candidate ? (
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                    <span>📚 Existing book found in Audiobookshelf</span>
+                    {matchResult.candidate.hasEbook && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 font-normal">
+                        Contains eBook / PDF
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-emerald-400/80 font-mono font-medium">
+                    {Math.round(matchResult.confidence * 100)}% match
+                  </span>
+                </div>
+                <div className="text-foreground">
+                  <p className="font-medium">
+                    &ldquo;{matchResult.candidate.title}&rdquo;
+                    {matchResult.candidate.author ? ` by ${matchResult.candidate.author}` : ''}
+                  </p>
+                  <p className="text-[11px] text-muted mt-0.5">
+                    Target Folder: <span className="font-mono text-foreground/90 font-medium">{matchResult.candidate.folderName}</span>
+                  </p>
+                  {matchResult.reasoning && (
+                    <p className="text-[11px] text-muted italic mt-0.5">&ldquo;{matchResult.reasoning}&rdquo;</p>
+                  )}
+                </div>
+                <div className="pt-2 border-t border-emerald-500/20">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={mergeIntoExisting}
+                      onChange={(e) => setMergeIntoExisting(e.target.checked)}
+                      disabled={isUploading}
+                      className="mt-0.5 rounded border-emerald-500/40 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div>
+                      <span className="font-medium text-emerald-200">
+                        Merge into existing Audiobookshelf book (Recommended)
+                      </span>
+                      <p className="text-[11px] text-muted">
+                        {mergeIntoExisting
+                          ? 'Audiobook will be placed directly into the existing book folder so Audiobookshelf unifies both into a single card with both "Listen" and "Read" capabilities.'
+                          : 'A new standalone book card will be created.'}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            ) : null}
 
             {/* Library & Folder selectors */}
             {libraries.length > 0 && (

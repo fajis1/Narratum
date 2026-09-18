@@ -11,6 +11,8 @@ import { getDocumentBlob } from '@/lib/server/documents/blobstore';
 import { executeAudiobookCombine } from './combine';
 import { listChapterObjects } from './chapters';
 import type { TTSAudiobookFormat } from '@/types/tts';
+import { fetchGeminiWithRateLimitFallback, GEMINI_MODEL_FALLBACKS } from '@/lib/server/smart-audio/gemini-failover';
+import { readSmartAudioProfilesDocument } from '@/lib/server/smart-audio-profiles';
 
 export interface AudiobookshelfFolder {
   id: string;
@@ -33,6 +35,30 @@ export interface AudiobookshelfConfig {
   isConfigured: boolean;
 }
 
+export interface AudiobookshelfSearchCandidate {
+  id: string;
+  title: string;
+  author: string;
+  folderName: string;
+  hasAudio: boolean;
+  hasEbook: boolean;
+}
+
+export interface MatchCandidateResult {
+  isMatch: boolean;
+  matchedItemId: string | null;
+  matchedFolderName: string | null;
+  confidence: number; // 0.0 to 1.0
+  reasoning: string;
+}
+
+export interface MatchCandidateOptions {
+  userId?: string;
+  model?: string;
+  primaryApiKey?: string;
+  backupApiKey?: string;
+}
+
 export interface AudiobookshelfUploadOptions {
   bookId: string;
   userId: string;
@@ -43,6 +69,10 @@ export interface AudiobookshelfUploadOptions {
   libraryId?: string;
   folderId?: string;
   namespace?: string | null;
+  smartMatchExistingBook?: boolean; // defaults to true
+  targetItemId?: string;            // optional manual override from UI
+  targetFolderName?: string;        // optional manual override from UI
+  model?: string;                   // optional AI model override (defaults to gemini-3.1-flash-lite)
 }
 
 export interface AudiobookshelfUploadResult {
@@ -53,6 +83,9 @@ export interface AudiobookshelfUploadResult {
   folderId: string;
   files: string[];
   scanTriggered: boolean;
+  matchedItemId?: string | null;
+  matchedFolderName?: string | null;
+  unified?: boolean;
 }
 
 /**
@@ -165,6 +198,451 @@ export async function triggerAudiobookshelfScan(
       error: errorToLog(err),
       libraryId,
     }, 'Failed to trigger Audiobookshelf library scan');
+    return false;
+  }
+}
+
+/**
+ * Strips scanner noise, release notes, file extensions, and extra punctuation from titles
+ * to generate high-yield search queries for Audiobookshelf.
+ */
+export function sanitizeSearchTitle(rawTitle: string): string {
+  return rawTitle
+    .replace(/\.(pdf|epub|m4b|mp3|m4a|docx|txt)$/i, '') // strip file extensions
+    .replace(/\[(?:B[0-9A-Z]{8,10}|[^\]]+)\]/gi, '') // strip ASINs or bracketed tags
+    .replace(/\((?:copy|ocr|scan|clean|retail|unabridged)[^)]*\)/gi, '') // strip (Copy), (OCR), etc.
+    .replace(/\b(?:copy of|ocr|scan)\b/gi, '')
+    .replace(/[_\-]+/g, ' ')
+    .replace(/[^\w\s:–—'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Builds candidate search queries for Audiobookshelf API.
+ */
+export function buildAudiobookshelfSearchQueries(title: string, author?: string): string[] {
+  const cleanedTitle = sanitizeSearchTitle(title);
+  const queries = new Set<string>();
+
+  if (cleanedTitle) {
+    queries.add(cleanedTitle);
+
+    // Primary title before colon or dash
+    const primaryTitle = cleanedTitle.split(/[:–—]/)[0]?.trim();
+    if (primaryTitle && primaryTitle.length >= 3 && primaryTitle !== cleanedTitle) {
+      queries.add(primaryTitle);
+    }
+  }
+
+  // Author query if provided and not generic
+  if (author) {
+    const cleanedAuthor = author
+      .replace(/[_\-]+/g, ' ')
+      .replace(/[^\w\s\.'-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (
+      cleanedAuthor.length >= 3 &&
+      !/^unknown(?: author)?$/i.test(cleanedAuthor)
+    ) {
+      queries.add(cleanedAuthor);
+    }
+  }
+
+  return Array.from(queries);
+}
+
+/**
+ * Searches Audiobookshelf library for existing candidate books.
+ */
+export async function searchAudiobookshelfCandidates(
+  url: string,
+  token: string,
+  libraryId: string,
+  title: string,
+  author?: string,
+): Promise<AudiobookshelfSearchCandidate[]> {
+  const normalizedUrl = url.trim().replace(/\/+$/, '');
+  const queries = buildAudiobookshelfSearchQueries(title, author);
+
+  const candidateMap = new Map<string, AudiobookshelfSearchCandidate>();
+
+  for (const query of queries) {
+    try {
+      const endpoint = `${normalizedUrl}/api/libraries/${encodeURIComponent(libraryId)}/search?q=${encodeURIComponent(query)}`;
+      const res = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+
+      if (!res.ok) {
+        serverLogger.warn(
+          { event: 'audiobookshelf.search.query_failed', status: res.status, query },
+          'Audiobookshelf search query returned non-200',
+        );
+        continue;
+      }
+
+      const data = (await res.json()) as Record<string, unknown>;
+      const rawList = Array.isArray(data)
+        ? data
+        : Array.isArray(data.book)
+          ? data.book
+          : Array.isArray(data.books)
+            ? data.books
+            : Array.isArray(data.results)
+              ? data.results
+              : [];
+
+      for (const entry of rawList) {
+        const item = (entry && typeof entry === 'object' && 'libraryItem' in entry && entry.libraryItem)
+          ? (entry.libraryItem as Record<string, unknown>)
+          : (entry as Record<string, unknown>);
+        if (!item || !item.id) continue;
+
+        const itemId = String(item.id);
+        if (candidateMap.has(itemId)) continue;
+
+        const media = (item.media as Record<string, unknown>) || {};
+        const metadata = (media.metadata as Record<string, unknown>) || {};
+
+        const rawRelPath = String(item.relPath || item.path || '');
+        const folderName = rawRelPath
+          ? rawRelPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || rawRelPath
+          : String(metadata.title || item.title || 'Untitled');
+
+        const itemTitle = String(metadata.title || item.title || folderName || 'Untitled');
+        const itemAuthor = String(
+          metadata.authorName ||
+          metadata.author ||
+          (Array.isArray(metadata.authors)
+            ? metadata.authors.map((a: unknown) => (a && typeof a === 'object' && 'name' in a ? String(a.name) : String(a))).join(', ')
+            : '') ||
+          ''
+        );
+
+        const hasAudio = Boolean(
+          (Array.isArray(media.audioFiles) && media.audioFiles.length > 0) ||
+          (Array.isArray(media.tracks) && media.tracks.length > 0) ||
+          (typeof media.numTracks === 'number' && media.numTracks > 0) ||
+          (typeof media.duration === 'number' && media.duration > 0)
+        );
+
+        const hasEbook = Boolean(
+          media.ebookFile ||
+          (Array.isArray(media.ebookFiles) && media.ebookFiles.length > 0) ||
+          media.hasEbook
+        );
+
+        candidateMap.set(itemId, {
+          id: itemId,
+          title: itemTitle,
+          author: itemAuthor,
+          folderName,
+          hasAudio,
+          hasEbook,
+        });
+
+        if (candidateMap.size >= 6) break;
+      }
+    } catch (err) {
+      serverLogger.warn(
+        { event: 'audiobookshelf.search.error', error: errorToLog(err), query },
+        'Failed to query Audiobookshelf candidates',
+      );
+    }
+
+    if (candidateMap.size >= 6) break;
+  }
+
+  return Array.from(candidateMap.values()).slice(0, 6);
+}
+
+/**
+ * Deterministic / fuzzy fallback matcher when Gemini API is unconfigured or unavailable.
+ */
+export function matchCandidatesDeterministically(
+  candidates: AudiobookshelfSearchCandidate[],
+  targetTitle: string,
+  targetAuthor?: string,
+): MatchCandidateResult {
+  if (candidates.length === 0) {
+    return {
+      isMatch: false,
+      matchedItemId: null,
+      matchedFolderName: null,
+      confidence: 0,
+      reasoning: 'No candidate items found in Audiobookshelf.',
+    };
+  }
+
+  const stopWords = new Set(['the', 'a', 'an', 'and', 'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from']);
+  const tokenize = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 1 && !stopWords.has(w));
+
+  const targetTokens = tokenize(targetTitle);
+  const targetAuthorTokens = targetAuthor ? tokenize(targetAuthor) : [];
+
+  let bestCandidate: AudiobookshelfSearchCandidate | null = null;
+  let bestScore = 0;
+
+  for (const candidate of candidates) {
+    const candTokens = tokenize(candidate.title);
+    if (candTokens.length === 0 || targetTokens.length === 0) continue;
+
+    const overlap = targetTokens.filter((t) => candTokens.includes(t)).length;
+    const targetCoverage = overlap / targetTokens.length;
+    const candCoverage = overlap / candTokens.length;
+    const titleScore = Math.max(targetCoverage, (targetCoverage + candCoverage) / 2);
+
+    let score = titleScore * 0.85;
+
+    // Check author match if available
+    if (targetAuthorTokens.length > 0 && candidate.author) {
+      const candAuthorTokens = tokenize(candidate.author);
+      const authorOverlap = targetAuthorTokens.filter((t) => candAuthorTokens.includes(t)).length;
+      if (authorOverlap > 0) {
+        score += 0.1;
+      }
+    }
+
+    // Boost preference for items already having an eBook/PDF for unification
+    if (candidate.hasEbook) {
+      score += 0.05;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+  }
+
+  const confidence = Math.min(1.0, Math.round(bestScore * 100) / 100);
+  const isMatch = Boolean(bestCandidate && confidence >= 0.75);
+
+  return {
+    isMatch,
+    matchedItemId: isMatch && bestCandidate ? bestCandidate.id : null,
+    matchedFolderName: isMatch && bestCandidate ? bestCandidate.folderName : null,
+    confidence,
+    reasoning: isMatch && bestCandidate
+      ? `Deterministic title and author token overlap (${Math.round(confidence * 100)}% match).`
+      : 'No candidate item met the 0.75 confidence threshold in deterministic matching.',
+  };
+}
+
+/**
+ * Matches an audiobook being exported against existing Audiobookshelf items using Gemini AI.
+ */
+export async function matchAudiobookshelfCandidateWithGemini(
+  candidates: AudiobookshelfSearchCandidate[],
+  targetTitle: string,
+  targetAuthor?: string,
+  options?: MatchCandidateOptions,
+): Promise<MatchCandidateResult> {
+  if (candidates.length === 0) {
+    return {
+      isMatch: false,
+      matchedItemId: null,
+      matchedFolderName: null,
+      confidence: 0,
+      reasoning: 'No candidate items to evaluate.',
+    };
+  }
+
+  // 1. Resolve Gemini API Key
+  const runtime = await getRuntimeConfig();
+  let primaryKey = (options?.primaryApiKey || runtime.geminiApiKey || process.env.GEMINI_API_KEY || '').trim();
+  let backupKey = (options?.backupApiKey || process.env.BACKUP_GEMINI_API_KEY || '').trim();
+
+  if (!primaryKey && options?.userId) {
+    try {
+      const profilesDoc = await readSmartAudioProfilesDocument(options.userId);
+      for (const p of profilesDoc.profiles) {
+        if (p.geminiApiKey?.trim()) {
+          primaryKey = p.geminiApiKey.trim();
+          if (p.backupGeminiApiKey?.trim()) {
+            backupKey = p.backupGeminiApiKey.trim();
+          }
+          break;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // If no Gemini key is available, use deterministic matching
+  if (!primaryKey) {
+    serverLogger.info(
+      { event: 'audiobookshelf.match.fallback_deterministic', reason: 'No Gemini key available' },
+      'Evaluating Audiobookshelf candidates using deterministic matcher',
+    );
+    return matchCandidatesDeterministically(candidates, targetTitle, targetAuthor);
+  }
+
+  // 2. Prepare Librarian Prompt
+  const requestedModel = options?.model?.trim() || 'gemini-3.1-flash-lite';
+  const fallbackModels = GEMINI_MODEL_FALLBACKS[requestedModel] || ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+
+  const userPrompt = [
+    'You are an expert digital librarian and catalog unification system.',
+    'Your task is to determine whether an audiobook being exported from OpenReader corresponds to an EXISTING book already cataloged in the user\'s Audiobookshelf library.',
+    '',
+    `Exporting Target Audiobook Title: "${targetTitle}"`,
+    `Exporting Target Audiobook Author: "${targetAuthor || 'Unknown'}"`,
+    '',
+    'Candidate Items Found in Audiobookshelf Library:',
+    JSON.stringify(candidates, null, 2),
+    '',
+    'Librarian Matching Rules:',
+    '1. Determine if the target audiobook corresponds to the same underlying book as any existing candidate item, accounting for subtitles, edition notes, translation notes, and author spelling variations.',
+    '2. Priority rule: If multiple items match, explicitly prefer attaching to an existing item that already has an eBook/PDF ("hasEbook": true) so Audiobookshelf unifies both the audio and text into a single card with both "Listen" and "Read" capabilities.',
+    '3. If no candidate matches the target book with high certainty, set "is_match": false, "matched_item_id": null, "matched_folder_name": null, and "confidence": 0.0.',
+    '4. Confidence score must be a number from 0.0 to 1.0. A match is only considered authoritative if confidence is >= 0.75.',
+    '',
+    'Respond ONLY with a valid JSON object matching this schema:',
+    '{',
+    '  "is_match": boolean,',
+    '  "matched_item_id": string | null,',
+    '  "matched_folder_name": string | null,',
+    '  "confidence": number,',
+    '  "reasoning": string',
+    '}',
+  ].join('\n');
+
+  try {
+    const { response } = await fetchGeminiWithRateLimitFallback({
+      primaryApiKey: primaryKey,
+      backupApiKey: backupKey || undefined,
+      requestedModel,
+      fallbackModels,
+      request: (apiKey, model) =>
+        fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || requestedModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+              systemInstruction: {
+                parts: [
+                  {
+                    text: 'You are an expert digital librarian. Return only valid JSON evaluating candidate Audiobookshelf matches.',
+                  },
+                ],
+              },
+              generationConfig: {
+                responseMimeType: 'application/json',
+                temperature: 0.1,
+              },
+            }),
+          },
+        ),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      serverLogger.warn(
+        { event: 'audiobookshelf.match.gemini_failed', status: response.status, error: errText },
+        'Gemini matching call failed; falling back to deterministic matching',
+      );
+      return matchCandidatesDeterministically(candidates, targetTitle, targetAuthor);
+    }
+
+    const responseJson = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+
+    const rawText = responseJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '{}';
+    const cleanedJson = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    const parsed = JSON.parse(cleanedJson) as Record<string, unknown>;
+    const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+    const isMatch = Boolean(parsed.is_match && confidence >= 0.75 && parsed.matched_item_id);
+
+    const matchedCandidate = isMatch
+      ? candidates.find((c) => c.id === String(parsed.matched_item_id)) || null
+      : null;
+
+    const matchedFolderName = isMatch
+      ? String(parsed.matched_folder_name || matchedCandidate?.folderName || '')
+      : null;
+
+    return {
+      isMatch,
+      matchedItemId: isMatch && parsed.matched_item_id ? String(parsed.matched_item_id) : null,
+      matchedFolderName: matchedFolderName || (matchedCandidate ? matchedCandidate.folderName : null),
+      confidence,
+      reasoning: typeof parsed.reasoning === 'string'
+        ? parsed.reasoning
+        : (isMatch ? 'Gemini identified a confident match.' : 'No candidate met confidence threshold.'),
+    };
+  } catch (error) {
+    serverLogger.warn(
+      { event: 'audiobookshelf.match.gemini_error', error: errorToLog(error) },
+      'Error during Gemini candidate matching; falling back to deterministic matching',
+    );
+    return matchCandidatesDeterministically(candidates, targetTitle, targetAuthor);
+  }
+}
+
+/**
+ * Updates an existing item in Audiobookshelf with unification tags.
+ */
+export async function tagAudiobookshelfItem(
+  url: string,
+  token: string,
+  itemId: string,
+  newTags: string[] = ['Audiobook', 'Companion Audiobook', 'OpenReader'],
+): Promise<boolean> {
+  try {
+    const normalizedUrl = url.trim().replace(/\/+$/, '');
+    let existingTags: string[] = [];
+    try {
+      const getRes = await fetch(`${normalizedUrl}/api/items/${encodeURIComponent(itemId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (getRes.ok) {
+        const itemData = (await getRes.json()) as Record<string, unknown>;
+        const media = (itemData?.media as Record<string, unknown>) || {};
+        const metadata = (media?.metadata as Record<string, unknown>) || {};
+        const tags = media?.tags || itemData?.tags || metadata?.tags;
+        if (Array.isArray(tags)) {
+          existingTags = tags.map((t: unknown) => String(t));
+        }
+      }
+    } catch {
+      // non-fatal
+    }
+
+    const mergedTags = Array.from(new Set([...existingTags, ...newTags]));
+
+    const patchRes = await fetch(`${normalizedUrl}/api/items/${encodeURIComponent(itemId)}/media`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        tags: mergedTags,
+        metadata: { tags: mergedTags },
+      }),
+    });
+    return patchRes.ok;
+  } catch (err) {
+    serverLogger.warn(
+      { event: 'audiobookshelf.tag.failed', error: errorToLog(err), itemId },
+      'Failed to tag unified Audiobookshelf item',
+    );
     return false;
   }
 }
@@ -315,11 +793,60 @@ export async function uploadBookToAudiobookshelf(
     }
   }
 
-  // 5. Construct multipart/form-data payload for Audiobookshelf
+  // 5. Check for smart match unification with existing Audiobookshelf book
+  let destinationFolderTitle = cleanTitle;
+  let matchedItemId: string | null = null;
+  let isUnified = false;
+
+  if (options.targetFolderName) {
+    destinationFolderTitle = sanitizeFilenameForAudiobookshelf(options.targetFolderName);
+    matchedItemId = options.targetItemId || null;
+    isUnified = Boolean(matchedItemId);
+  } else if (options.smartMatchExistingBook !== false) {
+    try {
+      const candidates = await searchAudiobookshelfCandidates(
+        config.url,
+        config.token,
+        targetLibraryId,
+        cleanTitle,
+        cleanAuthor,
+      );
+      if (candidates.length > 0) {
+        const matchResult = await matchAudiobookshelfCandidateWithGemini(
+          candidates,
+          cleanTitle,
+          cleanAuthor,
+          { userId, model: options.model },
+        );
+        if (matchResult.isMatch && matchResult.matchedFolderName) {
+          destinationFolderTitle = sanitizeFilenameForAudiobookshelf(matchResult.matchedFolderName);
+          matchedItemId = matchResult.matchedItemId;
+          isUnified = true;
+          serverLogger.info(
+            {
+              event: 'audiobookshelf.smart_match_unified',
+              matchedItemId,
+              matchedFolderName: destinationFolderTitle,
+              confidence: matchResult.confidence,
+              reasoning: matchResult.reasoning,
+            },
+            'Matched existing Audiobookshelf book; unifying into existing directory',
+          );
+        }
+      }
+    } catch (err) {
+      serverLogger.warn(
+        { event: 'audiobookshelf.smart_match_failed', error: errorToLog(err) },
+        'Smart candidate matching encountered an error; proceeding with standard upload',
+      );
+    }
+  }
+
+  // 6. Construct multipart/form-data payload for Audiobookshelf
   const formData = new FormData();
   formData.append('library', targetLibraryId);
   formData.append('folder', targetFolderId);
-  formData.append('title', cleanTitle);
+  formData.append('title', destinationFolderTitle);
   formData.append('author', cleanAuthor);
   if (cleanSeries) {
     formData.append('series', cleanSeries);
@@ -340,8 +867,10 @@ export async function uploadBookToAudiobookshelf(
       targetLibraryId,
       targetFolderId,
       title: cleanTitle,
+      destinationFolderTitle,
       author: cleanAuthor,
       files: filesUploaded,
+      isUnified,
     },
     'Uploading audiobook to Audiobookshelf',
   );
@@ -368,16 +897,24 @@ export async function uploadBookToAudiobookshelf(
     throw new Error(`Audiobookshelf upload failed (${uploadResponse.status}): ${errText || uploadResponse.statusText}`);
   }
 
-  // 6. Trigger library scan in background
+  // 7. Trigger library scan in background
   const scanTriggered = await triggerAudiobookshelfScan(config.url, config.token, targetLibraryId);
+
+  // 8. Tag unified book item if match was unified
+  if (matchedItemId) {
+    await tagAudiobookshelfItem(config.url, config.token, matchedItemId);
+  }
 
   serverLogger.info(
     {
       event: 'audiobookshelf.upload_success',
       bookId,
       title: cleanTitle,
+      destinationFolderTitle,
       filesUploaded,
       scanTriggered,
+      isUnified,
+      matchedItemId,
     },
     'Successfully uploaded audiobook to Audiobookshelf',
   );
@@ -390,5 +927,8 @@ export async function uploadBookToAudiobookshelf(
     folderId: targetFolderId,
     files: filesUploaded,
     scanTriggered,
+    matchedItemId,
+    matchedFolderName: isUnified ? destinationFolderTitle : null,
+    unified: isUnified,
   };
 }
