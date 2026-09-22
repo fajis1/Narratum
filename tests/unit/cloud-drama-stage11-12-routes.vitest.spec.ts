@@ -95,7 +95,7 @@ describe('Cloud character preview route', () => {
     const prompt = mocks.synthesize.mock.calls[0][0].stylePrompt as string;
     expect(prompt).toContain('Quiet and controlled.');
     expect(prompt).toContain('overall style cinematic');
-    expect(prompt).toContain('character expressiveness expressive');
+    expect(prompt).toContain('Character expressiveness: expressive.');
   });
 
   it('bounds scene input and does not expose or persist manuscript content', async () => {
