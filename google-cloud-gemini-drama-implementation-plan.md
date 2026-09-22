@@ -100,8 +100,8 @@ If a stage is blocked, the agent must state the exact blocker and stop instead o
 | 8 | Director's Brief and Cloud TTS request builder | ✅ Complete | Cast-resolved brief and REST body; corrected `input.prompt` and `voice.modelName` |
 | 9 | Safe chunking, tag handling, retries, review flags | ✅ Complete | UTF-8 source partition, categorized tags, bounded transient retries, explicit failed chunks and review flags |
 | 10 | End-to-end drama-gemini-tts orchestration | ✅ Complete with notes | Queue/chapter branching, Director and Cloud synthesis, MP3 stitching, silence placeholders, persisted review flags; live Cloud smoke remains |
-| 11 | Smart Audio profile/settings UI | ✅ Complete | Cloud Drama mode card and write-only service-account JSON settings with server validation |
-| 12 | Cast direction UI and voice previews | ⬜ Not started | |
+| 11 | Google Cloud Drama profile, performance settings, and credential UI | ✅ Complete with notes | Revised Narratum Stage 11 implemented: normalized performance policy, language/failure controls, write-only credential status, explicit removal, and sanitized synthesis-path connection test; automated/manual-environment checks pass; live Google Cloud credential verification remains user-required |
+| 12 | Cast direction UI and performance-aware voice previews | ✅ Complete with notes | Revised Narratum Stage 12 implemented: persistent direction/voice editing, rescan preservation, Voice Only/Character Performance/Scene Preview through shared Cloud request infrastructure; automated checks pass; listening/browser verification remains user-required |
 | 13 | Review/recovery UI | ⬜ Not started | |
 | 14 | Test matrix, documentation, migration, release readiness | ⬜ Not started | |
 

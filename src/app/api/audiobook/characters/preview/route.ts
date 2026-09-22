@@ -8,7 +8,7 @@ import { isValidCloudTtsVoice } from '@/lib/shared/google-cloud-tts-voices';
 import { synthesizeWithCloudTts } from '@/lib/server/smart-audio/google-cloud-tts-client';
 import { normalizeCloudTtsCharacterMap } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { buildDramaDirectorsBrief } from '@/lib/server/smart-audio/drama-cloud-request';
-import { normalizeDramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
+import { buildDramaDirectorPolicy, normalizeDramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +21,6 @@ export async function POST(request: NextRequest) {
   const profileId = typeof body.profileId === 'string' ? body.profileId.trim() : '';
   const voiceName = typeof body.voiceName === 'string' ? body.voiceName.trim() : '';
   const text = typeof body.text === 'string' ? body.text.trim().slice(0, 300) : '';
-  const audioProfile = typeof body.audioProfile === 'string' ? body.audioProfile.trim().slice(0, 1_000) : '';
   const previewMode = body.previewMode === 'voice-only' || body.previewMode === 'scene' ? body.previewMode : 'character';
   const characterName = typeof body.characterName === 'string' ? body.characterName.trim() : '';
   const sceneContext = typeof body.sceneContext === 'string' ? body.sceneContext.trim().slice(0, 500) : '';
@@ -54,6 +53,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Select a saved character before using this preview mode.' }, { status: 400 });
     }
     const settings = normalizeDramaGeminiTtsProfileSettings(profile.dramaGeminiTtsSettings);
+    const policy = buildDramaDirectorPolicy(settings);
     const stylePrompt = previewMode === 'voice-only'
       ? 'Speak naturally and clearly as a neutral audiobook voice comparison.'
       : buildDramaDirectorsBrief({
@@ -66,10 +66,10 @@ export async function POST(request: NextRequest) {
           primaryEmotion: 'calm', secondaryEmotions: [], socialIntent: 'none', delivery: ['natural'],
           pace: 'normal', energy: 'normal', intensity: 'controlled', tags: [],
         },
-      }, entry!);
+      }, entry!, policy);
     const result = await synthesizeWithCloudTts({
       text, voiceName,
-      stylePrompt: audioProfile || stylePrompt,
+      stylePrompt,
       languageCode: settings.languageCode,
       serviceAccountJson: profile.googleCloudServiceAccountJson,
     });

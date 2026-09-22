@@ -55,6 +55,7 @@ export async function generateCloudDramaAudiobook(input: {
         segment, characterMap: readiness.map,
         serviceAccountJson: input.serviceAccountJson,
         languageCode: profileSettings.languageCode,
+        policy,
       });
       reviewFlags.push(...result.reviewFlags);
       if (result.reviewFlags.length > 0 && profileSettings.failedSegmentBehavior === 'stop-job') {

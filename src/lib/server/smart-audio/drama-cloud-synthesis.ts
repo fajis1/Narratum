@@ -2,6 +2,7 @@ import type { DramaDirectorSegment, DramaAudioTag } from '@/lib/shared/drama-dir
 import { DRAMA_ONE_SHOT_TAGS, DRAMA_PAUSE_TAGS, DRAMA_STYLE_TAGS } from '@/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { buildDramaCloudTtsRequest } from './drama-cloud-request';
+import type { DramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
 import {
   CLOUD_TTS_SAFE_TEXT_BYTES, CloudTtsApiError, CloudTtsTransportError, measureUtf8Bytes,
   stripDisallowedTags, synthesizeWithCloudTts,
@@ -100,6 +101,7 @@ export async function synthesizeDramaSegment(input: {
   serviceAccountJson?: string;
   credentialCacheKey?: string;
   languageCode?: string;
+  policy?: DramaDirectorPolicy;
   maxAttempts?: number;
   synthesize?: (options: CloudTtsSynthesisOptions) => Promise<CloudTtsSynthesisResult>;
   wait?: (milliseconds: number) => Promise<void>;
@@ -125,6 +127,7 @@ export async function synthesizeDramaSegment(input: {
       segment: { ...segment, text: sourceChunks[0] },
       characterMap: input.characterMap,
       languageCode: input.languageCode,
+      policy: input.policy,
     });
     baseOptions = built.synthesisOptions;
     requestTexts = annotateDramaChunks(sourceChunks, segment.performance.tags);
