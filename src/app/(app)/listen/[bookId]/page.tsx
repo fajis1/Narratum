@@ -15,7 +15,7 @@ import { toast } from "react-hot-toast";
 import { ModalFrame } from "@/components/ui";
 import { SmartAudioSettings } from "@/components/SmartAudioSettings";
 import { estimateSpeakerSegmentAtTime, parseVoiceTaggedText, renderVoiceSegments } from "@/lib/shared/multi-voice";
-import type { SmartAudioCharacterMap } from "@/types/document-settings";
+import type { SmartAudioCharacterMap, SmartAudioReviewFlag } from "@/types/document-settings";
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from "@/lib/shared/audiobook-runtime-phase";
 import {
   BATCH_REFINE_RECORDING_OPTION_HELP,
@@ -84,6 +84,9 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [playingSpeakerSegment, setPlayingSpeakerSegment] = useState<number | null>(null);
   const [speakerTextDrafts, setSpeakerTextDrafts] = useState<Record<number, string>>({});
   const [activeSpeakerSegment, setActiveSpeakerSegment] = useState<number | null>(null);
+  const [reviewFlags, setReviewFlags] = useState<SmartAudioReviewFlag[]>([]);
+  const [reviewFlagsError, setReviewFlagsError] = useState<string | null>(null);
+  const [retryingReviewFlagId, setRetryingReviewFlagId] = useState<string | null>(null);
   const currentChapter = chapters[currentChapterPosition];
   const selectedChapterIndex = currentChapter?.index;
 
@@ -231,6 +234,24 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
        checkJob();
     }, 5000);
     return () => clearInterval(interval);
+  }, [bookId]);
+
+  const fetchReviewFlags = async () => {
+    try {
+      const response = await fetch(`/api/audiobook/review-flags?documentId=${encodeURIComponent(bookId)}`, {
+        cache: 'no-store',
+      });
+      const body = await response.json().catch(() => ({})) as { flags?: SmartAudioReviewFlag[]; error?: string };
+      if (!response.ok) throw new Error(body.error || 'Failed to load review flags.');
+      setReviewFlags(Array.isArray(body.flags) ? body.flags : []);
+      setReviewFlagsError(null);
+    } catch (error) {
+      setReviewFlagsError(error instanceof Error ? error.message : 'Failed to load review flags.');
+    }
+  };
+
+  useEffect(() => {
+    void fetchReviewFlags();
   }, [bookId]);
 
   useEffect(() => {
@@ -386,6 +407,60 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       toast.error(error.message || "Failed to trigger regeneration");
     } finally {
       setIsRegenerating(false);
+    }
+  };
+
+  const resolveReviewFlag = async (flagId: string) => {
+    try {
+      const response = await fetch('/api/audiobook/review-flags', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: bookId, flagId }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error || 'Failed to resolve the review flag.');
+      await fetchReviewFlags();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resolve the review flag.');
+    }
+  };
+
+  const retryReviewFlag = async (flag: SmartAudioReviewFlag) => {
+    const chapter = chapters.find((candidate) => candidate.index === flag.chapterIndex);
+    if (!chapter) {
+      toast.error('The chapter for this review flag is no longer available.');
+      return;
+    }
+    setRetryingReviewFlagId(flag.id);
+    try {
+      const textResponse = await fetch(`/api/audiobook/text?bookId=${encodeURIComponent(bookId)}&chapterIndex=${chapter.index}&t=${Date.now()}`, {
+        cache: 'no-store',
+      });
+      if (!textResponse.ok) throw new Error('Failed to load the saved chapter text.');
+      const text = await textResponse.text();
+      const response = await fetch('/api/audiobook/chapter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bookId,
+          documentId: bookId,
+          chapterIndex: chapter.index,
+          chapterTitle: chapter.title,
+          text,
+          useSmartAudio: false,
+          format: chapter.format,
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error || 'Failed to queue chapter recovery.');
+      setCurrentChapterPosition(chapters.findIndex((candidate) => candidate.index === chapter.index));
+      toast.success(`Recovery queued for chapter ${chapter.index + 1}.`);
+      await fetchReviewFlags();
+      await fetchStatus();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to retry the chapter.');
+    } finally {
+      setRetryingReviewFlagId(null);
     }
   };
 
@@ -827,6 +902,48 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           </div>
         </div>
       </div>
+
+      {(reviewFlags.length > 0 || reviewFlagsError) && (
+        <section className="flex-none border-b border-amber-300/30 bg-amber-50 px-4 py-3 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100" aria-label="Audiobook review flags">
+          <div className="mx-auto flex max-w-7xl flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold">Audiobook recovery flags</h2>
+                <p className="text-xs opacity-80">These chapter segments need a listening check after Cloud Drama generation.</p>
+              </div>
+              <button type="button" onClick={() => void fetchReviewFlags()} className="rounded border border-amber-700/40 px-2.5 py-1 text-xs font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/40">Refresh</button>
+            </div>
+            {reviewFlagsError && <p className="text-xs text-red-700 dark:text-red-300">{reviewFlagsError}</p>}
+            <div className="grid gap-2 lg:grid-cols-2">
+              {reviewFlags.map((flag) => {
+                const chapter = chapters.find((candidate) => candidate.index === flag.chapterIndex);
+                return (
+                  <article key={flag.id} className="rounded border border-amber-700/30 bg-white/60 p-3 dark:bg-black/20">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 text-xs">
+                        <p className="font-semibold">Chapter {(flag.chapterIndex ?? 0) + 1}{flag.speaker ? ` · ${flag.speaker}` : ''}</p>
+                        {flag.sourceText && <p className="mt-1 line-clamp-2 opacity-80">“{flag.sourceText}”</p>}
+                        {flag.reason && <p className="mt-1 opacity-80">{flag.reason}</p>}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void retryReviewFlag(flag)}
+                          disabled={!chapter || retryingReviewFlagId === flag.id}
+                          className="rounded bg-amber-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+                        >
+                          {retryingReviewFlagId === flag.id ? 'Queuing…' : 'Retry chapter'}
+                        </button>
+                        <button type="button" onClick={() => void resolveReviewFlag(flag.id)} className="rounded border border-amber-700/40 px-2.5 py-1 text-xs font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/40">Resolve</button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Global Actions Toolbar */}
       <div className="flex-none p-2 bg-surface border-b border-line-soft flex items-center justify-between flex-wrap gap-2 shadow-sm relative z-10">
