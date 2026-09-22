@@ -32,6 +32,9 @@ import { isS3Configured } from '@/lib/server/storage/s3';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
 import { getFFmpegPath } from '@/lib/server/audiobooks/ffmpeg-bin';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
+import { generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
+import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
+import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
 import { resolveTtsCredentials } from '@/lib/server/admin/resolve-credentials';
 import { resolveEffectiveTtsInstructions } from '@/lib/server/admin/tts-instructions';
@@ -85,10 +88,11 @@ import {
   buildMultiVoiceCast,
   getCharacterMapReadiness,
   MULTI_VOICE_WORKER_MODE,
+  DRAMA_GEMINI_TTS_WORKER_MODE,
   resolveMultiVoiceWorkerResult,
   type MultiVoiceCastMember,
 } from '@/lib/shared/multi-voice';
-import { DEFAULT_DOCUMENT_SETTINGS } from '@/types/document-settings';
+import { DEFAULT_DOCUMENT_SETTINGS, type SmartAudioCharacterMap } from '@/types/document-settings';
 import { isKokoroModel } from '@/lib/shared/kokoro';
 import {
   buildSmartAudioValidationRepairPayload,
@@ -596,8 +600,10 @@ export async function POST(request: NextRequest) {
     }
     const isScholarLikeMode = isScholarLikeSmartAudioMode(selectedProfile?.workerMode);
     let multiVoiceCast: MultiVoiceCastMember[] = [];
-    if (selectedProfile?.workerMode === MULTI_VOICE_WORKER_MODE) {
-      if (!isKokoroModel(model)) {
+    let cloudDramaCast: SmartAudioCharacterMap | null = null;
+    if (selectedProfile?.workerMode === MULTI_VOICE_WORKER_MODE || selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+      const isCloudDrama = selectedProfile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
+      if (!isCloudDrama && !isKokoroModel(model)) {
         return NextResponse.json({
           code: 'MULTI_VOICE_KOKORO_REQUIRED',
           error: 'LitRPG Audio Drama currently requires a Kokoro TTS model.',
@@ -615,14 +621,23 @@ export async function POST(request: NextRequest) {
         try { storedSettings = JSON.parse(storedSettings); } catch { storedSettings = {}; }
       }
       const resolvedSettings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, storedSettings);
-      const readiness = getCharacterMapReadiness(resolvedSettings.smartAudioCharacters);
+      const readiness = isCloudDrama
+        ? getCloudTtsCharacterMapReadiness(
+          storedSettings && typeof storedSettings === 'object' && !Array.isArray(storedSettings)
+            ? (storedSettings as Record<string, unknown>).smartAudioCharacters
+            : null,
+        )
+        : getCharacterMapReadiness(resolvedSettings.smartAudioCharacters);
       if (!readiness.ready || readiness.map?.profileId !== selectedProfile.id) {
         return NextResponse.json({
           code: 'CHARACTER_CAST_REQUIRED',
-          error: 'Review and assign the LitRPG character voices before cleaning this chapter.',
+          error: isCloudDrama
+            ? 'Review and assign the Google Cloud Drama character voices before cleaning this chapter.'
+            : 'Review and assign the LitRPG character voices before cleaning this chapter.',
         }, { status: 409 });
       }
-      multiVoiceCast = buildMultiVoiceCast(readiness.map);
+      if (isCloudDrama) cloudDramaCast = readiness.map;
+      else multiVoiceCast = buildMultiVoiceCast(readiness.map);
     }
     let bookLexicon = isScholarLikeMode
       ? await readBookLexicon(storageUserId, sourceDocumentId)
@@ -1078,7 +1093,24 @@ export async function POST(request: NextRequest) {
       requirePronunciationTagsForForeignScripts: isScholarLikeSmartAudioMode(selectedProfile?.workerMode),
     });
 
-    const ttsBuffer = await generateSegmentedAudiobookTtsBuffer(
+    const ttsBuffer = cloudDramaCast && selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+      ? await (async () => {
+        const drama = await generateCloudDramaAudiobook({
+          cleanedText: processedTextForTts,
+          characterMap: cloudDramaCast,
+          geminiApiKey: selectedProfile.geminiApiKey || '',
+          backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
+          directorModel: resolveCleanupAiModel(selectedProfile),
+          serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
+          signal: request.signal,
+        });
+        await persistCloudDramaReviewFlags({
+          documentId: sourceDocumentId, userId: storageUserId,
+          chapterIndex, flags: drama.reviewFlags,
+        });
+        return drama.audioBuffer;
+      })()
+      : await generateSegmentedAudiobookTtsBuffer(
       {
         text: processedTextForTts, // <--- CHANGED THIS FROM data.text
         voice,

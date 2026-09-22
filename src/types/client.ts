@@ -88,6 +88,8 @@ export interface SmartAudioProfile {
   aiModelFallbacks?: string[];
   /** Gemini model used only for pronunciation scanning and refinement. */
   pronunciationAiModel?: string;
+  /** Optional ordered Gemini pronunciation fallbacks used before failing. */
+  pronunciationAiModelFallbacks?: string[];
   customTtsPrompt: string;
   abbreviations: Record<string, string>;
   pronunciations: Record<string, string>;
@@ -128,10 +130,31 @@ export interface SmartAudioProfile {
    * 'standard' → pronunciation markup only
    * 'scholar'  → pronunciation markup plus the cached contextual definition
    * 'bibliography-catcher' → provides structural layout tags to Gemini for better end-matter pruning
+   * 'multi-voice' → Kokoro Audio Drama (multi-character TTS)
+   * 'drama-gemini-tts' → Google Cloud Gemini-TTS Audio Drama (expressive multi-character TTS)
    * Defaults to 'standard' when absent.
    */
-  workerMode?: 'standard' | 'scholar' | 'bibliography-catcher' | 'multi-voice';
+  workerMode?: 'standard' | 'scholar' | 'bibliography-catcher' | 'multi-voice' | 'drama-gemini-tts';
   resolvedDictionaryHash?: string | null;
+
+  // ── Google Cloud Service Account credentials (for drama-gemini-tts) ──────────
+  /**
+   * Write-only: raw Google Cloud Service Account JSON key.
+   * Stored server-side only; NEVER returned to the client after saving.
+   * The authenticated principal must have roles/aiplatform.user (aiplatform.endpoints.predict).
+   */
+  googleCloudServiceAccountJson?: string;
+  /**
+   * Safe client-side flag: true when a service account JSON is stored for this profile.
+   * Replaces the raw JSON in all responses to the browser.
+   */
+  googleCloudServiceAccountConfigured?: boolean;
+  /**
+   * Safe client-side metadata: the client_email from the stored service account JSON,
+   * shown in the UI so users can verify which account is active.
+   * Null when no service account is configured.
+   */
+  googleCloudServiceAccountEmail?: string | null;
 }
 
 

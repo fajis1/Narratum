@@ -22,7 +22,7 @@ export interface AudiobookGpuQueueObserver {
   requestIdentity?: GpuQueueRequestIdentity;
 }
 
-async function concatenateMp3Segments(
+export async function concatenateMp3Segments(
   segments: readonly Buffer[],
   signal?: AbortSignal,
 ): Promise<Buffer> {
@@ -96,6 +96,32 @@ async function concatenateMp3Segments(
       });
     });
 
+    return await readFile(outputPath);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/** Short, valid MP3 used to retain the place of a failed Cloud Drama line. */
+export async function generateSilentMp3Segment(signal?: AbortSignal): Promise<Buffer> {
+  const workDir = await mkdtemp(join(tmpdir(), 'openreader-tts-silence-'));
+  const outputPath = join(workDir, 'silence.mp3');
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const ffmpeg = spawn(getFFmpegPath(), [
+        '-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono',
+        '-t', '0.4', '-c:a', 'libmp3lame', '-b:a', '64k', outputPath,
+      ]);
+      const onAbort = () => ffmpeg.kill('SIGKILL');
+      signal?.addEventListener('abort', onAbort, { once: true });
+      ffmpeg.on('error', (error) => { signal?.removeEventListener('abort', onAbort); reject(error); });
+      ffmpeg.on('close', (code) => {
+        signal?.removeEventListener('abort', onAbort);
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg failed to create silence (code ${code}).`));
+      });
+      if (signal?.aborted) onAbort();
+    });
     return await readFile(outputPath);
   } finally {
     await rm(workDir, { recursive: true, force: true });

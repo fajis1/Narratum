@@ -65,6 +65,9 @@ import {
 } from '@/lib/server/smart-audio/book-lexicon';
 import { normalizeGeminiTokenUsage } from '@/lib/server/smart-audio/gemini-usage';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
+import { generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
+import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
+import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
 import { mergeGlobalDefinitions, readGlobalDefinitions } from '@/lib/server/smart-audio/global-definition-library';
 import { preparePdfAudiobookBlocks } from '@/lib/shared/pdf-audiobook-blocks';
@@ -86,6 +89,7 @@ import {
   buildMultiVoiceCast,
   getCharacterMapReadiness,
   MULTI_VOICE_WORKER_MODE,
+  DRAMA_GEMINI_TTS_WORKER_MODE,
   parseVoiceTaggedText,
   renderVoiceSegments,
   resolveMultiVoiceWorkerResult,
@@ -935,7 +939,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
     if (chapters.length === 0) throw new Error('No audiobook content found before end matter');
     const format = (settings.format as 'mp3' | 'm4b') || 'm4b';
 
-    const creds = await resolveTtsCredentials({
+    const creds = selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? null : await resolveTtsCredentials({
       providerHeader: settings.providerRef || null,
       apiKeyHeader: null,
       baseUrlHeader: null,
@@ -943,7 +947,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       restrictUserApiKeys: true,
     });
 
-    if ('error' in creds) {
+    if (creds && 'error' in creds) {
       throw new Error(`Failed to resolve TTS credentials: ${creds.error}. Background generation requires admin TTS providers.`);
     }
 
@@ -1122,6 +1126,20 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
         return;
       }
       multiVoiceCharacters = buildMultiVoiceCast(readiness.map);
+    } else if (selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+      const storedCast = rawDocumentSettings && typeof rawDocumentSettings === 'object' && !Array.isArray(rawDocumentSettings)
+        ? (rawDocumentSettings as Record<string, unknown>).smartAudioCharacters
+        : null;
+      const readiness = getCloudTtsCharacterMapReadiness(storedCast);
+      if (!readiness.ready || readiness.map?.profileId !== selectedProfile.id) {
+        await updateClaimedAudiobookJob(job.id, 'running', {
+          status: WAITING_FOR_VOICES_STATUS,
+          error: 'Review and assign the Google Cloud Drama character voices to continue.',
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+      resolvedDocumentSettings.smartAudioCharacters = readiness.map;
     }
 
     serverLogger.info({
@@ -1656,23 +1674,36 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
 
       let ttsBuffer: Buffer;
       try {
-        ttsBuffer = await generateQueuedAudiobookTts(
+        if (selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+          const drama = await generateCloudDramaAudiobook({
+            cleanedText: processedTextForTts,
+            characterMap: resolvedDocumentSettings.smartAudioCharacters!,
+            geminiApiKey: selectedProfile.geminiApiKey || '',
+            backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
+            directorModel: resolveCleanupAiModel(selectedProfile),
+            serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
+          });
+          ttsBuffer = drama.audioBuffer;
+          await persistCloudDramaReviewFlags({
+            documentId: job.documentId, userId, chapterIndex: chapter.index, flags: drama.reviewFlags,
+          });
+        } else ttsBuffer = await generateQueuedAudiobookTts(
           job.id,
           {
             text: processedTextForTts,
             voice: settings.voice || 'alloy',
             speed: settings.speed || 1,
             format: 'mp3',
-            provider: creds.provider,
-            apiKey: creds.apiKey,
-            baseUrl: creds.baseUrl,
+            provider: creds!.provider,
+            apiKey: creds!.apiKey,
+            baseUrl: creds!.baseUrl,
             testNamespace: testNamespace,
           },
           {
-            provider: creds.provider,
+            provider: creds!.provider,
             model: typeof settings.ttsModel === 'string'
               ? settings.ttsModel
-              : creds.adminRecord?.defaultModel,
+              : creds!.adminRecord?.defaultModel,
           },
           {
             ttsCacheMaxSizeBytes: runtimeConfig.ttsCacheMaxSizeBytes,

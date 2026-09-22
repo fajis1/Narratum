@@ -97,7 +97,10 @@ async function fetchWithExponentialBackoff(
 
       const statusText = response.status === 429 ? 'rate-limited (HTTP 429)' : `temporarily unavailable (HTTP ${response.status})`;
       const delaySeconds = Math.round(delayMs / 1000);
-      const msg = `Gemini API ${statusText}. Retrying ${keyType} key (${maskedKey}) in ${delaySeconds}s (Attempt ${attempt}/${maxAttempts})...`;
+      const effectiveAttempts = (response.status === 503 && maxOverloadAttempts !== undefined)
+        ? maxOverloadAttempts
+        : maxAttempts;
+      const msg = `Gemini API ${statusText}. Retrying ${keyType} key (${maskedKey}) in ${delaySeconds}s (Attempt ${attempt}/${effectiveAttempts})...`;
 
       serverLogger.warn({
         event: 'gemini.rate_limit.retry',

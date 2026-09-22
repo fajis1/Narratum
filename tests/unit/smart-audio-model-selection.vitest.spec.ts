@@ -7,6 +7,7 @@ import {
   resolveCleanupAiModel,
   resolveCleanupAiModels,
   resolvePronunciationAiModel,
+  resolvePronunciationAiModels,
   resolveSmartAudioValidationRepairModel,
 } from '@/lib/shared/smart-audio-models';
 
@@ -48,6 +49,15 @@ describe('Smart Audio model selection', () => {
       .toEqual(['only-model']);
   });
 
+  it('uses at most two unique pronunciation fallbacks in profile order', () => {
+    expect(resolvePronunciationAiModels({
+      pronunciationAiModel: 'gemini-3.8-flash',
+      pronunciationAiModelFallbacks: ['gemini-3.7-flash', 'gemini-3.7-flash', 'gemini-3.6-flash'],
+    })).toEqual(['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']);
+    expect(resolvePronunciationAiModels({ pronunciationAiModel: 'only-model', pronunciationAiModelFallbacks: [] }))
+      .toEqual(['only-model']);
+  });
+
   it('fails validation retries upward to 3.8 Flash without overriding custom models', () => {
     expect(resolveSmartAudioValidationRepairModel('gemini-3.5-flash-lite'))
       .toBe('gemini-3.8-flash');
@@ -81,8 +91,10 @@ describe('Smart Audio model selection', () => {
     expect(settings).toContain('PDF & Audiobook Cleanup Model');
     expect(settings).toContain('Pronunciation Model');
     expect(settings).toContain('Optional cleanup fallbacks');
+    expect(settings).toContain('Optional pronunciation fallbacks');
     expect(settings).toContain('If every selected model fails, the book pauses for 24 hours.');
     expect(scanner).toContain('Pronunciation model:');
+    expect(scanner).toContain('Fallback chain:');
   });
 
   it('offers existing 3.7 users a durable upgrade-or-stay decision after login', () => {

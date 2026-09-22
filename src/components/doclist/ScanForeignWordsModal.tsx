@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ModalFrame } from '@/components/ui';
 import toast from 'react-hot-toast';
 import { useTtsPreviewSettings } from '@/hooks/audio/useTtsPreviewSettings';
+import { PRESET_MODELS } from '@/components/constants';
 import { BookPronunciationInspectorModal } from './BookPronunciationInspectorModal';
 import { matchesTransliteratedTerm } from '@/lib/shared/transliteration-search';
 import {
@@ -60,6 +61,9 @@ export function ScanForeignWordsModal({
 
   const [feedbackExamples, setFeedbackExamples] = useState<string[]>([]);
   const [pronunciationModel, setPronunciationModel] = useState<string | null>(null);
+  const [overrideModel, setOverrideModel] = useState<string>('');
+  const [overrideFallbacks, setOverrideFallbacks] = useState<[string, string]>(['', '']);
+  const [showModelConfig, setShowModelConfig] = useState(false);
   const [apiKeyLast4, setApiKeyLast4] = useState<string | null>(null);
   const [backupApiKeyLast4, setBackupApiKeyLast4] = useState<string | null>(null);
   const [refineInput, setRefineInput] = useState<{ [word: string]: string }>({});
@@ -197,9 +201,13 @@ export function ScanForeignWordsModal({
       if (res.ok) {
         const data = await res.json();
         if (data.feedbackExamples) setFeedbackExamples(data.feedbackExamples);
-        setPronunciationModel(
-          typeof data.pronunciationModel === 'string' ? data.pronunciationModel : null,
-        );
+        const baseModel = typeof data.pronunciationModel === 'string' ? data.pronunciationModel : 'gemini-3.8-flash';
+        setPronunciationModel(baseModel);
+        setOverrideModel((prev) => prev || baseModel);
+        const baseFallbacks = Array.isArray(data.pronunciationModelFallbacks) && data.pronunciationModelFallbacks.length > 0
+          ? [data.pronunciationModelFallbacks[0] || '', data.pronunciationModelFallbacks[1] || '']
+          : ['gemini-3.7-flash', 'gemini-3.6-flash'];
+        setOverrideFallbacks((prev) => (prev[0] || prev[1]) ? prev : baseFallbacks as [string, string]);
         setApiKeyLast4(typeof data.apiKeyLast4 === 'string' ? data.apiKeyLast4 : null);
         setBackupApiKeyLast4(typeof data.backupApiKeyLast4 === 'string' ? data.backupApiKeyLast4 : null);
       }
@@ -454,6 +462,8 @@ export function ScanForeignWordsModal({
           query: queryToUse || undefined,
           generateOnlyForNewWords,
           forceUseBackupKey,
+          pronunciationModel: overrideModel || pronunciationModel || undefined,
+          pronunciationModelFallbacks: overrideFallbacks.filter(Boolean),
         }),
       });
       if (!res.ok) throw new Error('Failed to scan document');
@@ -746,27 +756,94 @@ export function ScanForeignWordsModal({
                 Drag the lower-right corner to resize this window.
               </p>
               {pronunciationModel && (
-                <div className="flex flex-wrap items-center gap-3 text-[11px] text-purple-700 dark:text-purple-300">
-                  <span>Pronunciation model: <span className="font-mono font-semibold">{pronunciationModel}</span></span>
-                  {apiKeyLast4 ? (
-                    <span>Primary API Key: <span className="font-mono font-semibold">{apiKeyLast4}</span></span>
-                  ) : null}
-                  {backupApiKeyLast4 ? (
-                    <span>Backup API Key: <span className="font-mono font-semibold">{backupApiKeyLast4}</span></span>
-                  ) : null}
-                  {!apiKeyLast4 && !backupApiKeyLast4 && (
-                    <div className="flex items-center gap-2 rounded bg-amber-500/15 px-2 py-0.5 text-amber-700 dark:text-amber-300 font-semibold border border-amber-500/30">
-                      <span>⚠️ No Gemini API Key configured!</span>
+                <div className="flex flex-col gap-1.5 text-[11px] text-purple-700 dark:text-purple-300">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-1.5">
+                      <span>Pronunciation model:</span>
+                      <select
+                        aria-label="Pronunciation model"
+                        value={overrideModel || pronunciationModel}
+                        onChange={(e) => {
+                          const newModel = e.target.value;
+                          setOverrideModel(newModel);
+                          if (newModel === 'gemini-3.8-flash') setOverrideFallbacks(['gemini-3.7-flash', 'gemini-3.6-flash']);
+                          else if (newModel === 'gemini-3.7-flash') setOverrideFallbacks(['gemini-3.6-flash', 'gemini-3.5-flash']);
+                          else if (newModel === 'gemini-3.6-flash') setOverrideFallbacks(['gemini-3.5-flash', 'gemini-2.5-flash']);
+                        }}
+                        disabled={loading || scanActive}
+                        className="rounded border border-purple-300 bg-white px-1.5 py-0.5 text-[11px] font-mono font-semibold text-purple-900 shadow-sm dark:border-purple-700 dark:bg-gray-800 dark:text-purple-100 cursor-pointer"
+                      >
+                        {PRESET_MODELS.filter(m => m.id !== 'custom').map((m) => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
                       <button
                         type="button"
-                        onClick={() => {
-                          onClose();
-                          window.dispatchEvent(new CustomEvent('open-smart-audio-settings'));
-                        }}
-                        className="underline hover:text-amber-900 dark:hover:text-amber-100 font-bold ml-1"
+                        onClick={() => setShowModelConfig((prev) => !prev)}
+                        className="text-[10px] underline hover:text-purple-900 dark:hover:text-purple-100 ml-1 font-medium"
+                        title="Configure fallback models"
                       >
-                        Configure Key in Smart Audio Settings →
+                        {showModelConfig ? 'Hide fallbacks ▲' : 'Fallbacks ▾'}
                       </button>
+                    </div>
+                    {apiKeyLast4 ? (
+                      <span>Primary API Key: <span className="font-mono font-semibold">{apiKeyLast4}</span></span>
+                    ) : null}
+                    {backupApiKeyLast4 ? (
+                      <span>Backup API Key: <span className="font-mono font-semibold">{backupApiKeyLast4}</span></span>
+                    ) : null}
+                    {!apiKeyLast4 && !backupApiKeyLast4 && (
+                      <div className="flex items-center gap-2 rounded bg-amber-500/15 px-2 py-0.5 text-amber-700 dark:text-amber-300 font-semibold border border-amber-500/30">
+                        <span>⚠️ No Gemini API Key configured!</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClose();
+                            window.dispatchEvent(new CustomEvent('open-smart-audio-settings'));
+                          }}
+                          className="underline hover:text-amber-900 dark:hover:text-amber-100 font-bold ml-1"
+                        >
+                          Configure Key in Smart Audio Settings →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {showModelConfig && (
+                    <div className="flex flex-wrap items-center gap-2 rounded border border-purple-200 bg-purple-50/60 px-2 py-1.5 text-[11px] text-purple-900 dark:border-purple-800/60 dark:bg-purple-950/30 dark:text-purple-200">
+                      <span className="font-semibold">Fallback chain:</span>
+                      <div className="flex items-center gap-1.5 font-mono">
+                        <span className="font-bold">{overrideModel || pronunciationModel}</span>
+                        <span>→</span>
+                        <select
+                          aria-label="Fallback model 1"
+                          value={overrideFallbacks[0] || ''}
+                          onChange={(e) => setOverrideFallbacks([e.target.value, overrideFallbacks[1]])}
+                          disabled={loading || scanActive}
+                          className="rounded border border-purple-300 bg-white px-1 py-0.5 text-[10px] dark:border-purple-700 dark:bg-gray-800"
+                        >
+                          <option value="">(No Fallback 1)</option>
+                          {PRESET_MODELS.filter(m => m.id !== 'custom' && m.id !== (overrideModel || pronunciationModel)).map((m) => (
+                            <option key={m.id} value={m.id}>{m.id}</option>
+                          ))}
+                        </select>
+                        <span>→</span>
+                        <select
+                          aria-label="Fallback model 2"
+                          value={overrideFallbacks[1] || ''}
+                          onChange={(e) => setOverrideFallbacks([overrideFallbacks[0], e.target.value])}
+                          disabled={loading || scanActive}
+                          className="rounded border border-purple-300 bg-white px-1 py-0.5 text-[10px] dark:border-purple-700 dark:bg-gray-800"
+                        >
+                          <option value="">(No Fallback 2)</option>
+                          {PRESET_MODELS.filter(m => m.id !== 'custom' && m.id !== (overrideModel || pronunciationModel) && m.id !== overrideFallbacks[0]).map((m) => (
+                            <option key={m.id} value={m.id}>{m.id}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                        (Tried in order if {overrideModel || pronunciationModel} is overloaded/503)
+                      </span>
                     </div>
                   )}
                 </div>

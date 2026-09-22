@@ -8,7 +8,7 @@ vi.mock('@/lib/server/tts/generate', () => ({
   generateTTSBuffer,
 }));
 
-import { generateSegmentedAudiobookTtsBuffer } from '../../src/lib/server/audiobooks/segmented-tts';
+import { generateSegmentedAudiobookTtsBuffer, generateSilentMp3Segment } from '../../src/lib/server/audiobooks/segmented-tts';
 import { AUDIOBOOK_TTS_SEGMENT_MAX_CHARACTERS } from '../../src/lib/shared/audiobook-batching';
 
 describe('segmented audiobook TTS generation', () => {
@@ -71,5 +71,11 @@ describe('segmented audiobook TTS generation', () => {
       apiKey: 'test-placeholder',
     })).rejects.toThrow(/outside a voice segment/i);
     expect(generateTTSBuffer).not.toHaveBeenCalled();
+  });
+
+  test('creates a valid MP3 silence placeholder for failed Cloud Drama lines', async () => {
+    const silence = await generateSilentMp3Segment();
+    expect(silence.length).toBeGreaterThan(0);
+    expect(silence.subarray(0, 3).toString('ascii')).toBe('ID3');
   });
 });

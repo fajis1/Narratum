@@ -23,10 +23,16 @@ import {
   getCharacterMapReadiness,
   mergeExtractedCharacters,
   MULTI_VOICE_WORKER_MODE,
+  DRAMA_GEMINI_TTS_WORKER_MODE,
   WAITING_FOR_VOICES_STATUS,
 } from '@/lib/shared/multi-voice';
 import { resolveCleanupAiModel, resolveCleanupAiModels } from '@/lib/shared/smart-audio-models';
 import { DEFAULT_DOCUMENT_SETTINGS, type SmartAudioCharacterMap } from '@/types/document-settings';
+import {
+  getCloudTtsCharacterMapReadiness,
+  normalizeCloudTtsCharacterMap,
+} from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import { CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,13 +41,18 @@ type OwnedDocument = {
   type: string;
 };
 
-function parseStoredSettings(value: unknown) {
-  if (typeof value !== 'string') return mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, value);
+function parseStoredSettings(value: unknown, isCloudDrama: boolean) {
+  let raw = value;
   try {
-    return mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, JSON.parse(value));
+    if (typeof raw === 'string') raw = JSON.parse(raw);
   } catch {
-    return mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, null);
+    raw = null;
   }
+  const settings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, raw);
+  if (isCloudDrama && raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    settings.smartAudioCharacters = normalizeCloudTtsCharacterMap((raw as Record<string, unknown>).smartAudioCharacters) || undefined;
+  }
+  return settings;
 }
 
 async function loadScope(request: NextRequest, documentId: string, profileId: string) {
@@ -62,7 +73,7 @@ async function loadScope(request: NextRequest, documentId: string, profileId: st
   const profiles = await readSmartAudioProfilesDocument(userId);
   const profile = findSmartAudioProfileById(profiles, profileId);
   if (!profile) return NextResponse.json({ error: 'Smart Audio profile not found.' }, { status: 404 });
-  if (profile.workerMode !== MULTI_VOICE_WORKER_MODE) {
+  if (profile.workerMode !== MULTI_VOICE_WORKER_MODE && profile.workerMode !== DRAMA_GEMINI_TTS_WORKER_MODE) {
     return NextResponse.json({ error: 'The selected profile is not an Audio Drama profile.' }, { status: 400 });
   }
   const settingRows = await db.select({ dataJson: documentSettings.dataJson })
@@ -77,7 +88,7 @@ async function loadScope(request: NextRequest, documentId: string, profileId: st
     userId,
     document,
     profile,
-    settings: parseStoredSettings(settingRows[0]?.dataJson),
+    settings: parseStoredSettings(settingRows[0]?.dataJson, profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE),
   };
 }
 
@@ -124,7 +135,9 @@ export async function GET(request: NextRequest) {
     }
     const scope = await loadScope(request, documentId, profileId);
     if (scope instanceof Response) return scope;
-    const readiness = getCharacterMapReadiness(scope.settings.smartAudioCharacters);
+    const readiness = scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+      ? getCloudTtsCharacterMapReadiness(scope.settings.smartAudioCharacters)
+      : getCharacterMapReadiness(scope.settings.smartAudioCharacters);
     return NextResponse.json({
       characterMap: readiness.map,
       ready: readiness.ready && readiness.map?.profileId === profileId,
@@ -212,6 +225,9 @@ export async function POST(request: NextRequest) {
         characters: workerResult.characters,
         profileId,
         sourceFingerprint: source.sourceFingerprint,
+        ...(scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+          ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET }
+          : {}),
       });
       await saveCharacterMap({
         documentId,
@@ -249,7 +265,18 @@ export async function PUT(request: NextRequest) {
     }
     const scope = await loadScope(request, documentId, profileId);
     if (scope instanceof Response) return scope;
-    const characterMap = finalizeSmartAudioCharacterMap(body.characterMap);
+    const characterMap = scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+      ? normalizeCloudTtsCharacterMap(body.characterMap)
+      : finalizeSmartAudioCharacterMap(body.characterMap);
+    if (!characterMap) return NextResponse.json({ error: 'Invalid character cast.' }, { status: 400 });
+    if (scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+      characterMap.status = 'complete';
+      const readiness = getCloudTtsCharacterMapReadiness(characterMap);
+      if (!readiness.ready) return NextResponse.json({
+        error: 'Assign a valid Cloud voice to every primary character before saving.',
+        unassigned: readiness.unassigned,
+      }, { status: 400 });
+    }
     characterMap.profileId = profileId;
     characterMap.sourceFingerprint = characterMap.sourceFingerprint
       || scope.settings.smartAudioCharacters?.sourceFingerprint;

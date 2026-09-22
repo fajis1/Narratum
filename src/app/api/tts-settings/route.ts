@@ -17,6 +17,7 @@ import type { SmartAudioProfile } from '@/types/client';
 import { errorResponse } from '@/lib/server/errors/next-response';
 import { serverLogger } from '@/lib/server/logger';
 import { requireAuthContext } from '@/lib/server/auth/auth';
+import { parseServiceAccountJson } from '@/lib/server/smart-audio/google-cloud-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -88,6 +89,14 @@ export async function POST(request: NextRequest) {
         ? body.selectedSmartAudioProfileId
         : undefined;
       const incomingProfiles = body.smartAudioProfiles as SmartAudioProfile[];
+      for (const profile of incomingProfiles) {
+        if (!profile.googleCloudServiceAccountJson?.trim()) continue;
+        try {
+          parseServiceAccountJson(profile.googleCloudServiceAccountJson);
+        } catch {
+          return NextResponse.json({ error: 'Invalid Google Cloud service-account JSON.' }, { status: 400 });
+        }
+      }
       savedDoc = await writeSmartAudioProfilesDocument(userId, {
         selectedProfileId: selectedSmartAudioProfileId || currentDoc.selectedProfileId,
         profiles: mergeStoredSmartAudioProfileSecrets(incomingProfiles, currentDoc.profiles),

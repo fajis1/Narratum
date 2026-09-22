@@ -7,6 +7,7 @@ import {
   KOKORO_CHARACTER_VOICES,
   normalizeSmartAudioCharacterMap,
 } from '@/lib/shared/multi-voice';
+import { CLOUD_TTS_ALL_VOICES, CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 
 interface MultiVoiceCharacterModalProps {
@@ -15,6 +16,7 @@ interface MultiVoiceCharacterModalProps {
   isOpen: boolean;
   jobId?: string;
   standalone?: boolean;
+  workerMode?: 'multi-voice' | 'drama-gemini-tts';
   onClose: () => void;
   onComplete: (characterMap: SmartAudioCharacterMap) => void | Promise<void>;
 }
@@ -33,6 +35,7 @@ export function MultiVoiceCharacterModal({
   isOpen,
   jobId,
   standalone = false,
+  workerMode = 'multi-voice',
   onClose,
   onComplete,
 }: MultiVoiceCharacterModalProps) {
@@ -48,6 +51,10 @@ export function MultiVoiceCharacterModal({
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioUrl = useRef<string | null>(null);
   const scanInFlight = useRef(false);
+  const isCloudDrama = workerMode === 'drama-gemini-tts';
+  const normalizeCast = useCallback((value: unknown) => normalizeSmartAudioCharacterMap(
+    value, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {},
+  ), [isCloudDrama]);
 
   const clearTransientResources = useCallback(() => {
     if (retryTimer.current) clearTimeout(retryTimer.current);
@@ -78,7 +85,7 @@ export function MultiVoiceCharacterModal({
         return;
       }
       if (!response.ok) throw new Error(body.error || body.message || 'Character scan failed.');
-      const normalized = normalizeSmartAudioCharacterMap(body.characterMap);
+      const normalized = normalizeCast(body.characterMap);
       if (!normalized) throw new Error('Character scan returned an invalid cast.');
       setCharacterMap(normalized);
       setStatusMessage(null);
@@ -89,7 +96,7 @@ export function MultiVoiceCharacterModal({
       scanInFlight.current = false;
       setIsScanning(false);
     }
-  }, [documentId, isOpen, profileId]);
+  }, [documentId, isOpen, normalizeCast, profileId]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -106,7 +113,7 @@ export function MultiVoiceCharacterModal({
       const body = await response.json().catch(() => ({})) as CastResponse;
       if (!response.ok) throw new Error(body.error || 'Failed to load the character cast.');
       if (cancelled) return;
-      const normalized = normalizeSmartAudioCharacterMap(body.characterMap);
+      const normalized = normalizeCast(body.characterMap);
       if (normalized?.profileId === profileId && !normalized.needsRescan) {
         setCharacterMap(normalized);
         setStatusMessage(null);
@@ -128,15 +135,15 @@ export function MultiVoiceCharacterModal({
       cancelled = true;
       clearTransientResources();
     };
-  }, [clearTransientResources, documentId, isOpen, profileId, scanCharacters]);
+  }, [clearTransientResources, documentId, isOpen, normalizeCast, profileId, scanCharacters]);
 
   const entries = useMemo(() => Object.values(characterMap?.entries || {}), [characterMap]);
   const primaryCharacters = entries.filter((entry) => !entry.aliasFor);
   const unassigned = primaryCharacters.filter((entry) => !entry.voiceId);
   const hasNarrator = primaryCharacters.some((entry) => entry.name.toLocaleLowerCase() === 'narrator');
   const duplicateVoiceAssignments = useMemo(
-    () => getDuplicateVoiceAssignments(characterMap),
-    [characterMap],
+    () => getDuplicateVoiceAssignments(characterMap, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {}),
+    [characterMap, isCloudDrama],
   );
   const duplicateVoiceByCharacter = useMemo(() => new Map(
     duplicateVoiceAssignments.flatMap((assignment) => assignment.characterNames.map((name) => [
@@ -174,6 +181,16 @@ export function MultiVoiceCharacterModal({
     });
   };
 
+  const updateCloudDirection = (name: string, changes: Partial<NonNullable<SmartAudioCharacterMap['entries'][string]['cloudDirection']>>) => {
+    updateEntry(name, (entry) => {
+      entry.cloudDirection = {
+        audioProfile: entry.description || `${entry.name} speaks naturally.`,
+        ...entry.cloudDirection,
+        ...changes,
+      };
+    });
+  };
+
   const handlePreview = async (name: string) => {
     const entry = characterMap?.entries[name];
     if (!entry?.voiceId) return;
@@ -181,10 +198,12 @@ export function MultiVoiceCharacterModal({
     setError(null);
     try {
       const previewText = entry.sampleText || `${entry.name} is ready for the adventure.`;
-      const response = await fetch('/api/tts/preview', {
+      const response = await fetch(isCloudDrama ? '/api/audiobook/characters/preview' : '/api/tts/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: previewText, voice: entry.voiceId }),
+        body: JSON.stringify(isCloudDrama
+          ? { documentId, profileId, text: previewText, voiceName: entry.voiceId, audioProfile: entry.cloudDirection?.audioProfile }
+          : { text: previewText, voice: entry.voiceId }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({})) as { error?: string };
@@ -278,7 +297,7 @@ export function MultiVoiceCharacterModal({
       });
       const body = await response.json().catch(() => ({})) as CastResponse;
       if (!response.ok) throw new Error(body.error || 'Failed to save the reviewed cast.');
-      const savedCharacterMap = normalizeSmartAudioCharacterMap(body.characterMap) || characterMap;
+      const savedCharacterMap = normalizeCast(body.characterMap) || characterMap;
       await onComplete(savedCharacterMap);
       onClose();
     } catch (saveError) {
@@ -295,7 +314,7 @@ export function MultiVoiceCharacterModal({
       <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-line p-5">
           <div>
-            <h2 className="text-xl font-bold text-text-strong">Audio Drama Character Pre-Scan</h2>
+            <h2 className="text-xl font-bold text-text-strong">{isCloudDrama ? 'Google Cloud Drama Cast' : 'Audio Drama Character Pre-Scan'}</h2>
             <p className="mt-1 text-sm text-text-soft">Find and review the speaking cast before Audio Drama generation.</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-full p-2 text-text-soft hover:bg-surface-raised hover:text-text-strong" aria-label="Close casting dialog">✕</button>
@@ -372,8 +391,8 @@ export function MultiVoiceCharacterModal({
                           onChange={(event) => updateEntry(character.name, (entry) => { entry.voiceId = event.target.value; })}
                           className="min-w-0 flex-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground"
                         >
-                          <option value="">Select a Kokoro voice</option>
-                          {KOKORO_CHARACTER_VOICES.map((voice) => {
+                          <option value="">Select a {isCloudDrama ? 'Cloud' : 'Kokoro'} voice</option>
+                          {(isCloudDrama ? CLOUD_TTS_ALL_VOICES : KOKORO_CHARACTER_VOICES).map((voice) => {
                             const assignedNames = charactersByVoice.get(voice) || [];
                             const assignedToCurrent = assignedNames.includes(character.name);
                             const assignedToOthers = assignedNames.filter((name) => name !== character.name);
@@ -416,6 +435,77 @@ export function MultiVoiceCharacterModal({
                   )}
                 </div>
               </div>
+              {isCloudDrama && !character.aliasFor && (
+                <details className="mt-4 rounded-lg border border-line bg-surface-sunken p-3">
+                  <summary className="cursor-pointer text-sm font-semibold text-text-strong">Character direction</summary>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label className="sm:col-span-2 text-xs text-text-soft">
+                      Stable voice and personality profile
+                      <textarea
+                        value={character.cloudDirection?.audioProfile || ''}
+                        onChange={(event) => updateCloudDirection(character.name, { audioProfile: event.target.value })}
+                        maxLength={1000}
+                        rows={3}
+                        className="mt-1 w-full rounded-lg border border-line bg-background p-2 text-sm text-foreground"
+                        placeholder="Warm, measured, and quietly authoritative."
+                      />
+                    </label>
+                    {([
+                      ['pace', ['slow', 'measured', 'moderate', 'brisk', 'fast']],
+                      ['energy', ['low', 'moderate', 'high']],
+                      ['intensity', ['subdued', 'controlled', 'moderate', 'heightened', 'intense']],
+                    ] as const).map(([field, choices]) => (
+                      <label key={field} className="text-xs capitalize text-text-soft">
+                        Default {field}
+                        <select
+                          value={character.cloudDirection?.defaultPerformance?.[field] || ''}
+                          onChange={(event) => updateCloudDirection(character.name, {
+                            defaultPerformance: { ...character.cloudDirection?.defaultPerformance, [field]: event.target.value || undefined },
+                          })}
+                          className="mt-1 w-full rounded-lg border border-line bg-background p-2 text-sm text-foreground"
+                        >
+                          <option value="">No default</option>
+                          {choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
+                        </select>
+                      </label>
+                    ))}
+                    <label className="text-xs text-text-soft">
+                      Default delivery styles (comma-separated)
+                      <input
+                        value={character.cloudDirection?.defaultPerformance?.delivery?.join(', ') || ''}
+                        onChange={(event) => updateCloudDirection(character.name, {
+                          defaultPerformance: {
+                            ...character.cloudDirection?.defaultPerformance,
+                            delivery: event.target.value.split(',').map((value) => value.trim()).filter(Boolean),
+                          },
+                        })}
+                        className="mt-1 w-full rounded-lg border border-line bg-background p-2 text-sm text-foreground"
+                        placeholder="thoughtful, warm"
+                      />
+                    </label>
+                    {(['speakingRate', 'pitch'] as const).map((field) => (
+                      <label key={field} className="text-xs text-text-soft">
+                        {field === 'speakingRate' ? 'Speaking rate (0.25–2.0)' : 'Pitch (-20 to 20)'}
+                        <input
+                          type="number"
+                          min={field === 'speakingRate' ? 0.25 : -20}
+                          max={field === 'speakingRate' ? 2 : 20}
+                          step="0.1"
+                          value={character.cloudDirection?.technicalOverrides?.[field] ?? ''}
+                          onChange={(event) => updateCloudDirection(character.name, {
+                            technicalOverrides: {
+                              ...character.cloudDirection?.technicalOverrides,
+                              [field]: event.target.value ? Number(event.target.value) : undefined,
+                            },
+                          })}
+                          className="mt-1 w-full rounded-lg border border-line bg-background p-2 text-sm text-foreground"
+                        />
+                      </label>
+                    ))}
+                    <p className="sm:col-span-2 text-xs text-text-soft">Direction stays with this character across chapters. Scene emotions are chosen during narration.</p>
+                  </div>
+                </details>
+              )}
             </div>
           ))}
         </div>

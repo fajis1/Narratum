@@ -26,10 +26,12 @@ import { mergeDocumentSettings } from '@/lib/shared/document-settings';
 import {
   getCharacterMapReadiness,
   MULTI_VOICE_WORKER_MODE,
+  DRAMA_GEMINI_TTS_WORKER_MODE,
   requiresDramaAudiobookReplacement,
   WAITING_FOR_VOICES_STATUS,
 } from '@/lib/shared/multi-voice';
 import { isKokoroModel } from '@/lib/shared/kokoro';
+import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { DEFAULT_DOCUMENT_SETTINGS } from '@/types/document-settings';
 import { audiobookPrefix, deleteAudiobookPrefix } from '@/lib/server/audiobooks/blobstore';
 import { readAudiobookRuntimeStatus } from '@/lib/shared/audiobook-runtime-phase';
@@ -125,8 +127,9 @@ export async function POST(req: NextRequest) {
           }, { status: 409 });
         }
       }
-      if (profile?.workerMode === MULTI_VOICE_WORKER_MODE) {
-        if (!isKokoroModel(typeof settingsRecord.ttsModel === 'string' ? settingsRecord.ttsModel : '')) {
+      if (profile?.workerMode === MULTI_VOICE_WORKER_MODE || profile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+        const isCloudDrama = profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
+        if (!isCloudDrama && !isKokoroModel(typeof settingsRecord.ttsModel === 'string' ? settingsRecord.ttsModel : '')) {
           return NextResponse.json({
             code: 'MULTI_VOICE_KOKORO_REQUIRED',
             error: 'LitRPG Audio Drama currently requires a Kokoro TTS model.',
@@ -143,11 +146,15 @@ export async function POST(req: NextRequest) {
           DEFAULT_DOCUMENT_SETTINGS,
           parseJobSettings(settingRows[0]?.dataJson),
         );
-        const readiness = getCharacterMapReadiness(storedSettings.smartAudioCharacters);
+        const readiness = isCloudDrama
+          ? getCloudTtsCharacterMapReadiness(parseJobSettings(settingRows[0]?.dataJson).smartAudioCharacters)
+          : getCharacterMapReadiness(storedSettings.smartAudioCharacters);
         if (!readiness.ready || readiness.map?.profileId !== profile.id) {
           return NextResponse.json({
             code: 'CHARACTER_CAST_REQUIRED',
-            error: 'Review and assign the LitRPG character voices before generation.',
+            error: isCloudDrama
+              ? 'Review and assign the Google Cloud Drama character voices before generation.'
+              : 'Review and assign the LitRPG character voices before generation.',
             hasCharacterScan: Boolean(readiness.map),
             unassigned: readiness.unassigned,
           }, { status: 409 });

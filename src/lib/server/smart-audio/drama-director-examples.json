@@ -1,0 +1,406 @@
+[
+  {
+    "number": 1,
+    "title": "Desperate, reflective narration",
+    "text": "So, I prayed.",
+    "direction": {
+      "speaker": "Narrator",
+      "utteranceType": "narration",
+      "sceneContext": "After months of social collapse and watching his wife succumb to the Weeping, the narrator finally turns to prayer despite having abandoned his faith.",
+      "performance": {
+        "primaryEmotion": "desperate",
+        "secondaryEmotions": [
+          "vulnerable",
+          "hopeful"
+        ],
+        "socialIntent": "confessing",
+        "delivery": [
+          "intimate",
+          "restrained"
+        ],
+        "pace": "slow",
+        "energy": "low",
+        "intensity": "high",
+        "tags": [
+          "long pause"
+        ],
+        "nuance": "Keep this simple. The emotional weight comes from exhaustion and surrender, not theatrical grief. Allow a meaningful silence around the sentence."
+      }
+    }
+  },
+  {
+    "number": 2,
+    "title": "Bethany: controlled internal uncertainty",
+    "text": "The paperwork should be printed out and ready, though are they going to want to do this? Or am I forcing them down my own path?",
+    "direction": {
+      "speaker": "Bethany",
+      "utteranceType": "internal-thought",
+      "sceneContext": "Bethany is practicing archery while mentally checking preparations. Her body remains controlled while doubts about the group's decision intrude.",
+      "performance": {
+        "primaryEmotion": "uncertain",
+        "secondaryEmotions": [
+          "worried",
+          "reflective"
+        ],
+        "socialIntent": "questioning",
+        "delivery": [
+          "intimate",
+          "restrained"
+        ],
+        "pace": "slightly-slow",
+        "energy": "low",
+        "intensity": "medium",
+        "tags": [],
+        "nuance": "Begin like a practical checklist. Gradually let self-doubt emerge. The final question carries the most emotional weight. Do not whisper or sound frightened."
+      }
+    }
+  },
+  {
+    "number": 3,
+    "title": "Bethany: thoughts accelerating into anxiety",
+    "text": "Is this the end? Where's the third target? Did we actually decide to go through with this, we could back out now. No, it is a good option, just like it was last night.",
+    "direction": {
+      "speaker": "Bethany",
+      "utteranceType": "internal-thought",
+      "sceneContext": "Bethany waits for an expected third archery target while simultaneously second-guessing the major decision she and her friends have made.",
+      "performance": {
+        "primaryEmotion": "anxious",
+        "secondaryEmotions": [
+          "uncertain",
+          "determined"
+        ],
+        "socialIntent": "questioning",
+        "delivery": [
+          "intimate",
+          "halting"
+        ],
+        "pace": "slightly-fast",
+        "energy": "elevated",
+        "intensity": "building",
+        "tags": [],
+        "nuance": "Let the early questions tumble together. On 'No,' visibly change direction: slow slightly and make the final sentence sound like deliberate self-reassurance."
+      }
+    }
+  },
+  {
+    "number": 4,
+    "title": "Ali: mischievous teasing",
+    "text": "A lady such as yourself, entertaining two suitors, what would the madam say?",
+    "direction": {
+      "speaker": "Ali",
+      "utteranceType": "spoken-dialogue",
+      "sceneContext": "Ali is teasing Bethany, exploiting their long familiarity while maintaining the surface manners of servant and noblewoman.",
+      "performance": {
+        "primaryEmotion": "mischievous",
+        "secondaryEmotions": [
+          "amused",
+          "playful"
+        ],
+        "socialIntent": "teasing",
+        "delivery": [
+          "soft",
+          "sarcastic"
+        ],
+        "pace": "normal",
+        "energy": "low",
+        "intensity": "low",
+        "tags": [
+          "sarcasm"
+        ],
+        "nuance": "She deliberately speaks just loudly enough for Bethany to hear. This is affectionate provocation, not genuine disrespect."
+      }
+    }
+  },
+  {
+    "number": 5,
+    "title": "Dominic: genuine awe over squad link",
+    "text": "This place is incredible.",
+    "direction": {
+      "speaker": "Dominic",
+      "utteranceType": "squad-link",
+      "sceneContext": "Dominic is experiencing Bethany's large family property through their linked Senses and is genuinely impressed by it.",
+      "performance": {
+        "primaryEmotion": "awed",
+        "secondaryEmotions": [
+          "excited",
+          "curious"
+        ],
+        "socialIntent": "informing",
+        "delivery": [
+          "natural"
+        ],
+        "pace": "normal",
+        "energy": "elevated",
+        "intensity": "medium",
+        "tags": [],
+        "nuance": "This is mental communication rather than audible speech, but it should still sound unmistakably like Dominic. Do not turn squad-link speech into whispering."
+      }
+    }
+  },
+  {
+    "number": 6,
+    "title": "Dominic: surprised disbelief",
+    "text": "Seventeen! Where?",
+    "direction": {
+      "speaker": "Dominic",
+      "utteranceType": "squad-link",
+      "sceneContext": "Dominic expected a large house, but seventeen rooms exceeds what he imagined.",
+      "performance": {
+        "primaryEmotion": "surprised",
+        "secondaryEmotions": [
+          "awed",
+          "curious"
+        ],
+        "socialIntent": "questioning",
+        "delivery": [
+          "stunned"
+        ],
+        "pace": "fast",
+        "energy": "elevated",
+        "intensity": "high",
+        "tags": [],
+        "nuance": "The first word is spontaneous disbelief. The second sentence immediately turns into genuine curiosity."
+      }
+    }
+  },
+  {
+    "number": 7,
+    "title": "Tylor: groggy irritation",
+    "text": "What's so important that you would wake me up at this ungodly hour? Seriously can't you let a man sleep? I thought I set it to do not disturb.",
+    "direction": {
+      "speaker": "Tylor",
+      "utteranceType": "squad-link",
+      "sceneContext": "Tylor has just been awakened and is genuinely tired, but his complaint also reflects his normal exaggerated personality.",
+      "performance": {
+        "primaryEmotion": "annoyed",
+        "secondaryEmotions": [
+          "tired",
+          "irritated"
+        ],
+        "socialIntent": "challenging",
+        "delivery": [
+          "natural"
+        ],
+        "pace": "slightly-slow",
+        "energy": "low",
+        "intensity": "medium",
+        "tags": [],
+        "nuance": "Sound recently awakened and inconvenienced. The complaint can be exaggerated without sounding genuinely furious."
+      }
+    }
+  },
+  {
+    "number": 8,
+    "title": "Bethany: serious leadership while preserving consent",
+    "text": "So, as we look over this, we need to decide if this is what we want to do. If anyone has had a change of heart, please speak up during this briefing, or forever hold your peace.",
+    "direction": {
+      "speaker": "Bethany",
+      "utteranceType": "spoken-dialogue",
+      "sceneContext": "Bethany has organized much of the mercenary-company proposal and wants it to succeed, but deliberately gives everyone another opportunity to decline.",
+      "performance": {
+        "primaryEmotion": "serious",
+        "secondaryEmotions": [
+          "determined",
+          "uncertain"
+        ],
+        "socialIntent": "questioning",
+        "delivery": [
+          "measured",
+          "authoritative"
+        ],
+        "pace": "measured",
+        "energy": "normal",
+        "intensity": "medium",
+        "tags": [],
+        "nuance": "Sound like a capable organizer who genuinely wants an answer. She wants them to agree, but she is making an effort not to pressure them."
+      }
+    }
+  },
+  {
+    "number": 9,
+    "title": "Tylor: exuberant comic excitement",
+    "text": "Battleship Dragoons is a go!",
+    "direction": {
+      "speaker": "Tylor",
+      "utteranceType": "squad-link",
+      "sceneContext": "The group has agreed to form the mercenary company. Tylor enthusiastically turns that agreement into his running fantasy about owning a battleship.",
+      "performance": {
+        "primaryEmotion": "excited",
+        "secondaryEmotions": [
+          "triumphant",
+          "playful"
+        ],
+        "socialIntent": "celebrating",
+        "delivery": [
+          "dramatic"
+        ],
+        "pace": "fast",
+        "energy": "high",
+        "intensity": "high",
+        "tags": [],
+        "nuance": "Big and gleeful, but comedic rather than heroic. Tylor is intentionally having fun with the idea."
+      }
+    }
+  },
+  {
+    "number": 10,
+    "title": "Bethany: restrained political calculation",
+    "text": "If I was to lead, I’m afraid it would send the wrong message. It was our strength and well, good luck that got us this chance.",
+    "direction": {
+      "speaker": "Bethany",
+      "utteranceType": "squad-link",
+      "sceneContext": "Bethany believes she could lead, but understands that her family status would make outsiders dismiss the company as a Small-family project.",
+      "performance": {
+        "primaryEmotion": "serious",
+        "secondaryEmotions": [
+          "thoughtful",
+          "determined"
+        ],
+        "socialIntent": "persuasive",
+        "delivery": [
+          "measured",
+          "matter-of-fact"
+        ],
+        "pace": "normal",
+        "energy": "low",
+        "intensity": "medium",
+        "tags": [],
+        "nuance": "She is explaining political reality, not fishing for reassurance. Keep the reasoning practical and controlled."
+      }
+    }
+  },
+  {
+    "number": 11,
+    "title": "Seth: childlike enthusiasm over cheesecake",
+    "text": "She said we have three hours till it closes, we can wait fifteen for cheesecake.",
+    "direction": {
+      "speaker": "Seth",
+      "utteranceType": "spoken-dialogue",
+      "sceneContext": "Dominic wants to leave immediately to submit paperwork, but Seth remembers that cheesecake was promised and argues they have plenty of time.",
+      "performance": {
+        "primaryEmotion": "excited",
+        "secondaryEmotions": [
+          "playful",
+          "eager"
+        ],
+        "socialIntent": "persuasive",
+        "delivery": [
+          "natural"
+        ],
+        "pace": "slightly-fast",
+        "energy": "elevated",
+        "intensity": "medium",
+        "tags": [],
+        "nuance": "His logic is completely sincere even though the priority is humorous. Let his enthusiasm for the cheesecake sell the joke."
+      }
+    }
+  },
+  {
+    "number": 12,
+    "title": "Dominic: mundane frustration",
+    "text": "This is going to take forever.",
+    "direction": {
+      "speaker": "Dominic",
+      "utteranceType": "spoken-dialogue",
+      "sceneContext": "Dominic has repeatedly watched the clock and queue counter barely move while he waits in the registrar's office.",
+      "performance": {
+        "primaryEmotion": "frustrated",
+        "secondaryEmotions": [
+          "bored",
+          "weary"
+        ],
+        "socialIntent": "complaining",
+        "delivery": [
+          "matter-of-fact"
+        ],
+        "pace": "slightly-slow",
+        "energy": "low",
+        "intensity": "low",
+        "tags": [
+          "sigh"
+        ],
+        "nuance": "This is everyday bureaucratic frustration, not anger. Sound drained and impatient."
+      }
+    }
+  },
+  {
+    "number": 13,
+    "title": "Dominic: private determination",
+    "text": "You're stronger than this Dominic.",
+    "direction": {
+      "speaker": "Dominic",
+      "utteranceType": "internal-thought",
+      "sceneContext": "Dominic is fighting the almost compulsive urge to check the time again while trapped in a long bureaucratic wait.",
+      "performance": {
+        "primaryEmotion": "determined",
+        "secondaryEmotions": [
+          "frustrated"
+        ],
+        "socialIntent": "encouraging",
+        "delivery": [
+          "intimate",
+          "restrained"
+        ],
+        "pace": "measured",
+        "energy": "low",
+        "intensity": "medium",
+        "tags": [],
+        "nuance": "This is Dominic sternly coaching himself over something trivial. Keep both the genuine determination and the underlying humor."
+      }
+    }
+  },
+  {
+    "number": 14,
+    "title": "Bethany: calm reassurance",
+    "text": "It's alright. I wouldn't worry about it much. Just let me know if you run into any walls, I will help.",
+    "direction": {
+      "speaker": "Bethany",
+      "utteranceType": "squad-link",
+      "sceneContext": "Dominic has spent hours waiting on an unusual application process. Bethany sees that he is worrying about possibilities he cannot control.",
+      "performance": {
+        "primaryEmotion": "calm",
+        "secondaryEmotions": [
+          "caring",
+          "confident"
+        ],
+        "socialIntent": "reassuring",
+        "delivery": [
+          "comforting",
+          "measured"
+        ],
+        "pace": "normal",
+        "energy": "low",
+        "intensity": "low",
+        "tags": [],
+        "nuance": "Bethany is not dismissing Dominic's concern. She is deliberately grounding him and making it clear that she will help if a real problem appears."
+      }
+    }
+  },
+  {
+    "number": 15,
+    "title": "Vistan: quiet authority",
+    "text": "I've isolated us. I need to know the truth. The real and frank reasons. Not the platitudes, the surface level. If I'm to go to bat for you, I need to know you.",
+    "direction": {
+      "speaker": "Vistan",
+      "utteranceType": "spoken-dialogue",
+      "sceneContext": "Vistan has deliberately isolated the room and is offering to use his influence on the group's behalf, but only if Dominic gives him the real motivation behind their decision.",
+      "performance": {
+        "primaryEmotion": "serious",
+        "secondaryEmotions": [
+          "determined",
+          "protective"
+        ],
+        "socialIntent": "commanding",
+        "delivery": [
+          "authoritative",
+          "restrained"
+        ],
+        "pace": "measured",
+        "energy": "low",
+        "intensity": "high",
+        "tags": [],
+        "nuance": "Do not shout. His power comes from certainty and gravity. 'I need to know the truth' should make the room feel more serious without increasing volume."
+      }
+    }
+  }
+]
