@@ -44,3 +44,11 @@ Rate limiting is coordinated via `gemini_rate_limiter.py` (`call_gemini_with_cap
 - The worker responds with `status: "rate_limit"`.
 - The Node.js queue runner stamps the job with `error: GEMINI_RATE_LIMIT_PAUSE_MESSAGE`.
 - The database scheduler excludes the job for 24 hours (`RATE_LIMIT_BACKOFF_MS = 24 * 60 * 60 * 1000`) or until the user manually clicks **Resume** in the UI.
+## 2026-09-22 — Foreign-word prescan model controls
+
+The foreign-word pronunciation prescan is configured at two levels:
+
+- Smart Audio Settings persist the pronunciation primary model and up to two ordered fallback models.
+- The **Foreign Word Pronunciation & Definition Pre-Scan** modal exposes a per-scan **Pronunciation model** selector and expandable **Fallbacks** selectors. Those request-level values override the profile defaults for that scan.
+
+The prescan sends the selected chain through `fetchGeminiWithRateLimitFallback`. The normal 3.8 → 3.7 → 3.6 chain is available in the prescan UI, while authentication/invalid-request failures are not blindly model-hopped. Prescan overrides are per-scan and are not stored as an independent prescan preference.
