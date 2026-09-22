@@ -6,7 +6,7 @@ import { getDocumentBlob } from '@/lib/server/documents/blobstore';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
 import { buildKokoroPronunciationInstructions, isKokoroSafePronunciation } from '@/lib/shared/kokoro-pronunciation-policy';
-import { resolvePronunciationAiModel } from '@/lib/shared/smart-audio-models';
+import { resolvePronunciationAiModel, resolvePronunciationAiModels } from '@/lib/shared/smart-audio-models';
 import {
   isCompleteScholarScanScope,
   readBookLexicon,
@@ -16,6 +16,7 @@ import type {
   SmartAudioBookLexicon,
   SmartAudioBookLexiconEntry,
 } from '@/types/document-settings';
+import type { ScanProvider } from '@/types/client';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -89,6 +90,12 @@ export async function POST(req: NextRequest) {
     const query = body.query || null;
     const generateOnlyForNewWords = body.generateOnlyForNewWords !== false;
     const forceUseBackupKey = body.forceUseBackupKey === true;
+    const requestedPronunciationModel = typeof body.pronunciationModel === 'string' && body.pronunciationModel.trim()
+      ? body.pronunciationModel.trim()
+      : undefined;
+    const requestedPronunciationFallbacks = Array.isArray(body.pronunciationModelFallbacks)
+      ? body.pronunciationModelFallbacks.map((item: unknown) => typeof item === 'string' ? item.trim() : '').filter(Boolean)
+      : undefined;
 
     const jobId = randomUUID();
     const jobKey = `foreign_word_scan:${jobId}`;
@@ -473,11 +480,11 @@ export async function POST(req: NextRequest) {
           if (!activeProfile?.geminiApiKey && !activeProfile?.backupGeminiApiKey && !activeProfile?.groqApiKey) {
             throw new Error('No API key is configured for the selected Smart Audio profile. Add a Gemini key or a free Groq API key in Smart Audio Settings.');
           }
-          const model = resolvePronunciationAiModel(activeProfile);
+          const model = requestedPronunciationModel || resolvePronunciationAiModel(activeProfile);
+          const fallbackModels = requestedPronunciationFallbacks !== undefined
+            ? requestedPronunciationFallbacks
+            : resolvePronunciationAiModels(activeProfile).slice(1);
           let effectiveModel = model;
-          const apiKey = (forceUseBackupKey && activeProfile?.backupGeminiApiKey)
-            ? activeProfile.backupGeminiApiKey
-            : (activeProfile?.geminiApiKey || activeProfile?.backupGeminiApiKey || '');
       
       const chunkSize = 35;
           for (let i = 0; i < wordsMissingOptions.length; i += chunkSize) {
@@ -543,7 +550,11 @@ ${JSON.stringify(terms)}`;
         try {
           // Build the effective provider sequence from the profile's providerOrder
           // (or the default), skipping any provider whose key isn't configured.
-          const orderedProviders = (activeProfile?.providerOrder ?? DEFAULT_PROVIDER_ORDER)
+          // When forceUseBackupKey is true, prioritize gemini_backup first.
+          const baseOrder = forceUseBackupKey
+            ? (['gemini_backup', 'gemini_primary', 'groq'] as ScanProvider[])
+            : (activeProfile?.providerOrder ?? DEFAULT_PROVIDER_ORDER);
+          const orderedProviders = baseOrder
             .filter((provider) => {
               if (provider === 'gemini_primary') return Boolean(activeProfile?.geminiApiKey);
               if (provider === 'gemini_backup') return Boolean(activeProfile?.backupGeminiApiKey);
@@ -580,6 +591,7 @@ ${JSON.stringify(terms)}`;
                   const { response: res, usedModel } = await fetchGeminiWithRateLimitFallback({
                     primaryApiKey: geminiKey,
                     requestedModel: model,
+                    fallbackModels: fallbackModels.length > 0 ? fallbackModels : undefined,
                     hasAlternativeProvider: orderedProviders.indexOf(provider) < orderedProviders.length - 1,
                     maxOverloadAttempts: 2,
                     onStatusUpdate: async (statusMessage) => { await saveJob({ statusMessage }); },

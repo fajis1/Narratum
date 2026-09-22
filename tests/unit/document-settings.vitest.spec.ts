@@ -79,6 +79,20 @@ describe('document settings language', () => {
     ]);
   });
 
+  test('keeps Cloud Drama failure details for later review', () => {
+    const settings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, {
+      smartAudioReviewFlags: [{
+        id: 'cloud-1', chapterIndex: 1, timestampMs: 0, createdAt: 100,
+        kind: 'cloud-tts-failed', speaker: 'Hero', sourceText: 'Keep this line.',
+        reason: 'Cloud TTS HTTP 503', chunkIndex: 2, attempts: 3,
+      }],
+    });
+    expect(settings.smartAudioReviewFlags?.[0]).toMatchObject({
+      kind: 'cloud-tts-failed', speaker: 'Hero', sourceText: 'Keep this line.',
+      reason: 'Cloud TTS HTTP 503', chunkIndex: 2, attempts: 3,
+    });
+  });
+
   test('document settings PUT preserves the latest lexicon atomically in the database', () => {
     const route = fs.readFileSync(
       path.join(process.cwd(), 'src/app/api/documents/[id]/settings/route.ts'),

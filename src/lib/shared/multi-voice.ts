@@ -7,9 +7,11 @@ import { KOKORO_DEFAULT_VOICES } from '@/lib/shared/tts-provider-catalog';
 import type {
   SmartAudioCharacterEntry,
   SmartAudioCharacterMap,
+  DramaCharacterDirection,
 } from '@/types/document-settings';
 
 export const MULTI_VOICE_WORKER_MODE = 'multi-voice' as const;
+export const DRAMA_GEMINI_TTS_WORKER_MODE = 'drama-gemini-tts' as const;
 export const WAITING_FOR_VOICES_STATUS = 'waiting_for_voices' as const;
 
 export const KOKORO_CHARACTER_VOICES = KOKORO_DEFAULT_VOICES;
@@ -58,32 +60,99 @@ function normalizedSample(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 2_000) : '';
 }
 
-function characterEntry(value: unknown): SmartAudioCharacterEntry | null {
+/**
+ * Options for character map normalization.
+ * All fields are optional and default to Kokoro behavior when absent.
+ */
+export interface NormalizeCharacterMapOptions {
+  /**
+   * The set of valid voice IDs for this provider.
+   * voiceId values not in this set are nulled out during normalization.
+   * Defaults to KOKORO_CHARACTER_VOICE_SET when not provided.
+   */
+  validVoiceSet?: ReadonlySet<string>;
+}
+
+/**
+ * Safely normalize a raw `cloudDirection` value from stored JSON.
+ * Returns null if the value is absent, malformed, or missing the required `audioProfile`.
+ * The Kokoro Drama path never passes a value with this field, so this function
+ * simply returns null for all existing Kokoro cast entries.
+ */
+function normalizeCloudDirection(value: unknown): DramaCharacterDirection | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const src = value as Record<string, unknown>;
+  const audioProfile = typeof src.audioProfile === 'string' ? src.audioProfile.trim() : '';
+  if (!audioProfile) return null;
+
+  let defaultPerformance: DramaCharacterDirection['defaultPerformance'] | undefined;
+  if (src.defaultPerformance && typeof src.defaultPerformance === 'object' && !Array.isArray(src.defaultPerformance)) {
+    const dp = src.defaultPerformance as Record<string, unknown>;
+    const pace = typeof dp.pace === 'string' ? dp.pace.trim() : undefined;
+    const energy = typeof dp.energy === 'string' ? dp.energy.trim() : undefined;
+    const intensity = typeof dp.intensity === 'string' ? dp.intensity.trim() : undefined;
+    const delivery = Array.isArray(dp.delivery)
+      ? dp.delivery.filter((d): d is string => typeof d === 'string' && d.trim().length > 0).map((d) => d.trim())
+      : undefined;
+    const hasAny = pace || energy || intensity || (delivery && delivery.length > 0);
+    if (hasAny) defaultPerformance = { pace, energy, intensity, delivery };
+  }
+
+  let technicalOverrides: DramaCharacterDirection['technicalOverrides'] | undefined;
+  if (src.technicalOverrides && typeof src.technicalOverrides === 'object' && !Array.isArray(src.technicalOverrides)) {
+    const to = src.technicalOverrides as Record<string, unknown>;
+    const speakingRate = typeof to.speakingRate === 'number' && Number.isFinite(to.speakingRate)
+      ? Math.min(Math.max(to.speakingRate, 0.25), 2.0)
+      : undefined;
+    const pitch = typeof to.pitch === 'number' && Number.isFinite(to.pitch)
+      ? Math.min(Math.max(to.pitch, -20.0), 20.0)
+      : undefined;
+    if (speakingRate !== undefined || pitch !== undefined) technicalOverrides = { speakingRate, pitch };
+  }
+
+  return {
+    audioProfile,
+    ...(defaultPerformance !== undefined ? { defaultPerformance } : {}),
+    ...(technicalOverrides !== undefined ? { technicalOverrides } : {}),
+  };
+}
+
+function characterEntry(
+  value: unknown,
+  validVoiceSet: ReadonlySet<string>,
+): SmartAudioCharacterEntry | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   const name = normalizedName(source.name);
   if (!name) return null;
-  const voiceId = typeof source.voiceId === 'string' && KOKORO_CHARACTER_VOICE_SET.has(source.voiceId)
+  const voiceId = typeof source.voiceId === 'string' && validVoiceSet.has(source.voiceId)
     ? source.voiceId
     : null;
   const aliasFor = normalizedName(source.aliasFor) || null;
+  const cloudDirection = normalizeCloudDirection(source.cloudDirection);
   return {
     name,
     description: normalizedDescription(source.description),
     sampleText: normalizedSample(source.sampleText),
     voiceId,
     aliasFor,
+    // Only include cloudDirection when present; keeps Kokoro entries clean
+    ...(cloudDirection !== null ? { cloudDirection } : {}),
   };
 }
 
-export function normalizeSmartAudioCharacterMap(value: unknown): SmartAudioCharacterMap | null {
+export function normalizeSmartAudioCharacterMap(
+  value: unknown,
+  options: NormalizeCharacterMapOptions = {},
+): SmartAudioCharacterMap | null {
+  const voiceSet = options.validVoiceSet ?? KOKORO_CHARACTER_VOICE_SET;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   if (source.schemaVersion !== 1 || !source.entries || typeof source.entries !== 'object') return null;
   const entries: Record<string, SmartAudioCharacterEntry> = {};
   const canonicalNames = new Set<string>();
   for (const rawEntry of Object.values(source.entries as Record<string, unknown>)) {
-    const entry = characterEntry(rawEntry);
+    const entry = characterEntry(rawEntry, voiceSet);
     const canonicalName = entry?.name.toLocaleLowerCase() || '';
     if (!entry || canonicalNames.has(canonicalName)) continue;
     canonicalNames.add(canonicalName);
@@ -121,8 +190,8 @@ export function normalizeSmartAudioCharacterMap(value: unknown): SmartAudioChara
   };
 }
 
-export function getDuplicateVoiceAssignments(value: unknown): DuplicateVoiceAssignment[] {
-  const map = normalizeSmartAudioCharacterMap(value);
+export function getDuplicateVoiceAssignments(value: unknown, options: NormalizeCharacterMapOptions = {}): DuplicateVoiceAssignment[] {
+  const map = normalizeSmartAudioCharacterMap(value, options);
   if (!map) return [];
   const namesByVoice = new Map<string, string[]>();
   for (const entry of Object.values(map.entries)) {
@@ -136,8 +205,8 @@ export function getDuplicateVoiceAssignments(value: unknown): DuplicateVoiceAssi
     .map(([voiceId, characterNames]) => ({ voiceId, characterNames }));
 }
 
-export function getNarratorVoiceId(value: unknown): string | null {
-  const map = normalizeSmartAudioCharacterMap(value);
+export function getNarratorVoiceId(value: unknown, options: NormalizeCharacterMapOptions = {}): string | null {
+  const map = normalizeSmartAudioCharacterMap(value, options);
   const narrator = Object.values(map?.entries || {}).find(
     (entry) => !entry.aliasFor && entry.name.toLocaleLowerCase() === 'narrator',
   );
@@ -178,17 +247,23 @@ export function estimateSpeakerSegmentAtTime(
   return texts.length - 1;
 }
 
-export function getCharacterMapReadiness(value: unknown): {
+export interface CharacterMapReadinessOptions {
+  /** Voice set to validate assigned voiceIds against. Defaults to the Kokoro character voice set. */
+  validVoiceSet?: ReadonlySet<string>;
+}
+
+export function getCharacterMapReadiness(value: unknown, options: CharacterMapReadinessOptions = {}): {
   ready: boolean;
   map: SmartAudioCharacterMap | null;
   unassigned: string[];
   errors: string[];
 } {
-  const map = normalizeSmartAudioCharacterMap(value);
+  const voiceSet = options.validVoiceSet ?? KOKORO_CHARACTER_VOICE_SET;
+  const map = normalizeSmartAudioCharacterMap(value, { validVoiceSet: voiceSet });
   if (!map) return { ready: false, map: null, unassigned: [], errors: ['No character scan is available.'] };
   const primary = Object.values(map.entries).filter((entry) => !entry.aliasFor);
   const unassigned = primary
-    .filter((entry) => !entry.voiceId || !KOKORO_CHARACTER_VOICE_SET.has(entry.voiceId))
+    .filter((entry) => !entry.voiceId || !voiceSet.has(entry.voiceId))
     .map((entry) => entry.name);
   const errors: string[] = [];
   if (!primary.some((entry) => entry.name.toLocaleLowerCase() === 'narrator')) {
@@ -237,8 +312,9 @@ export function mergeExtractedCharacters(input: {
   profileId: string;
   sourceFingerprint: string;
   scannedAt?: number;
+  validVoiceSet?: ReadonlySet<string>;
 }): SmartAudioCharacterMap {
-  const previous = normalizeSmartAudioCharacterMap(input.previous);
+  const previous = normalizeSmartAudioCharacterMap(input.previous, { validVoiceSet: input.validVoiceSet });
   const previousByName = new Map(
     Object.values(previous?.entries || {}).map((entry) => [entry.name.toLocaleLowerCase(), entry]),
   );
@@ -259,6 +335,7 @@ export function mergeExtractedCharacters(input: {
       description: normalizedDescription(source.description) || existing?.description || '',
       sampleText: normalizedSample(source.sample_text ?? source.sampleText) || existing?.sampleText || '',
       voiceId: existing?.voiceId || null,
+      ...(existing?.cloudDirection ? { cloudDirection: existing.cloudDirection } : {}),
       aliasFor: existing?.aliasFor && previous?.entries[existing.aliasFor]
         ? existing.aliasFor
         : null,
@@ -273,6 +350,7 @@ export function mergeExtractedCharacters(input: {
       description: existingNarrator?.description || 'Primary audiobook narrator.',
       sampleText: existingNarrator?.sampleText || '',
       voiceId: existingNarrator?.voiceId || null,
+      ...(existingNarrator?.cloudDirection ? { cloudDirection: existingNarrator.cloudDirection } : {}),
       aliasFor: null,
     };
   }
@@ -461,6 +539,16 @@ export interface AutoAssignMinorVoicesOptions {
   characterUsageMetrics?: Record<string, CharacterUsageMetrics>;
   mainCharacterThreshold?: number;
   targetCharacters?: string[];
+  /**
+   * Pool of recyclable voices to draw from when assigning minor characters.
+   * Defaults to KOKORO_RECYCLABLE_ENGLISH_VOICES when not provided.
+   */
+  voicePool?: readonly string[];
+  /**
+   * Valid voice set for the "already assigned" skip check.
+   * Defaults to KOKORO_CHARACTER_VOICE_SET when not provided.
+   */
+  validVoiceSet?: ReadonlySet<string>;
 }
 
 export interface AutoAssignMinorVoicesResult {
@@ -477,6 +565,8 @@ export function autoAssignMinorCharacterVoices(
     characterUsageMetrics = {},
     mainCharacterThreshold = 0.05,
     targetCharacters,
+    voicePool = KOKORO_RECYCLABLE_ENGLISH_VOICES,
+    validVoiceSet = KOKORO_CHARACTER_VOICE_SET,
   } = options;
 
   const entriesCopy: Record<string, SmartAudioCharacterEntry> = Object.fromEntries(
@@ -525,12 +615,12 @@ export function autoAssignMinorCharacterVoices(
     }
   }
 
-  let recyclableVoices = KOKORO_RECYCLABLE_ENGLISH_VOICES.filter(
+  let recyclableVoices = voicePool.filter(
     (v) => !protectedVoices.has(v),
   );
 
   if (recyclableVoices.length === 0) {
-    recyclableVoices = KOKORO_RECYCLABLE_ENGLISH_VOICES.filter((v) => v !== narratorVoice);
+    recyclableVoices = voicePool.filter((v) => v !== narratorVoice);
   }
 
   const femaleVoices = recyclableVoices.filter((v) => (
@@ -557,7 +647,8 @@ export function autoAssignMinorCharacterVoices(
   for (const entry of Object.values(entriesCopy)) {
     if (entry.aliasFor) continue;
     if (entry.name.toLowerCase() === 'narrator') continue;
-    if (entry.voiceId && KOKORO_CHARACTER_VOICE_SET.has(entry.voiceId)) continue;
+    // Skip if already assigned to a valid voice in the current provider's voice set
+    if (entry.voiceId && validVoiceSet.has(entry.voiceId)) continue;
 
     if (targetSet && !targetSet.has(entry.name.toLowerCase())) {
       continue;
@@ -606,7 +697,7 @@ export function autoAssignMinorCharacterVoices(
     entries: entriesCopy,
   };
   delete tempMap.needsRescan;
-  const readiness = getCharacterMapReadiness(tempMap);
+  const readiness = getCharacterMapReadiness(tempMap, { validVoiceSet });
   const isComplete = readiness.ready && readiness.unassigned.length === 0;
 
   const updatedMap: SmartAudioCharacterMap = {

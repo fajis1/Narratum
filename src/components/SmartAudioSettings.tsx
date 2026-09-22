@@ -19,6 +19,11 @@ import {
 } from '@/lib/shared/smart-audio-models';
 import { useAuthSession } from '@/hooks/useAuthSession';
 import { useTtsPreviewSettings } from '@/hooks/audio/useTtsPreviewSettings';
+import {
+  DEFAULT_DRAMA_GEMINI_TTS_SETTINGS,
+  normalizeDramaGeminiTtsProfileSettings,
+  type DramaGeminiTtsProfileSettings,
+} from '@/lib/shared/drama-profile-settings';
 
 const EMPTY_PROFILE = (): SmartAudioProfile => ({
   id: `profile-${Date.now()}`,
@@ -33,9 +38,19 @@ const EMPTY_PROFILE = (): SmartAudioProfile => ({
   pronunciationPromptMode: 'default',
   customPronunciationPrompt: '',
   workerMode: 'standard',
+  dramaGeminiTtsSettings: { ...DEFAULT_DRAMA_GEMINI_TTS_SETTINGS },
 });
 
 const WORKER_MODES = [
+  {
+    id: 'drama-gemini-tts' as const,
+    icon: '🎙️',
+    label: 'Google Cloud Audio Drama',
+    badge: 'Expressive character voices',
+    description: 'Uses a reviewed character cast and Google Cloud Gemini-TTS to direct and record expressive dialogue and narration.',
+    features: ['Persistent character voices', 'Scene-aware performance direction', 'Google Cloud Gemini-TTS audio', 'Failed lines kept for review'],
+    presetName: 'Standard Audiobook Cleaner',
+  },
   {
     id: 'multi-voice' as const,
     icon: '🎭',
@@ -113,9 +128,11 @@ export function SmartAudioSettings() {
   const [maskedBackupKey, setMaskedBackupKey] = useState<string | null>(null);
   const [groqApiKey, setGroqApiKey] = useState('');
   const [maskedGroqKey, setMaskedGroqKey] = useState<string | null>(null);
+  const [googleCloudServiceAccountJson, setGoogleCloudServiceAccountJson] = useState('');
   const [providerOrder, setProviderOrder] = useState<Array<'gemini_primary' | 'gemini_backup' | 'groq'>>(['gemini_primary', 'gemini_backup', 'groq']);
   const [profiles, setProfiles] = useState<SmartAudioProfile[]>([]);
-  const [workerMode, setWorkerMode] = useState<'standard' | 'scholar' | 'bibliography-catcher' | 'multi-voice'>('standard');
+  const [workerMode, setWorkerMode] = useState<'standard' | 'scholar' | 'bibliography-catcher' | 'multi-voice' | 'drama-gemini-tts'>('standard');
+  const [dramaGeminiTtsSettings, setDramaGeminiTtsSettings] = useState<DramaGeminiTtsProfileSettings>({ ...DEFAULT_DRAMA_GEMINI_TTS_SETTINGS });
   const [useGlobalPronunciations, setUseGlobalPronunciations] = useState<boolean>(true);
   const [pronunciationPromptMode, setPronunciationPromptMode] = useState<'default' | 'custom'>('default');
   const [customPronunciationPrompt, setCustomPronunciationPrompt] = useState('');
@@ -127,6 +144,8 @@ export function SmartAudioSettings() {
   const [customFallbackModelIds, setCustomFallbackModelIds] = useState<[string, string]>(['', '']);
   const [pronunciationAiModel, setPronunciationAiModel] = useState(DEFAULT_PRONUNCIATION_AI_MODEL);
   const [customPronunciationModelId, setCustomPronunciationModelId] = useState('');
+  const [pronunciationFallbackAiModels, setPronunciationFallbackAiModels] = useState<[string, string]>(['', '']);
+  const [customPronunciationFallbackModelIds, setCustomPronunciationFallbackModelIds] = useState<[string, string]>(['', '']);
   const [promptMode, setPromptMode] = useState<'preset' | 'custom'>('preset');
   const [selectedPromptName, setSelectedPromptName] = useState<string>(PRESET_PROMPTS[0]?.name || '');
   const [prompt, setPrompt] = useState('');
@@ -139,6 +158,8 @@ export function SmartAudioSettings() {
   const [newBook, setNewBook] = useState({ key: '', value: '' });
   const [isLoading, setIsLoading] = useState(true);
   const [isRestoringBuiltInProfiles, setIsRestoringBuiltInProfiles] = useState(false);
+  const [isTestingCloudConnection, setIsTestingCloudConnection] = useState(false);
+  const [cloudConnectionStatus, setCloudConnectionStatus] = useState<string | null>(null);
 
   const [isGlobalModalOpen, setIsGlobalModalOpen] = useState(false);
   const [globalPronunciations, setGlobalPronunciations] = useState<{key: string; values: string[]}[]>([]);
@@ -770,6 +791,7 @@ export function SmartAudioSettings() {
     if (!activeProfile) return;
     setProfileName(activeProfile.name);
     setWorkerMode(activeProfile.workerMode ?? 'standard');
+    setDramaGeminiTtsSettings(normalizeDramaGeminiTtsProfileSettings(activeProfile.dramaGeminiTtsSettings));
     setUseGlobalPronunciations(activeProfile.useGlobalPronunciations ?? true);
     setPronunciationPromptMode(activeProfile.pronunciationPromptMode === 'custom' ? 'custom' : 'default');
     setCustomPronunciationPrompt(activeProfile.customPronunciationPrompt || '');
@@ -792,6 +814,15 @@ export function SmartAudioSettings() {
     setCustomPronunciationModelId(
       PRESET_MODELS.some((model) => model.id === pronunciationModel) ? '' : pronunciationModel,
     );
+    const pronunciationFallbacks = activeProfile.pronunciationAiModelFallbacks || [];
+    setPronunciationFallbackAiModels([0, 1].map((index) => {
+      const model = pronunciationFallbacks[index] || '';
+      return !model || PRESET_MODELS.some((preset) => preset.id === model) ? model : 'custom';
+    }) as [string, string]);
+    setCustomPronunciationFallbackModelIds([0, 1].map((index) => {
+      const model = pronunciationFallbacks[index] || '';
+      return model && !PRESET_MODELS.some((preset) => preset.id === model) ? model : '';
+    }) as [string, string]);
 
     const savedPrompt = activeProfile.customTtsPrompt || '';
 
@@ -836,6 +867,8 @@ export function SmartAudioSettings() {
       activeProfile.backupGeminiApiKeyLast4,
     ));
     setGroqApiKey(activeProfile.groqApiKey || '');
+    setGoogleCloudServiceAccountJson('');
+    setCloudConnectionStatus(null);
     setMaskedGroqKey(formatMaskedKey(
       activeProfile.groqApiKeyConfigured,
       activeProfile.groqApiKeyLast4,
@@ -851,6 +884,9 @@ export function SmartAudioSettings() {
     const finalPronunciationModel = pronunciationAiModel === 'custom'
       ? customPronunciationModelId.trim()
       : pronunciationAiModel;
+    const finalPronunciationFallbackModels = pronunciationFallbackAiModels.map((model, index) => (
+      model === 'custom' ? customPronunciationFallbackModelIds[index].trim() : model.trim()
+    )).filter((model, index, models) => model && model !== finalPronunciationModel && models.indexOf(model) === index);
     if (!profileName.trim()) return null;
     if (aiModel === 'custom' && !finalModel) return null;
     if (pronunciationAiModel === 'custom' && !finalPronunciationModel) return null;
@@ -860,6 +896,7 @@ export function SmartAudioSettings() {
       aiModel: finalModel || DEFAULT_CLEANUP_AI_MODEL,
       aiModelFallbacks: finalFallbackModels,
       pronunciationAiModel: finalPronunciationModel || DEFAULT_PRONUNCIATION_AI_MODEL,
+      pronunciationAiModelFallbacks: finalPronunciationFallbackModels,
       customTtsPrompt: prompt,
       abbreviations: entriesToObject(abbreviations),
       pronunciations: entriesToObject(pronunciations),
@@ -868,27 +905,34 @@ export function SmartAudioSettings() {
       pronunciationPromptMode,
       customPronunciationPrompt: pronunciationPromptMode === 'custom' ? customPronunciationPrompt.trim() : '',
       workerMode,
+      dramaGeminiTtsSettings,
       geminiApiKeyConfigured: activeProfile?.geminiApiKeyConfigured,
       geminiApiKeyLast4: activeProfile?.geminiApiKeyLast4,
       backupGeminiApiKeyConfigured: activeProfile?.backupGeminiApiKeyConfigured,
       backupGeminiApiKeyLast4: activeProfile?.backupGeminiApiKeyLast4,
       groqApiKeyConfigured: activeProfile?.groqApiKeyConfigured,
       groqApiKeyLast4: activeProfile?.groqApiKeyLast4,
+      googleCloudServiceAccountConfigured: activeProfile?.googleCloudServiceAccountConfigured,
+      googleCloudServiceAccountEmail: activeProfile?.googleCloudServiceAccountEmail,
       geminiApiKeySourceProfileId: activeProfile?.geminiApiKeySourceProfileId,
       backupGeminiApiKeySourceProfileId: activeProfile?.backupGeminiApiKeySourceProfileId,
       // Blank/omitted key fields tell the server to preserve the stored secrets.
       ...(apiKey.trim() ? { geminiApiKey: apiKey.trim() } : {}),
       ...(backupApiKey.trim() ? { backupGeminiApiKey: backupApiKey.trim() } : {}),
       ...(groqApiKey.trim() ? { groqApiKey: groqApiKey.trim() } : {}),
+      ...(googleCloudServiceAccountJson.trim()
+        ? { googleCloudServiceAccountJson: googleCloudServiceAccountJson.trim() }
+        : {}),
       providerOrder,
     };
-  }, [apiKey, backupApiKey, groqApiKey, providerOrder, aiModel, customModelId, fallbackAiModels, customFallbackModelIds, pronunciationAiModel, customPronunciationModelId, profileName, selectedProfileId, prompt, abbreviations, pronunciations, books, useGlobalPronunciations, pronunciationPromptMode, customPronunciationPrompt, workerMode, activeProfile]);
+  }, [apiKey, backupApiKey, groqApiKey, googleCloudServiceAccountJson, providerOrder, aiModel, customModelId, fallbackAiModels, customFallbackModelIds, pronunciationAiModel, customPronunciationModelId, pronunciationFallbackAiModels, customPronunciationFallbackModelIds, profileName, selectedProfileId, prompt, abbreviations, pronunciations, books, useGlobalPronunciations, pronunciationPromptMode, customPronunciationPrompt, workerMode, dramaGeminiTtsSettings, activeProfile]);
 
   // When the user clicks a worker mode card, always switch to the matching
   // preset for that engine. This ensures clicking a card is always a clean
   // one-click reset to the correct prompt template.
-  const handleWorkerModeChange = useCallback((mode: 'standard' | 'scholar' | 'multi-voice') => {
+  const handleWorkerModeChange = useCallback((mode: 'standard' | 'scholar' | 'multi-voice' | 'drama-gemini-tts') => {
     setWorkerMode(mode);
+    if (mode === 'drama-gemini-tts') setDramaGeminiTtsSettings({ ...DEFAULT_DRAMA_GEMINI_TTS_SETTINGS });
     const targetMode = WORKER_MODES.find((m) => m.id === mode);
     const matchingPreset = PRESET_PROMPTS.find((p) => p.name === targetMode?.presetName);
     if (matchingPreset) {
@@ -909,12 +953,15 @@ export function SmartAudioSettings() {
     setCustomFallbackModelIds(['', '']);
     setPronunciationAiModel(profile.pronunciationAiModel || DEFAULT_PRONUNCIATION_AI_MODEL);
     setCustomPronunciationModelId('');
+    setPronunciationFallbackAiModels(['', '']);
+    setCustomPronunciationFallbackModelIds(['', '']);
     setPrompt(profile.customTtsPrompt);
     setAbbreviations([]);
     setPronunciations([]);
     setPronunciationPromptMode('default');
     setCustomPronunciationPrompt('');
     setBooks([]);
+    setDramaGeminiTtsSettings({ ...DEFAULT_DRAMA_GEMINI_TTS_SETTINGS });
   }, []);
 
   const handleDuplicateProfile = useCallback(() => {
@@ -945,6 +992,8 @@ export function SmartAudioSettings() {
       groqApiKeyLast4: current.groqApiKey
         ? current.groqApiKey.slice(-4)
         : current.groqApiKeyLast4,
+      googleCloudServiceAccountConfigured: Boolean(current.googleCloudServiceAccountJson),
+      googleCloudServiceAccountEmail: null,
     };
     setProfiles((existing) => [duplicate, ...existing]);
     setSelectedProfileId(duplicate.id);
@@ -964,6 +1013,17 @@ export function SmartAudioSettings() {
     if (!current) {
       alert('Please enter a profile name before saving.');
       return;
+    }
+    if (current.googleCloudServiceAccountJson) {
+      try {
+        const credential = JSON.parse(current.googleCloudServiceAccountJson) as Record<string, unknown>;
+        if (credential.type !== 'service_account'
+          || typeof credential.client_email !== 'string'
+          || typeof credential.private_key !== 'string') throw new Error('invalid');
+      } catch {
+        alert('Enter a valid Google Cloud service-account JSON file before saving.');
+        return;
+      }
     }
 
     const nextProfiles = profiles.some((profile) => profile.id === current.id)
@@ -995,6 +1055,8 @@ export function SmartAudioSettings() {
       setApiKey('');
       setBackupApiKey('');
       setGroqApiKey('');
+      setGoogleCloudServiceAccountJson('');
+      setCloudConnectionStatus(null);
       alert('Smart audio profile saved.');
       window.dispatchEvent(new CustomEvent('smart-audio-profiles-updated'));
     } catch (error) {
@@ -1002,6 +1064,47 @@ export function SmartAudioSettings() {
       alert('Failed to save smart audio settings. Check the server logs.');
     }
   }, [buildCurrentProfile, profiles]);
+
+  const handleTestCloudConnection = useCallback(async () => {
+    if (workerMode !== 'drama-gemini-tts' || !selectedProfileId) return;
+    setIsTestingCloudConnection(true);
+    setCloudConnectionStatus(null);
+    try {
+      const response = await fetch('/api/tts-settings/google-cloud/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profileId: selectedProfileId }),
+      });
+      const body = await response.json().catch(() => ({})) as { message?: string; error?: string };
+      if (!response.ok) throw new Error(body.error || 'Google Cloud connection test failed.');
+      setCloudConnectionStatus(body.message || 'Google Cloud connection successful.');
+    } catch (error) {
+      setCloudConnectionStatus(error instanceof Error ? error.message : 'Google Cloud connection test failed.');
+    } finally {
+      setIsTestingCloudConnection(false);
+    }
+  }, [selectedProfileId, workerMode]);
+
+  const handleRemoveCloudCredential = useCallback(async () => {
+    if (!selectedProfileId || !window.confirm('Remove the saved Google Cloud credential from this profile?')) return;
+    try {
+      const response = await fetch('/api/tts-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          smartAudioProfiles: profiles,
+          selectedSmartAudioProfileId: selectedProfileId,
+          removeGoogleCloudServiceAccountProfileIds: [selectedProfileId],
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as { smartAudioProfiles?: SmartAudioProfile[]; error?: string };
+      if (!response.ok) throw new Error(body.error || 'Failed to remove the Google Cloud credential.');
+      setProfiles(Array.isArray(body.smartAudioProfiles) ? body.smartAudioProfiles : profiles);
+      setCloudConnectionStatus('Google Cloud credential removed.');
+    } catch (error) {
+      setCloudConnectionStatus(error instanceof Error ? error.message : 'Failed to remove the Google Cloud credential.');
+    }
+  }, [profiles, selectedProfileId]);
 
   const handleProfileChange = useCallback((nextProfileId: string) => {
     setSelectedProfileId(nextProfileId);
@@ -1435,6 +1538,105 @@ export function SmartAudioSettings() {
             </p>
           </div>
 
+          {workerMode === 'drama-gemini-tts' && (
+            <div className="space-y-2 rounded-xl border border-blue-200 bg-blue-50/60 p-4 dark:border-blue-800 dark:bg-blue-950/20">
+              <label htmlFor="cloud-drama-service-account" className="block text-sm font-semibold">
+                Google Cloud service-account JSON
+              </label>
+              <p className="text-xs text-gray-600 dark:text-gray-300">
+                Used for Gemini-TTS recording. The account needs Cloud Text-to-Speech access and
+                the <code>aiplatform.endpoints.predict</code> permission. Leave blank to keep the saved credential,
+                or use server-managed Application Default Credentials when no key is stored.
+              </p>
+              {activeProfile?.googleCloudServiceAccountConfigured && (
+                <p className="text-xs text-green-700 dark:text-green-300" role="status">
+                  Configured account: {activeProfile.googleCloudServiceAccountEmail || 'email unavailable'}
+                </p>
+              )}
+              <textarea
+                id="cloud-drama-service-account"
+                rows={4}
+                spellCheck={false}
+                autoComplete="off"
+                className="w-full rounded border border-gray-300 bg-white p-2 font-mono text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                placeholder={activeProfile?.googleCloudServiceAccountConfigured
+                  ? 'Paste replacement service-account JSON, or leave blank to keep the saved credential'
+                  : 'Paste service-account JSON, or leave blank to use server-managed credentials'}
+                value={googleCloudServiceAccountJson}
+                onChange={(event) => setGoogleCloudServiceAccountJson(event.target.value)}
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                This value is write-only; after saving, only the configured account email is shown.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleTestCloudConnection()}
+                  disabled={isTestingCloudConnection}
+                  className="rounded border border-blue-700 px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-50 dark:text-blue-200 dark:hover:bg-blue-900/30"
+                >
+                  {isTestingCloudConnection ? 'Testing…' : 'Test connection'}
+                </button>
+                {activeProfile?.googleCloudServiceAccountConfigured && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRemoveCloudCredential()}
+                    className="rounded border border-red-700/60 px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-100 dark:text-red-200 dark:hover:bg-red-900/30"
+                  >
+                    Remove credentials
+                  </button>
+                )}
+                {cloudConnectionStatus && <span className="text-xs" role="status">{cloudConnectionStatus}</span>}
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Testing contacts Google Cloud and may use a small amount of billable TTS usage.</p>
+            </div>
+          )}
+
+          {workerMode === 'drama-gemini-tts' && (
+            <div className="space-y-4 rounded-xl border border-purple-200 bg-purple-50/50 p-4 dark:border-purple-800 dark:bg-purple-950/20">
+              <div>
+                <h3 className="text-sm font-semibold">Performance</h3>
+                <p className="text-xs text-gray-600 dark:text-gray-300">These settings guide the existing Drama Director. Scene interpretation, cast validation, tag allowlisting, and retries remain enforced.</p>
+              </div>
+              {([
+                ['dramaStyle', 'Drama Style', [['restrained', 'Restrained'], ['balanced', 'Balanced — recommended'], ['cinematic', 'Cinematic']], 'Controls the overall dramatic range of the audiobook. Narratum still determines the appropriate performance for each scene.'],
+                ['narratorExpressiveness', 'Narrator Expressiveness', [['subtle', 'Subtle'], ['moderate', 'Moderate — default'], ['expressive', 'Expressive']], 'Controls how strongly narration is performed. This is independent from character dialogue.'],
+                ['characterExpressiveness', 'Character Expressiveness', [['subtle', 'Subtle'], ['expressive', 'Expressive — default'], ['dramatic', 'Dramatic']], 'Controls the allowed acting range for dialogue and character speech.'],
+                ['audioTagUsage', 'Audio Tags', [['off', 'Off'], ['conservative', 'Conservative — default'], ['balanced', 'Balanced'], ['expressive', 'Expressive']], 'Controls how readily Narratum uses verified actions and pauses. It never expands the production allowlist.'],
+                ['dramaticPauses', 'Dramatic Pauses', [['minimal', 'Minimal'], ['natural', 'Natural — default'], ['cinematic', 'Cinematic']], "Controls Narratum's willingness to add explicit dramatic pauses. Original punctuation remains authoritative."],
+                ['characterConsistency', 'Character Consistency', [['flexible', 'Flexible'], ['balanced', 'Balanced'], ['strong', 'Strong — default']], 'Controls how strongly moment-to-moment acting stays anchored to persistent character direction.'],
+                ['failedSegmentBehavior', 'If a segment cannot be generated', [['continue-and-flag', 'Continue and flag for review'], ['stop-job', 'Stop audiobook generation']], 'This applies only after the existing bounded retry policy is exhausted.'],
+              ] as const).map(([field, label, options, help]) => (
+                <label key={field} className="block space-y-1">
+                  <span className="block text-sm font-semibold">{label}</span>
+                  <select
+                    className="w-full rounded border border-gray-300 bg-white p-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                    value={dramaGeminiTtsSettings[field]}
+                    onChange={(event) => setDramaGeminiTtsSettings((current) => ({ ...current, [field]: event.target.value }))}
+                  >
+                    {options.map(([value, optionLabel]) => <option key={value} value={value}>{optionLabel}</option>)}
+                  </select>
+                  <span className="block text-xs text-gray-600 dark:text-gray-300">{help}</span>
+                </label>
+              ))}
+              <label className="block space-y-1">
+                <span className="block text-sm font-semibold">Audiobook Language</span>
+                <select
+                  className="w-full rounded border border-gray-300 bg-white p-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                  value={dramaGeminiTtsSettings.languageCode}
+                  onChange={(event) => setDramaGeminiTtsSettings((current) => ({ ...current, languageCode: event.target.value }))}
+                >
+                  <option value="en-US">English — United States (en-US)</option>
+                  <option value="en-GB">English — United Kingdom (en-GB)</option>
+                  <option value="es-ES">Spanish — Spain (es-ES)</option>
+                  <option value="fr-FR">French — France (fr-FR)</option>
+                  <option value="de-DE">German — Germany (de-DE)</option>
+                </select>
+                <span className="block text-xs text-gray-600 dark:text-gray-300">The selected BCP-47 language code is used in Cloud TTS requests.</span>
+              </label>
+            </div>
+          )}
+
           <div className="space-y-2">
             <label className="block text-sm font-semibold">Scan Provider Order</label>
             <p className="text-xs text-gray-400 mb-2">
@@ -1572,6 +1774,50 @@ export function SmartAudioSettings() {
               <p className="text-xs text-gray-400">
                 Used only for pronunciation pre-scan and refinement. The smarter Flash model is recommended.
               </p>
+              <div className="space-y-3 pt-2 border-t border-gray-200 dark:border-gray-700">
+                <div>
+                  <div className="text-sm font-semibold">Optional pronunciation fallbacks</div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Tried in order when the active pronunciation model reaches a quota or remains overloaded during pre-scan and refinement. Leave blank to disable.
+                  </p>
+                </div>
+                {pronunciationFallbackAiModels.map((model, index) => (
+                  <div key={index} className="space-y-2">
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-300">
+                      Backup model {index + 1}
+                    </label>
+                    <select
+                      aria-label={`Pronunciation backup model ${index + 1}`}
+                      className="w-full p-2 border rounded bg-gray-50 dark:bg-gray-800 dark:border-gray-700 text-gray-900 dark:text-gray-100 cursor-pointer"
+                      value={model}
+                      onChange={(event) => setPronunciationFallbackAiModels((current) => {
+                        const next: [string, string] = [current[0], current[1]];
+                        next[index] = event.target.value;
+                        return next;
+                      })}
+                    >
+                      <option value="">No backup model</option>
+                      {PRESET_MODELS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>{preset.name}</option>
+                      ))}
+                    </select>
+                    {model === 'custom' && (
+                      <input
+                        type="text"
+                        aria-label={`Custom pronunciation backup model ${index + 1}`}
+                        className="w-full p-2 border rounded bg-white dark:bg-gray-900 border-blue-400 dark:border-blue-500 text-gray-900 dark:text-gray-100 placeholder-gray-400 text-sm font-mono shadow-inner"
+                        placeholder="Custom Gemini model identifier"
+                        value={customPronunciationFallbackModelIds[index]}
+                        onChange={(event) => setCustomPronunciationFallbackModelIds((current) => {
+                          const next: [string, string] = [current[0], current[1]];
+                          next[index] = event.target.value;
+                          return next;
+                        })}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="space-y-3 md:col-span-2">
@@ -1581,6 +1827,7 @@ export function SmartAudioSettings() {
                 <div><span className="font-medium text-gray-900 dark:text-gray-100">Cleanup model:</span> {finalModel || 'unset'}</div>
                 <div><span className="font-medium text-gray-900 dark:text-gray-100">Cleanup fallbacks:</span> {fallbackAiModels.map((model, index) => model === 'custom' ? customFallbackModelIds[index].trim() : model).filter(Boolean).join(' → ') || 'none'}</div>
                 <div><span className="font-medium text-gray-900 dark:text-gray-100">Pronunciation model:</span> {finalPronunciationModel || 'unset'}</div>
+                <div><span className="font-medium text-gray-900 dark:text-gray-100">Pronunciation fallbacks:</span> {pronunciationFallbackAiModels.map((model, index) => model === 'custom' ? customPronunciationFallbackModelIds[index].trim() : model).filter(Boolean).join(' → ') || 'none'}</div>
                 <div><span className="font-medium text-gray-900 dark:text-gray-100">Abbreviations:</span> {abbreviations.length}</div>
                 <div><span className="font-medium text-gray-900 dark:text-gray-100">Pronunciations:</span> {pronunciations.length}</div>
                 <div><span className="font-medium text-gray-900 dark:text-gray-100">Books:</span> {books.length}</div>

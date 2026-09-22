@@ -244,6 +244,7 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
   const [dramaCharacterScan, setDramaCharacterScan] = useState<{
     document: DocumentListDocument;
     profileId: string;
+    workerMode: 'multi-voice' | 'drama-gemini-tts';
   } | null>(null);
   const [isOpeningDramaCharacterScan, setIsOpeningDramaCharacterScan] = useState(false);
   const [docToInspect, setDocToInspect] = useState<DocumentListDocument | null>(null);
@@ -556,21 +557,22 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
 
       const profiles = Array.isArray(body.smartAudioProfiles) ? body.smartAudioProfiles : [];
       const selectedDramaProfile = profiles.find((profile) => (
-        profile.id === body.selectedSmartAudioProfileId && profile.workerMode === 'multi-voice'
+        profile.id === body.selectedSmartAudioProfileId
+        && (profile.workerMode === 'multi-voice' || profile.workerMode === 'drama-gemini-tts')
       ));
       const dramaProfile = selectedDramaProfile
-        || profiles.find((profile) => profile.workerMode === 'multi-voice');
+        || profiles.find((profile) => profile.workerMode === 'multi-voice' || profile.workerMode === 'drama-gemini-tts');
       if (!dramaProfile) {
-        toast.error('Create a LitRPG Audio Drama profile before scanning a drama cast. Regular LitRPG profiles do not scan characters.');
+        toast.error('Create an Audio Drama profile before scanning a drama cast. Regular LitRPG profiles do not scan characters.');
         window.dispatchEvent(new CustomEvent('open-smart-ai-profiles'));
         return;
       }
       if (!dramaProfile.geminiApiKeyConfigured) {
-        toast.error('Add a Gemini API key to the LitRPG Audio Drama profile before starting its character scan.');
+        toast.error('Add a Gemini API key to the Audio Drama profile before starting its character scan.');
         window.dispatchEvent(new CustomEvent('open-smart-ai-profiles'));
         return;
       }
-      setDramaCharacterScan({ document: doc, profileId: dramaProfile.id });
+      setDramaCharacterScan({ document: doc, profileId: dramaProfile.id, workerMode: dramaProfile.workerMode as 'multi-voice' | 'drama-gemini-tts' });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not open the Audio Drama character scanner.');
     } finally {
@@ -1173,6 +1175,7 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
         <MultiVoiceCharacterModal
           documentId={dramaCharacterScan.document.id}
           profileId={dramaCharacterScan.profileId}
+          workerMode={dramaCharacterScan.workerMode}
           isOpen={true}
           standalone
           onClose={() => setDramaCharacterScan(null)}

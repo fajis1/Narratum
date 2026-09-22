@@ -5,11 +5,16 @@ import { userPreferences } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import type { SmartAudioProfile, ScanProvider } from '@/types/client';
 import { DEFAULT_PROVIDER_ORDER } from '@/types/client';
+import {
+  DEFAULT_DRAMA_GEMINI_TTS_SETTINGS,
+  normalizeDramaGeminiTtsProfileSettings,
+} from '@/lib/shared/drama-profile-settings';
 import { serverLogger } from '@/lib/server/logger';
 import {
   DEFAULT_CLEANUP_AI_MODEL,
   resolveCleanupAiModels,
   resolvePronunciationAiModel,
+  resolvePronunciationAiModels,
 } from '@/lib/shared/smart-audio-models';
 import defaultProfilesData from './default_smart_audio_profiles.json';
 
@@ -74,6 +79,16 @@ export function mergeGeneratedPronunciations(
 }
 
 export function redactSmartAudioProfileSecrets(profile: SmartAudioProfile): SmartAudioProfile {
+  // Extract safe metadata from Service Account JSON without exposing raw secrets.
+  let googleCloudServiceAccountEmail: string | null = null;
+  if (profile.googleCloudServiceAccountJson) {
+    try {
+      const sa = JSON.parse(profile.googleCloudServiceAccountJson) as Record<string, unknown>;
+      googleCloudServiceAccountEmail = typeof sa.client_email === 'string' ? sa.client_email : null;
+    } catch {
+      // Malformed JSON stored; treat as configured but unparseable
+    }
+  }
   return {
     id: profile.id,
     name: profile.name,
@@ -98,8 +113,17 @@ export function redactSmartAudioProfileSecrets(profile: SmartAudioProfile): Smar
     groqApiKeyConfigured: Boolean(profile.groqApiKey),
     groqApiKeyLast4: profile.groqApiKey ? profile.groqApiKey.slice(-4) : undefined,
     aiModelFallbacks: profile.aiModelFallbacks ? [...profile.aiModelFallbacks] : undefined,
+    pronunciationAiModelFallbacks: profile.pronunciationAiModelFallbacks
+      ? [...profile.pronunciationAiModelFallbacks]
+      : undefined,
     providerOrder: profile.providerOrder ? [...profile.providerOrder] : undefined,
     resolvedDictionaryHash: profile.resolvedDictionaryHash,
+    // GCP Service Account: raw JSON is NEVER returned; expose configured flag and safe email only
+    googleCloudServiceAccountConfigured: Boolean(profile.googleCloudServiceAccountJson),
+    googleCloudServiceAccountEmail: profile.googleCloudServiceAccountJson
+      ? googleCloudServiceAccountEmail
+      : null,
+    dramaGeminiTtsSettings: normalizeDramaGeminiTtsProfileSettings(profile.dramaGeminiTtsSettings),
   };
 }
 
@@ -129,6 +153,9 @@ export function mergeStoredSmartAudioProfileSecrets(
     const suppliedPrimaryKey = (profile.geminiApiKey || '').trim();
     const suppliedBackupKey = (profile.backupGeminiApiKey || '').trim();
     const suppliedGroqKey = (profile.groqApiKey || '').trim();
+    // Preserve stored SA JSON when the incoming payload omits/empties it.
+    // An empty string in the incoming payload means "keep what's stored."
+    const suppliedSaJson = (profile.googleCloudServiceAccountJson || '').trim();
 
     const incomingFallbacks = profile.aiModelFallbacks !== undefined
       ? profile.aiModelFallbacks
@@ -144,6 +171,7 @@ export function mergeStoredSmartAudioProfileSecrets(
       geminiApiKey: suppliedPrimaryKey || primarySourceProfile?.geminiApiKey,
       backupGeminiApiKey: suppliedBackupKey || backupSourceProfile?.backupGeminiApiKey,
       groqApiKey: suppliedGroqKey || storedProfile?.groqApiKey,
+      googleCloudServiceAccountJson: suppliedSaJson || storedProfile?.googleCloudServiceAccountJson,
     };
   });
 }
@@ -160,12 +188,17 @@ function slugifyProfileName(name: string): string {
 function sanitizeProfile(profile: Partial<SmartAudioProfile> & { id?: string; name?: string }): SmartAudioProfile {
   const id = (profile.id || slugifyProfileName(profile.name || 'profile')).trim();
   const name = (profile.name || 'Smart Audio Profile').trim();
+  const validWorkerModes = ['standard', 'scholar', 'bibliography-catcher', 'multi-voice', 'drama-gemini-tts'] as const;
+  const workerMode = validWorkerModes.includes(profile.workerMode as typeof validWorkerModes[number])
+    ? (profile.workerMode as SmartAudioProfile['workerMode'])
+    : 'standard';
   return {
     id,
     name,
     aiModel: (profile.aiModel || DEFAULT_CLEANUP_AI_MODEL).trim(),
     aiModelFallbacks: resolveCleanupAiModels(profile).slice(1),
     pronunciationAiModel: resolvePronunciationAiModel(profile),
+    pronunciationAiModelFallbacks: resolvePronunciationAiModels(profile).slice(1),
     customTtsPrompt: profile.customTtsPrompt || '',
     abbreviations: profile.abbreviations || {},
     pronunciations: profile.pronunciations || {},
@@ -175,12 +208,17 @@ function sanitizeProfile(profile: Partial<SmartAudioProfile> & { id?: string; na
     useGlobalPronunciations: true,
     pronunciationPromptMode: profile.pronunciationPromptMode === 'custom' ? 'custom' : 'default',
     customPronunciationPrompt: profile.customPronunciationPrompt || '',
-    workerMode: profile.workerMode === 'bibliography-catcher' ? 'bibliography-catcher' : (profile.workerMode || 'standard'),
+    workerMode,
     // Keep the key if already stored; never default to a non-empty string
     geminiApiKey: (profile.geminiApiKey || '').trim() || undefined,
     backupGeminiApiKey: (profile.backupGeminiApiKey || '').trim() || undefined,
     // Keep the key if already stored; never default to a non-empty string
     groqApiKey: (profile.groqApiKey || '').trim() || undefined,
+    // Google Cloud Service Account JSON — stored server-side only
+    googleCloudServiceAccountJson: (profile.googleCloudServiceAccountJson || '').trim() || undefined,
+    dramaGeminiTtsSettings: normalizeDramaGeminiTtsProfileSettings(
+      profile.dramaGeminiTtsSettings || DEFAULT_DRAMA_GEMINI_TTS_SETTINGS,
+    ),
     // Validate and persist provider order; fall back to default if invalid
     providerOrder: (() => {
       const valid: ScanProvider[] = ['gemini_primary', 'gemini_backup', 'groq'];

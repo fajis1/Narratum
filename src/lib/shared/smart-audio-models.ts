@@ -16,6 +16,7 @@ type SmartAudioModelProfile = {
   aiModel?: string | null;
   aiModelFallbacks?: readonly (string | null | undefined)[] | null;
   pronunciationAiModel?: string | null;
+  pronunciationAiModelFallbacks?: readonly (string | null | undefined)[] | null;
 };
 
 function normalizedModel(value: string | null | undefined): string | null {
@@ -49,6 +50,22 @@ export function resolvePronunciationAiModel(
   return normalizedModel(profile?.pronunciationAiModel)
     || normalizedModel(profile?.aiModel)
     || DEFAULT_PRONUNCIATION_AI_MODEL;
+}
+
+export function resolvePronunciationAiModels(
+  profile: SmartAudioModelProfile | null | undefined,
+): string[] {
+  const primary = resolvePronunciationAiModel(profile);
+  const seen = new Set([primary]);
+  const fallbacks: string[] = [];
+  for (const value of profile?.pronunciationAiModelFallbacks || []) {
+    const model = normalizedModel(value);
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    fallbacks.push(model);
+    if (fallbacks.length === 2) break;
+  }
+  return [primary, ...fallbacks];
 }
 
 export function resolveSmartAudioValidationRepairModel(

@@ -26,14 +26,16 @@ import {
 } from '@/lib/shared/audiobook-quota';
 import {
   MULTI_VOICE_WORKER_MODE,
+  DRAMA_GEMINI_TTS_WORKER_MODE,
   getNarratorVoiceId,
   WAITING_FOR_VOICES_STATUS,
 } from '@/lib/shared/multi-voice';
+import { CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
 import type { TTSAudiobookChapter, TTSAudiobookFormat } from '@/types/tts';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from '@/lib/shared/audiobook-runtime-phase';
 import { Button, Card, IconButton, MenuActionItem, MenuItemsSurface, MenuRoot, MenuTransition, MenuTrigger, RangeInput, Select } from '@/components/ui';
-import { 
+import {
   getAudiobookStatus, 
   deleteAudiobookChapter, 
   deleteAudiobook,
@@ -127,14 +129,16 @@ export function AudiobookExportModal({
     [smartAudioProfiles, selectedSmartAudioProfileId],
   );
   const isDramaProfile = useSmartAudio
-    && selectedSmartAudioProfile?.workerMode === MULTI_VOICE_WORKER_MODE;
+    && (selectedSmartAudioProfile?.workerMode === MULTI_VOICE_WORKER_MODE
+      || selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE);
 
   const applyDramaNarratorVoice = useCallback((value: unknown): string | null => {
-    const voiceId = getNarratorVoiceId(value);
+    const isCloudDrama = selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
+    const voiceId = getNarratorVoiceId(value, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {});
     setDramaNarratorVoice(voiceId);
-    if (voiceId && !savedSettings && !hasExistingAudiobook) setAudiobookVoice(voiceId);
+    if (voiceId && !isCloudDrama && !savedSettings && !hasExistingAudiobook) setAudiobookVoice(voiceId);
     return voiceId;
-  }, [hasExistingAudiobook, savedSettings]);
+  }, [hasExistingAudiobook, savedSettings, selectedSmartAudioProfile?.workerMode]);
 
   useEffect(() => {
     if (!isOpen || !isDramaProfile || !selectedSmartAudioProfileId) {
@@ -1420,6 +1424,7 @@ export function AudiobookExportModal({
         <MultiVoiceCharacterModal
           documentId={documentId}
           profileId={selectedSmartAudioProfileId}
+          workerMode={selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? 'drama-gemini-tts' : 'multi-voice'}
           jobId={castingJobId || undefined}
           isOpen={showCharacterCasting}
           onClose={() => {
@@ -1435,7 +1440,7 @@ export function AudiobookExportModal({
               await fetchExistingChapters();
             } else if (startAfterCasting) {
               setStartAfterCasting(false);
-              await handleStartGeneration(false, narratorVoice);
+              await handleStartGeneration(false, selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? null : narratorVoice);
             }
           }}
         />

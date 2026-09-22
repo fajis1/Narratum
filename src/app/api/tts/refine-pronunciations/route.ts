@@ -8,7 +8,10 @@ import { generateTTSBuffer } from '@/lib/server/tts/generate';
 import { resolveTtsCredentials } from '@/lib/server/admin/resolve-credentials';
 import { getResolvedRuntimeConfig } from '@/lib/server/runtime-config';
 import { buildKokoroPronunciationInstructions, isKokoroCompatiblePronunciation } from '@/lib/shared/kokoro-pronunciation-policy';
-import { resolvePronunciationAiModel } from '@/lib/shared/smart-audio-models';
+import {
+  resolvePronunciationAiModel,
+  resolvePronunciationAiModels,
+} from '@/lib/shared/smart-audio-models';
 import { fetchGeminiWithRateLimitFallback } from '@/lib/server/smart-audio/gemini-failover';
 
 const SEED_EXAMPLES = [
@@ -53,6 +56,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       feedbackExamples: examples,
       pronunciationModel: resolvePronunciationAiModel(activeProfile),
+      pronunciationModelFallbacks: resolvePronunciationAiModels(activeProfile).slice(1),
       apiKeyLast4,
       backupApiKeyLast4,
       profileName: activeProfile?.name || null,
@@ -108,7 +112,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Gemini API key not configured. Please enter your API key in Smart Audio Settings.', canUseBackupKey: Boolean(backupKey) }, { status: 400 });
     }
 
-    const model = resolvePronunciationAiModel(activeProfile);
+    const model = (typeof body.model === 'string' && body.model.trim()) || resolvePronunciationAiModel(activeProfile);
+    const configuredFallbacks = Array.isArray(body.fallbackModels)
+      ? body.fallbackModels.filter((m: unknown): m is string => typeof m === 'string' && Boolean(m.trim()))
+      : resolvePronunciationAiModels(activeProfile).slice(1);
     // 3. Call Gemini with automatic key failover
     const prompt = `${buildKokoroPronunciationInstructions(activeProfile)}
 
@@ -124,6 +131,7 @@ Return a JSON object: { "newChoices": ["/pron1/", "/pron2/", "/pron3/", "/pron4/
       primaryApiKey: firstKey,
       backupApiKey: secondKey,
       requestedModel: model,
+      fallbackModels: configuredFallbacks.length > 0 ? configuredFallbacks : undefined,
       request: (apiKey, requestModel) => fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(requestModel || model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
         {
