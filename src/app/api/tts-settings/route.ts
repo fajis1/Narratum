@@ -97,9 +97,18 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'Invalid Google Cloud service-account JSON.' }, { status: 400 });
         }
       }
+      const removeCloudCredentialIds = new Set(
+        Array.isArray(body.removeGoogleCloudServiceAccountProfileIds)
+          ? body.removeGoogleCloudServiceAccountProfileIds.filter((id: unknown): id is string => typeof id === 'string')
+          : [],
+      );
+      const mergedProfiles = mergeStoredSmartAudioProfileSecrets(incomingProfiles, currentDoc.profiles)
+        .map((profile) => removeCloudCredentialIds.has(profile.id)
+          ? { ...profile, googleCloudServiceAccountJson: undefined, googleCloudServiceAccountConfigured: false, googleCloudServiceAccountEmail: null }
+          : profile);
       savedDoc = await writeSmartAudioProfilesDocument(userId, {
         selectedProfileId: selectedSmartAudioProfileId || currentDoc.selectedProfileId,
-        profiles: mergeStoredSmartAudioProfileSecrets(incomingProfiles, currentDoc.profiles),
+        profiles: mergedProfiles,
       });
     }
 

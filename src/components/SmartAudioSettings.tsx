@@ -1085,6 +1085,27 @@ export function SmartAudioSettings() {
     }
   }, [selectedProfileId, workerMode]);
 
+  const handleRemoveCloudCredential = useCallback(async () => {
+    if (!selectedProfileId || !window.confirm('Remove the saved Google Cloud credential from this profile?')) return;
+    try {
+      const response = await fetch('/api/tts-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          smartAudioProfiles: profiles,
+          selectedSmartAudioProfileId: selectedProfileId,
+          removeGoogleCloudServiceAccountProfileIds: [selectedProfileId],
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as { smartAudioProfiles?: SmartAudioProfile[]; error?: string };
+      if (!response.ok) throw new Error(body.error || 'Failed to remove the Google Cloud credential.');
+      setProfiles(Array.isArray(body.smartAudioProfiles) ? body.smartAudioProfiles : profiles);
+      setCloudConnectionStatus('Google Cloud credential removed.');
+    } catch (error) {
+      setCloudConnectionStatus(error instanceof Error ? error.message : 'Failed to remove the Google Cloud credential.');
+    }
+  }, [profiles, selectedProfileId]);
+
   const handleProfileChange = useCallback((nextProfileId: string) => {
     setSelectedProfileId(nextProfileId);
   }, []);
@@ -1556,6 +1577,15 @@ export function SmartAudioSettings() {
                 >
                   {isTestingCloudConnection ? 'Testing…' : 'Test connection'}
                 </button>
+                {activeProfile?.googleCloudServiceAccountConfigured && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRemoveCloudCredential()}
+                    className="rounded border border-red-700/60 px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-100 dark:text-red-200 dark:hover:bg-red-900/30"
+                  >
+                    Remove credentials
+                  </button>
+                )}
                 {cloudConnectionStatus && <span className="text-xs" role="status">{cloudConnectionStatus}</span>}
               </div>
               <p className="text-xs text-gray-500 dark:text-gray-400">Testing contacts Google Cloud and may use a small amount of billable TTS usage.</p>
