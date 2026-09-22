@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildDramaCloudTtsRequest } from '../../src/lib/server/smart-audio/drama-cloud-request';
 import type { DramaDirectorSegment } from '../../src/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '../../src/types/document-settings';
+import { buildDramaDirectorPolicy } from '../../src/lib/shared/drama-profile-settings';
 
 const segment: DramaDirectorSegment = {
   speaker: 'Bethany', utteranceType: 'squad-link', text: 'We should go.',
@@ -47,6 +48,18 @@ describe('Drama Cloud TTS request builder', () => {
     const result = buildDramaCloudTtsRequest({ segment: { ...segment, speaker: 'Beth' }, characterMap });
     expect(result.request.voice.name).toBe('Kore');
     expect(result.request.input.prompt).toContain('Warm and quietly authoritative.');
+  });
+
+  it('keeps narrator and character expressiveness distinct in the final Cloud brief', () => {
+    const policy = buildDramaDirectorPolicy({ narratorExpressiveness: 'subtle', characterExpressiveness: 'dramatic' });
+    const narration = buildDramaCloudTtsRequest({
+      segment: { ...segment, utteranceType: 'narration' }, characterMap, policy,
+    }).request.input.prompt;
+    const dialogue = buildDramaCloudTtsRequest({ segment, characterMap, policy }).request.input.prompt;
+    expect(narration).toContain('Narrator expressiveness: subtle.');
+    expect(narration).not.toContain('Character expressiveness: dramatic.');
+    expect(dialogue).toContain('Character expressiveness: dramatic.');
+    expect(dialogue).not.toContain('Narrator expressiveness: subtle.');
   });
 
   it('rejects an invalid cast, omitted segment, and source tags that would be stripped', () => {

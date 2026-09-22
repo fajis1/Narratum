@@ -21,10 +21,13 @@ function resolveCastEntry(map: SmartAudioCharacterMap, speaker: string): SmartAu
 export function buildDramaDirectorsBrief(segment: DramaDirectorSegment, entry: SmartAudioCharacterEntry, policy?: DramaDirectorPolicy): string {
   const direction = entry.cloudDirection;
   const performance = segment.performance;
+  const expressiveness = segment.utteranceType === 'narration'
+    ? `Narrator expressiveness: ${policy?.narratorPerformance.expressiveness ?? 'moderate'}.`
+    : `Character expressiveness: ${policy?.characterPerformance.expressiveness ?? 'expressive'}.`;
   return [
     `Perform this excerpt as ${entry.name}.`,
     ...(policy ? [
-      `Performance policy: overall style ${policy.overallStyle}; character expressiveness ${policy.characterPerformance.expressiveness}; character consistency ${policy.characterPerformance.consistency}; verified audio tags ${policy.tags.usage}; dramatic pauses ${policy.tags.pauseStyle}.`,
+      `Performance policy: overall style ${policy.overallStyle}; ${expressiveness} character consistency ${policy.characterPerformance.consistency}; verified audio tags ${policy.tags.usage}; dramatic pauses ${policy.tags.pauseStyle}.`,
     ] : []),
     `Character identity: ${direction?.audioProfile || entry.description || 'Use the selected voice naturally and consistently.'}`,
     ...(direction?.defaultPerformance ? [
