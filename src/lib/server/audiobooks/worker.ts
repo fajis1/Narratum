@@ -65,7 +65,7 @@ import {
 } from '@/lib/server/smart-audio/book-lexicon';
 import { normalizeGeminiTokenUsage } from '@/lib/server/smart-audio/gemini-usage';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
-import { generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
+import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
 import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
@@ -1675,18 +1675,24 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       let ttsBuffer: Buffer;
       try {
         if (selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
-          const drama = await generateCloudDramaAudiobook({
-            cleanedText: processedTextForTts,
-            characterMap: resolvedDocumentSettings.smartAudioCharacters!,
-            geminiApiKey: selectedProfile.geminiApiKey || '',
-            backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
-            directorModel: resolveCleanupAiModel(selectedProfile),
-            serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
-          });
-          ttsBuffer = drama.audioBuffer;
-          await persistCloudDramaReviewFlags({
-            documentId: job.documentId, userId, chapterIndex: chapter.index, flags: drama.reviewFlags,
-          });
+          try {
+            const drama = await generateCloudDramaAudiobook({
+              cleanedText: processedTextForTts,
+              characterMap: resolvedDocumentSettings.smartAudioCharacters!,
+              geminiApiKey: selectedProfile.geminiApiKey || '',
+              backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
+              directorModel: resolveCleanupAiModel(selectedProfile),
+              serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
+              dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
+            });
+            ttsBuffer = drama.audioBuffer;
+            await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: drama.reviewFlags });
+          } catch (error) {
+            if (error instanceof CloudDramaGenerationError) {
+              await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: error.reviewFlags });
+            }
+            throw error;
+          }
         } else ttsBuffer = await generateQueuedAudiobookTts(
           job.id,
           {

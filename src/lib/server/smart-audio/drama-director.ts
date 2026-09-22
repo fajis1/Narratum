@@ -3,8 +3,10 @@ import {
   DRAMA_AUDIO_TAG_ALLOWLIST, DRAMA_DELIVERY_STYLES, DRAMA_ENERGY,
   DRAMA_INTENSITY, DRAMA_PACING, DRAMA_PRIMARY_EMOTIONS,
   DRAMA_SECONDARY_EMOTIONS, DRAMA_SOCIAL_INTENTS, DRAMA_UTTERANCE_TYPES,
+  DRAMA_PAUSE_TAGS,
 } from '@/lib/shared/drama-director-schema';
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
+import type { DramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
 import { fetchGeminiWithRateLimitFallback } from './gemini-failover';
 
 const PROMPT_EXAMPLE_NUMBERS = new Set([1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 15]);
@@ -18,6 +20,18 @@ export class DramaDirectorValidationError extends Error {
     super(`Drama Director output failed validation: ${issues.join('; ')}`);
     this.name = 'DramaDirectorValidationError';
   }
+}
+
+function applyPolicyToTags(
+  tags: readonly string[],
+  policy: DramaDirectorPolicy | undefined,
+): DramaDirectorSegment['performance']['tags'] {
+  if (!policy || policy.tags.usage === 'expressive') return tags.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_AUDIO_TAG_ALLOWLIST.includes(tag as never));
+  if (policy.tags.usage === 'off') return [];
+  const pauseTags = new Set<string>(DRAMA_PAUSE_TAGS);
+  const filtered = tags.filter((tag) => policy.tags.pauseStyle === 'cinematic' || !pauseTags.has(tag) || policy.tags.pauseStyle === 'natural' && tag !== 'long pause');
+  const limit = policy.tags.usage === 'conservative' ? 1 : 2;
+  return filtered.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_AUDIO_TAG_ALLOWLIST.includes(tag as never)).slice(0, limit);
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -34,6 +48,7 @@ export function validateDramaDirectorOutput(input: {
   sourceText: string;
   castNames: readonly string[];
   output: unknown;
+  policy?: DramaDirectorPolicy;
 }): DramaDirectorSegment[] {
   const issues: string[] = [];
   const source = record(input.output);
@@ -82,8 +97,10 @@ export function validateDramaDirectorOutput(input: {
         pace: performance.pace as DramaDirectorSegment['performance']['pace'],
         energy: performance.energy as DramaDirectorSegment['performance']['energy'],
         intensity: performance.intensity as DramaDirectorSegment['performance']['intensity'],
-        tags: (performance.tags as unknown[]).filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] =>
-          typeof tag === 'string' && tagSet.has(tag)),
+        tags: applyPolicyToTags(
+          (performance.tags as unknown[]).filter((tag): tag is string => typeof tag === 'string' && tagSet.has(tag)),
+          input.policy,
+        ),
         ...(typeof performance.nuance === 'string' ? { nuance: performance.nuance } : {}),
       },
     });
@@ -96,7 +113,7 @@ export function validateDramaDirectorOutput(input: {
   return segments;
 }
 
-export function buildDramaDirectorPrompt(input: { sourceText: string; castNames: readonly string[] }): string {
+export function buildDramaDirectorPrompt(input: { sourceText: string; castNames: readonly string[]; policy?: DramaDirectorPolicy }): string {
   return [
     'You are the OpenReader Drama Director. Return JSON only: {"segments": [...]} .',
     'Partition the entire source text into ordered, contiguous segments. The concatenation of every segment.text must equal the source exactly, including spaces, punctuation, and newlines. Never rewrite, add, omit, or normalize spoken text.',
@@ -111,6 +128,10 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
     `Allowed tags only: ${JSON.stringify(DRAMA_AUDIO_TAG_ALLOWLIST)}. Do not put markup into text.`,
     'Every segment needs speaker, utteranceType, text, sceneContext (1–3 sentences), performance with all required fields, and omit_from_audio (boolean). Keep all text in the segment list even when omit_from_audio is true.',
     'Author examples (text is exact; direction illustrates context and performance):',
+    ...(input.policy ? [
+      `Director policy: ${JSON.stringify(input.policy)}. Apply this as a bias only; preserve scene-appropriate intensity and exact source text.`,
+      'Narrator expressiveness applies to narration; character expressiveness applies to character speech. Persistent character direction remains authoritative for identity.',
+    ] : []),
     ...DRAMA_DIRECTOR_PROMPT_EXAMPLES.map((example) => JSON.stringify(example)),
     `Cast names: ${JSON.stringify(input.castNames)}`,
     `Authoritative source text: ${JSON.stringify(input.sourceText)}`,
@@ -122,6 +143,7 @@ export async function directDramaWithRepair(input: {
   sourceText: string;
   castNames: readonly string[];
   generate: (prompt: string) => Promise<unknown>;
+  policy?: DramaDirectorPolicy;
 }): Promise<DramaDirectorSegment[]> {
   const prompt = buildDramaDirectorPrompt(input);
   let output: unknown;
@@ -148,6 +170,7 @@ export async function directDramaWithGemini(input: {
   apiKey: string;
   backupApiKey?: string;
   model: string;
+  policy?: DramaDirectorPolicy;
 }): Promise<DramaDirectorSegment[]> {
   return directDramaWithRepair({
     ...input,

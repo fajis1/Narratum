@@ -32,7 +32,7 @@ import { isS3Configured } from '@/lib/server/storage/s3';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
 import { getFFmpegPath } from '@/lib/server/audiobooks/ffmpeg-bin';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
-import { generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
+import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
 import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
@@ -1095,20 +1095,25 @@ export async function POST(request: NextRequest) {
 
     const ttsBuffer = cloudDramaCast && selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
       ? await (async () => {
-        const drama = await generateCloudDramaAudiobook({
-          cleanedText: processedTextForTts,
-          characterMap: cloudDramaCast,
-          geminiApiKey: selectedProfile.geminiApiKey || '',
-          backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
-          directorModel: resolveCleanupAiModel(selectedProfile),
-          serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
-          signal: request.signal,
-        });
-        await persistCloudDramaReviewFlags({
-          documentId: sourceDocumentId, userId: storageUserId,
-          chapterIndex, flags: drama.reviewFlags,
-        });
-        return drama.audioBuffer;
+        try {
+          const drama = await generateCloudDramaAudiobook({
+            cleanedText: processedTextForTts,
+            characterMap: cloudDramaCast,
+            geminiApiKey: selectedProfile.geminiApiKey || '',
+            backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
+            directorModel: resolveCleanupAiModel(selectedProfile),
+            serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
+            dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
+            signal: request.signal,
+          });
+          await persistCloudDramaReviewFlags({ documentId: sourceDocumentId, userId: storageUserId, chapterIndex, flags: drama.reviewFlags });
+          return drama.audioBuffer;
+        } catch (error) {
+          if (error instanceof CloudDramaGenerationError) {
+            await persistCloudDramaReviewFlags({ documentId: sourceDocumentId, userId: storageUserId, chapterIndex, flags: error.reviewFlags });
+          }
+          throw error;
+        }
       })()
       : await generateSegmentedAudiobookTtsBuffer(
       {

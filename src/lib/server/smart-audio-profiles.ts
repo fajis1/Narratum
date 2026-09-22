@@ -5,6 +5,10 @@ import { userPreferences } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import type { SmartAudioProfile, ScanProvider } from '@/types/client';
 import { DEFAULT_PROVIDER_ORDER } from '@/types/client';
+import {
+  DEFAULT_DRAMA_GEMINI_TTS_SETTINGS,
+  normalizeDramaGeminiTtsProfileSettings,
+} from '@/lib/shared/drama-profile-settings';
 import { serverLogger } from '@/lib/server/logger';
 import {
   DEFAULT_CLEANUP_AI_MODEL,
@@ -119,6 +123,7 @@ export function redactSmartAudioProfileSecrets(profile: SmartAudioProfile): Smar
     googleCloudServiceAccountEmail: profile.googleCloudServiceAccountJson
       ? googleCloudServiceAccountEmail
       : null,
+    dramaGeminiTtsSettings: normalizeDramaGeminiTtsProfileSettings(profile.dramaGeminiTtsSettings),
   };
 }
 
@@ -211,6 +216,9 @@ function sanitizeProfile(profile: Partial<SmartAudioProfile> & { id?: string; na
     groqApiKey: (profile.groqApiKey || '').trim() || undefined,
     // Google Cloud Service Account JSON — stored server-side only
     googleCloudServiceAccountJson: (profile.googleCloudServiceAccountJson || '').trim() || undefined,
+    dramaGeminiTtsSettings: normalizeDramaGeminiTtsProfileSettings(
+      profile.dramaGeminiTtsSettings || DEFAULT_DRAMA_GEMINI_TTS_SETTINGS,
+    ),
     // Validate and persist provider order; fall back to default if invalid
     providerOrder: (() => {
       const valid: ScanProvider[] = ['gemini_primary', 'gemini_backup', 'groq'];

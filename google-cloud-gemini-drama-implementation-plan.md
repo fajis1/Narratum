@@ -1,5 +1,7 @@
 # OpenReader — Drama (Gemini 3.1 Flash TTS via Google Cloud)
 
+> **Plan superseded for Stages 11–12:** Use the revised Narratum requirements supplied by the maintainer on 2026-09-22. The revised Stage 11 covers Google Cloud Drama profile performance settings, deterministic Drama Director policy mapping, language, failure behavior, credential status, and connection testing. The revised Stage 12 covers persistent cast direction plus Voice Only, Character Performance, and Scene Preview modes. Preserve the internal worker identifier `drama-gemini-tts`; do not rename persisted identifiers during the Narratum product rename.
+
 ## Staged Implementation Plan for Coding Agents
 
 - **Project:** https://github.com/fajis1/openreader

@@ -4,6 +4,7 @@ import type {
   TTSSentenceAlignment,
 } from '@/types/tts';
 import type { TtsProviderType } from '@/lib/shared/tts-provider-catalog';
+import type { DramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
 
 // --- TTS Client Request Types ---
 
@@ -155,6 +156,8 @@ export interface SmartAudioProfile {
    * Null when no service account is configured.
    */
   googleCloudServiceAccountEmail?: string | null;
+  /** Profile-level policy inputs for the drama-gemini-tts Director. */
+  dramaGeminiTtsSettings?: DramaGeminiTtsProfileSettings;
 }
 
 
