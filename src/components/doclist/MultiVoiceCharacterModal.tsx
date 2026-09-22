@@ -44,6 +44,9 @@ export function MultiVoiceCharacterModal({
   const [isScanning, setIsScanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
+  const [previewModeByCharacter, setPreviewModeByCharacter] = useState<Record<string, 'voice-only' | 'character' | 'scene'>>({});
+  const [previewTextByCharacter, setPreviewTextByCharacter] = useState<Record<string, string>>({});
+  const [previewContextByCharacter, setPreviewContextByCharacter] = useState<Record<string, string>>({});
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -191,18 +194,20 @@ export function MultiVoiceCharacterModal({
     });
   };
 
-  const handlePreview = async (name: string) => {
+  const handlePreview = async (name: string, requestedMode?: 'voice-only' | 'character' | 'scene') => {
     const entry = characterMap?.entries[name];
     if (!entry?.voiceId) return;
+    const previewMode = requestedMode || previewModeByCharacter[name] || 'character';
+    setPreviewModeByCharacter((current) => ({ ...current, [name]: previewMode }));
     setIsPlaying(name);
     setError(null);
     try {
-      const previewText = entry.sampleText || `${entry.name} is ready for the adventure.`;
+      const previewText = previewTextByCharacter[name] || entry.sampleText || `${entry.name} is ready for the adventure.`;
       const response = await fetch(isCloudDrama ? '/api/audiobook/characters/preview' : '/api/tts/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(isCloudDrama
-          ? { documentId, profileId, text: previewText, voiceName: entry.voiceId, audioProfile: entry.cloudDirection?.audioProfile }
+          ? { documentId, profileId, characterName: name, previewMode, sceneContext: previewContextByCharacter[name], text: previewText, voiceName: entry.voiceId, audioProfile: previewMode === 'voice-only' ? '' : entry.cloudDirection?.audioProfile }
           : { text: previewText, voice: entry.voiceId }),
       });
       if (!response.ok) {
@@ -412,7 +417,7 @@ export function MultiVoiceCharacterModal({
                             );
                           })}
                         </select>
-                        <button type="button" onClick={() => void handlePreview(character.name)} disabled={!character.voiceId || isPlaying === character.name} className="rounded-lg border border-accent px-3 text-accent disabled:opacity-50" title="Preview this character voice">
+                        <button type="button" onClick={() => void handlePreview(character.name, isCloudDrama ? 'voice-only' : undefined)} disabled={!character.voiceId || isPlaying === character.name} className="rounded-lg border border-accent px-3 text-accent disabled:opacity-50" title="Preview this character voice">
                           {isPlaying === character.name ? '…' : '▶'}
                         </button>
                       </div>
@@ -435,6 +440,49 @@ export function MultiVoiceCharacterModal({
                   )}
                 </div>
               </div>
+              {isCloudDrama && !character.aliasFor && (
+                <details className="mt-3 rounded-lg border border-line bg-surface-raised p-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-text-strong">Performance previews</summary>
+                  <div className="mt-3 space-y-2">
+                    <div className="flex flex-wrap gap-2">
+                      {(['voice-only', 'character', 'scene'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => void handlePreview(character.name, mode)}
+                          disabled={!character.voiceId || isPlaying === character.name}
+                          className="rounded border border-accent px-2 py-1 text-xs text-accent disabled:opacity-50"
+                        >
+                          {isPlaying === character.name && (previewModeByCharacter[character.name] || 'character') === mode ? 'Playing…' : mode === 'voice-only' ? 'Voice only' : mode === 'character' ? 'Character performance' : 'Scene preview'}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="block text-xs text-text-soft">
+                      Sample line
+                      <textarea
+                        value={previewTextByCharacter[character.name] || ''}
+                        onChange={(event) => setPreviewTextByCharacter((current) => ({ ...current, [character.name]: event.target.value.slice(0, 300) }))}
+                        rows={2}
+                        maxLength={300}
+                        placeholder={character.sampleText || 'A short line for this preview.'}
+                        className="mt-1 w-full rounded border border-line bg-background p-2 text-sm text-foreground"
+                      />
+                    </label>
+                    <label className="block text-xs text-text-soft">
+                      Scene context (optional)
+                      <textarea
+                        value={previewContextByCharacter[character.name] || ''}
+                        onChange={(event) => setPreviewContextByCharacter((current) => ({ ...current, [character.name]: event.target.value.slice(0, 500) }))}
+                        rows={2}
+                        maxLength={500}
+                        placeholder="Rina discovers that her brother has been attacked."
+                        className="mt-1 w-full rounded border border-line bg-background p-2 text-sm text-foreground"
+                      />
+                    </label>
+                    <p className="text-[11px] text-text-soft">Previews use Google Cloud Text-to-Speech and may incur usage charges. Preview text is not saved to the manuscript.</p>
+                  </div>
+                </details>
+              )}
               {isCloudDrama && !character.aliasFor && (
                 <details className="mt-4 rounded-lg border border-line bg-surface-sunken p-3">
                   <summary className="cursor-pointer text-sm font-semibold text-text-strong">Character direction</summary>

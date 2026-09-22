@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
-import { documents } from '@/db/schema';
+import { documentSettings, documents } from '@/db/schema';
 import { requireAuthContext } from '@/lib/server/auth/auth';
 import { findSmartAudioProfileById, readSmartAudioProfilesDocument } from '@/lib/server/smart-audio-profiles';
 import { isValidCloudTtsVoice } from '@/lib/shared/google-cloud-tts-voices';
 import { synthesizeWithCloudTts } from '@/lib/server/smart-audio/google-cloud-tts-client';
+import { normalizeCloudTtsCharacterMap } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import { buildDramaDirectorsBrief } from '@/lib/server/smart-audio/drama-cloud-request';
+import { normalizeDramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +22,9 @@ export async function POST(request: NextRequest) {
   const voiceName = typeof body.voiceName === 'string' ? body.voiceName.trim() : '';
   const text = typeof body.text === 'string' ? body.text.trim().slice(0, 300) : '';
   const audioProfile = typeof body.audioProfile === 'string' ? body.audioProfile.trim().slice(0, 1_000) : '';
+  const previewMode = body.previewMode === 'voice-only' || body.previewMode === 'scene' ? body.previewMode : 'character';
+  const characterName = typeof body.characterName === 'string' ? body.characterName.trim() : '';
+  const sceneContext = typeof body.sceneContext === 'string' ? body.sceneContext.trim().slice(0, 500) : '';
   if (!documentId || !profileId || !text || !isValidCloudTtsVoice(voiceName)) {
     return NextResponse.json({ error: 'A valid document, profile, voice, and sample text are required.' }, { status: 400 });
   }
@@ -32,9 +38,39 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'A Google Cloud Drama profile is required.' }, { status: 400 });
   }
   try {
+    const settingsRows = await db.select({ dataJson: documentSettings.dataJson }).from(documentSettings).where(and(
+      eq(documentSettings.documentId, documentId), eq(documentSettings.userId, context.userId),
+    )).limit(1);
+    const rawSettings = typeof settingsRows[0]?.dataJson === 'string'
+      ? JSON.parse(settingsRows[0].dataJson)
+      : settingsRows[0]?.dataJson;
+    const characterMap = normalizeCloudTtsCharacterMap(rawSettings && typeof rawSettings === 'object'
+      ? (rawSettings as Record<string, unknown>).smartAudioCharacters
+      : null);
+    const entry = characterName && characterMap?.entries[characterName]
+      ? characterMap.entries[characterName]
+      : null;
+    if (previewMode !== 'voice-only' && !entry) {
+      return NextResponse.json({ error: 'Select a saved character before using this preview mode.' }, { status: 400 });
+    }
+    const settings = normalizeDramaGeminiTtsProfileSettings(profile.dramaGeminiTtsSettings);
+    const stylePrompt = previewMode === 'voice-only'
+      ? 'Speak naturally and clearly as a neutral audiobook voice comparison.'
+      : buildDramaDirectorsBrief({
+        speaker: entry!.name,
+        utteranceType: 'spoken-dialogue',
+        text,
+        sceneContext: previewMode === 'scene' ? (sceneContext || 'A short dramatic audiobook scene.') : 'A neutral character baseline preview.',
+        omit_from_audio: false,
+        performance: {
+          primaryEmotion: 'calm', secondaryEmotions: [], socialIntent: 'none', delivery: ['natural'],
+          pace: 'normal', energy: 'normal', intensity: 'controlled', tags: [],
+        },
+      }, entry!);
     const result = await synthesizeWithCloudTts({
       text, voiceName,
-      stylePrompt: audioProfile || 'Speak naturally as this audiobook character.',
+      stylePrompt: audioProfile || stylePrompt,
+      languageCode: settings.languageCode,
       serviceAccountJson: profile.googleCloudServiceAccountJson,
     });
     return new NextResponse(new Uint8Array(result.audioBuffer), {
