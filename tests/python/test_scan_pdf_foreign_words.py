@@ -5,6 +5,52 @@ import scan_pdf_foreign_words
 
 
 class ForeignWordContextTests(unittest.TestCase):
+    def test_all_foreign_keeps_complete_transliterations(self):
+        text = 'Aššurbanipal met haššāmayim. The short form ʾîš also appears.'
+        with (
+            patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=text),
+            patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+        ):
+            rows = scan_pdf_foreign_words.scan_pdf_foreign_words('unused.pdf', target_percentile=100, mode='all_foreign', quiet=True)
+        words = {row['word'] for row in rows}
+        self.assertIn('Aššurbanipal', words)
+        self.assertIn('haššāmayim', words)
+        self.assertIn('ʾîš', words)
+        self.assertNotIn('šš', words)
+        self.assertNotIn('ššā', words)
+
+    def test_context_retains_target_and_wrapped_gloss(self):
+        text = 'Preface. ' + ('ordinary prose ' * 40) + 'haššāmayim\nmeans the heavens in this passage. End.'
+        with (
+            patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=text),
+            patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+        ):
+            rows = scan_pdf_foreign_words.scan_pdf_foreign_words('unused.pdf', target_percentile=100, mode='all_foreign', quiet=True)
+        row = next(row for row in rows if row['word'] == 'haššāmayim')
+        self.assertIn('haššāmayim means the heavens', row['contexts'][0])
+        self.assertIn('haššāmayim', row['contexts'][0])
+        self.assertEqual(row['occurrences'][0]['surfaceTerm'], 'haššāmayim')
+        self.assertEqual(row['occurrences'][0]['context'][row['occurrences'][0]['contextTargetStart']:row['occurrences'][0]['contextTargetEnd']], 'haššāmayim')
+
+    def test_combining_marks_and_page_offsets_survive_tokenization(self):
+        first_page = 'On this page, Aššurbanipal appears.\n'
+        second_page = 'The NFD spelling haššāmayim has a gloss.\n'
+        text = scan_pdf_foreign_words.ExtractedPdfText(
+            first_page + second_page,
+            [(0, len(first_page), 1), (len(first_page), len(first_page + second_page), 2)],
+            'pypdf',
+        )
+        with (
+            patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=text),
+            patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+        ):
+            rows = scan_pdf_foreign_words.scan_pdf_foreign_words('unused.pdf', target_percentile=100, mode='all_foreign', quiet=True)
+        by_word = {row['word']: row for row in rows}
+        occurrence = by_word['haššāmayim']['occurrences'][0]
+        self.assertEqual(occurrence['pdfPage'], 2)
+        self.assertEqual(occurrence['sourceStart'], text.index('haššāmayim'))
+        self.assertEqual(occurrence['normalizedTerm'], 'haššāmayim')
+
     def test_internal_editorial_letters_remain_one_candidate_with_original_context(self):
         text = 'The gifts of God (ἐκ τῶν τοῦ θε(οῦ) δωρεῶν). Hebrew של(ו)ם remains.'
         for mode in ('greek_hebrew', 'all_foreign'):

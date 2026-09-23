@@ -220,6 +220,8 @@ export function findLatestForeignWordScanJob(
   return activeLegacyJobs.length === 1 ? activeLegacyJobs[0] : null;
 }
 
+export const FOREIGN_WORD_CANDIDATE_CACHE_VERSION = 11;
+
 export function foreignWordCandidateCacheKey(input: {
   userId: string;
   documentId: string;
@@ -230,7 +232,7 @@ export function foreignWordCandidateCacheKey(input: {
   const scopeHash = createHash('sha256')
     .update(JSON.stringify(input))
     .digest('hex');
-  return `foreign_word_candidates:v10:${scopeHash}`;
+  return `foreign_word_candidates:v${FOREIGN_WORD_CANDIDATE_CACHE_VERSION}:${scopeHash}`;
 }
 
 export function parseForeignWordCandidateCache(value: unknown): unknown[] | null {
@@ -239,7 +241,7 @@ export function parseForeignWordCandidateCache(value: unknown): unknown[] | null
     if (
       !parsed
       || typeof parsed !== 'object'
-      || (parsed as { version?: unknown }).version !== 10
+      || (parsed as { version?: unknown }).version !== FOREIGN_WORD_CANDIDATE_CACHE_VERSION
       || !Array.isArray((parsed as { words?: unknown }).words)
     ) {
       return null;

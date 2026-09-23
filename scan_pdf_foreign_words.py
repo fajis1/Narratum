@@ -6,6 +6,7 @@ import argparse
 import unicodedata
 from collections import Counter
 from functools import lru_cache
+from bisect import bisect_right
 
 try:
     from wordfreq import zipf_frequency
@@ -77,12 +78,15 @@ def is_latin_transliteration_candidate(word):
         if unicodedata.category(character) != 'Mn'
     )
     plain_letters = re.sub(r"['’ʾʿ]", "", base_letters)
-    if len(plain_letters) < 4 or not re.fullmatch(r"[A-Za-z]+", plain_letters):
+    has_explicit_transliteration_marker = any(character in word for character in 'ʾʿ')
+    if (len(plain_letters) < 4 and not has_explicit_transliteration_marker) or not re.fullmatch(r"[A-Za-z]+", plain_letters):
         return False
     if base_letters.casefold() in ENGLISH_STOP_WORDS_CASEFOLD:
         return False
     # Keep Greek/Hebrew-script extraction available in minimal environments;
     # the production image installs wordfreq for this additional candidate pass.
+    if has_explicit_transliteration_marker:
+        return True
     if zipf_frequency is None:
         return False
     return zipf_frequency(word.casefold(), 'en') < STANDARD_ENGLISH_ZIPF_THRESHOLD
@@ -139,6 +143,47 @@ GREEK_OR_HEBREW_REGEX = re.compile(r'[\u0370-\u03FF\u1F00-\u1FFF\u0590-\u05FF]')
 GREEK_REGEX = re.compile(r'[\u0370-\u03FF\u1F00-\u1FFF]')
 HEBREW_REGEX = re.compile(r'[\u0590-\u05FF]')
 GREEK_ELISION_REGEX = re.compile(r"^[\u0370-\u03FF\u1F00-\u1FFF][\u1FBD\u1FBF'’]$")
+TOKEN_JOINERS = {"'", '’'}
+GREEK_TERMINAL_ELISION = {'\u1fbd', '\u1fbf', '᾿'}
+
+
+def iter_complete_word_tokens(text):
+    """Yield complete lexical surfaces and offsets, including attached marks.
+
+    Apostrophes join letters only internally; ordinary hyphens and Hebrew
+    maqqef remain boundaries until a source-aware compound policy is added.
+    """
+    index = 0
+    while index < len(text):
+        if unicodedata.category(text[index])[0] not in 'LN':
+            index += 1
+            continue
+        start = index
+        index += 1
+        while index < len(text):
+            character = text[index]
+            category = unicodedata.category(character)[0]
+            if category in 'LMN':
+                index += 1
+            elif character in TOKEN_JOINERS and index + 1 < len(text) and unicodedata.category(text[index + 1])[0] == 'L':
+                index += 1
+            elif character in GREEK_TERMINAL_ELISION and GREEK_REGEX.search(text[start:index]):
+                index += 1
+            else:
+                break
+        yield start, index, text[start:index]
+
+
+def has_foreign_marker(word):
+    return any(
+        GREEK_OR_HEBREW_REGEX.match(character)
+        or '\u0400' <= character <= '\u04ff'
+        or '\u0600' <= character <= '\u06ff'
+        or '\u4e00' <= character <= '\u9fff'
+        or (character.isalpha() and ord(character) > 127)
+        or unicodedata.category(character) == 'Mn'
+        for character in word
+    )
 
 
 def get_ocr_suspect_evidence(full_text, start, end):
@@ -164,13 +209,12 @@ def collect_foreign_matches(full_text, regex):
     matches = []
     editorial = collect_editorial_words(full_text)
     matches.extend((expanded, None) for _start, _end, _printed, expanded in editorial)
-    for match in regex.finditer(full_text):
-        if any(start <= match.start() < end for start, end, _printed, _expanded in editorial):
+    for start, end, surface in iter_complete_word_tokens(full_text):
+        if any(editorial_start <= start < editorial_end for editorial_start, editorial_end, _printed, _expanded in editorial):
             continue
-        word = match.group(0).strip('.,;:!?··\'"()[]{}«»')
-        if not word:
+        if not regex.search(surface):
             continue
-        matches.append((word, get_ocr_suspect_evidence(full_text, match.start(), match.end())))
+        matches.append((surface, get_ocr_suspect_evidence(full_text, start, end)))
     return matches
 
 
@@ -207,18 +251,57 @@ def classify_automatic_ocr_ignore(word):
         return "Greek OCR fragment ending in non-final sigma"
     return None
 
+
+class ExtractedPdfText(str):
+    """Keep page offsets attached to the legacy flattened-text interface."""
+
+    def __new__(cls, text, page_spans, extraction_method):
+        value = super().__new__(cls, text)
+        value.page_spans = page_spans
+        value.extraction_method = extraction_method
+        return value
+
+
+def target_centered_context(text, start, end, page_start=0, page_end=None, max_chars=1000):
+    """Return a wrapped-line-normalized context that always retains the target."""
+    page_end = len(text) if page_end is None else page_end
+    left = max(page_start, start - max_chars // 2)
+    right = min(page_end, end + max_chars // 2)
+    # A sentence boundary is preferable when it does not hide nearby glosses.
+    prefix = text[left:start]
+    sentence_starts = [match.end() for match in re.finditer(r'[.!?]\s+', prefix)]
+    if sentence_starts and start - (left + sentence_starts[-1]) <= max_chars // 2:
+        left += sentence_starts[-1]
+    suffix = text[end:right]
+    sentence_end = re.search(r'[.!?](?:\s|$)', suffix)
+    if sentence_end:
+        right = end + sentence_end.start() + 1
+
+    def collapse(value):
+        return re.sub(r'\s+', ' ', value).strip()
+
+    before = collapse(text[left:start])
+    target = collapse(text[start:end])
+    after = collapse(text[end:right])
+    context = ' '.join(part for part in (before, target, after) if part)
+    target_start = len(before) + (1 if before else 0)
+    return context, target_start, target_start + len(target)
+
 def load_pdf_text(pdf_path):
     """Extract text from a PDF file using pypdf or PyMuPDF if available."""
     try:
         import pypdf
         reader = pypdf.PdfReader(pdf_path)
         text = ""
-        for page in reader.pages:
+        page_spans = []
+        for page_number, page in enumerate(reader.pages, start=1):
             t = page.extract_text()
             if t:
+                start = len(text)
                 text += t + "\n"
+                page_spans.append((start, len(text), page_number))
         if text.strip():
-            return text
+            return ExtractedPdfText(text, page_spans, 'pypdf')
     except Exception:
         pass
 
@@ -226,9 +309,12 @@ def load_pdf_text(pdf_path):
         import fitz # PyMuPDF
         doc = fitz.open(pdf_path)
         text = ""
-        for page in doc:
+        page_spans = []
+        for page_number, page in enumerate(doc, start=1):
+            start = len(text)
             text += page.get_text() + "\n"
-        return text
+            page_spans.append((start, len(text), page_number))
+        return ExtractedPdfText(text, page_spans, 'pymupdf')
     except Exception:
         pass
 
@@ -263,43 +349,61 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
 
     ocr_suspect_evidence = {}
     latin_transliteration_candidates = set()
-    if mode == "fantasy_litrpg":
-        raw_matches = FANTASY_LITRPG_REGEX.findall(full_text)
-        cleaned_matches = [m.strip('.,;:!?·\'"()[]{}«»') for m in raw_matches]
-        filtered_matches = [m for m in cleaned_matches if is_fantasy_litrpg_candidate(m)]
-    elif mode == "greek_hebrew":
-        raw_matches = collect_foreign_matches(full_text, GREEK_HEBREW_REGEX)
-        filtered_matches = []
-        for word, evidence in raw_matches:
-            if (
-                len(word) > 1
-                and normalize_foreign_term_for_fuzzy_match(word) not in STOP_WORDS_FOLDED
-                and word not in KNOWN_OCR_FRAGMENTS
-            ):
-                filtered_matches.append(word)
-                if evidence:
-                    ocr_suspect_evidence.setdefault(word, set()).add(evidence)
-        for match in LATIN_TRANSLITERATION_REGEX.finditer(full_text):
-            word = match.group(0)
-            if is_latin_transliteration_candidate(word):
-                filtered_matches.append(word)
+    occurrences_by_word = {}
+    editorial_by_start = {start: (end, printed, expanded) for start, end, printed, expanded in editorial_words}
+    editorial_spans = [(start, end) for start, end, _printed, _expanded in editorial_words]
+    tokens = (
+        ((match.start(), match.end(), match.group(0), None) for match in re.finditer(re.escape(query), full_text, re.IGNORECASE))
+        if mode == 'custom' and query
+        else ((start, end, surface, None) for start, end, surface in iter_complete_word_tokens(full_text))
+    )
+
+    def add_occurrence(word, start, end, surface):
+        occurrences_by_word.setdefault(word, []).append({
+            'start': start, 'end': end, 'surfaceTerm': surface,
+        })
+        evidence = get_ocr_suspect_evidence(full_text, start, end)
+        if evidence:
+            ocr_suspect_evidence.setdefault(word, set()).add(evidence)
+
+    for start, end, surface, _unused in tokens:
+        if any(editorial_start <= start < editorial_end for editorial_start, editorial_end in editorial_spans):
+            continue
+        word = surface.strip('.,;:!?·\'"()[]{}«»')
+        if not word:
+            continue
+        if mode == 'fantasy_litrpg':
+            accepted = bool(FANTASY_LITRPG_REGEX.fullmatch(word)) and is_fantasy_litrpg_candidate(word)
+        elif mode == 'greek_hebrew':
+            biblical_script = bool(GREEK_OR_HEBREW_REGEX.search(word))
+            transliteration = not biblical_script and is_latin_transliteration_candidate(word)
+            accepted = biblical_script or transliteration
+            if transliteration:
                 latin_transliteration_candidates.add(word)
-    elif mode == "custom" and query:
-        custom_regex = re.compile(re.escape(query), re.IGNORECASE)
-        raw_matches = custom_regex.findall(full_text)
-        filtered_matches = [m.strip('.,;:!?·\'"()[]{}«»') for m in raw_matches]
-    else: # all_foreign (default)
-        raw_matches = collect_foreign_matches(full_text, ALL_FOREIGN_REGEX)
-        filtered_matches = []
-        for word, evidence in raw_matches:
-            if (
-                len(word) > 1
-                and normalize_foreign_term_for_fuzzy_match(word) not in STOP_WORDS_FOLDED
-                and word not in KNOWN_OCR_FRAGMENTS
-            ):
-                filtered_matches.append(word)
-                if evidence:
-                    ocr_suspect_evidence.setdefault(word, set()).add(evidence)
+        elif mode == 'custom':
+            accepted = True
+        else:
+            accepted = has_foreign_marker(word)
+        if not accepted:
+            continue
+        if mode in ('greek_hebrew', 'all_foreign') and (
+            len(word) <= 1
+            or normalize_foreign_term_for_fuzzy_match(word) in STOP_WORDS_FOLDED
+            or word in KNOWN_OCR_FRAGMENTS
+        ):
+            continue
+        add_occurrence(word, start, end, surface)
+
+    for start, (end, printed, expanded) in editorial_by_start.items():
+        if mode == 'fantasy_litrpg' or mode == 'custom':
+            continue
+        if mode == 'greek_hebrew' and not GREEK_OR_HEBREW_REGEX.search(expanded):
+            continue
+        if len(expanded) <= 1 or normalize_foreign_term_for_fuzzy_match(expanded) in STOP_WORDS_FOLDED:
+            continue
+        add_occurrence(expanded, start, end, printed)
+
+    filtered_matches = [word for word, occurrences in occurrences_by_word.items() for _ in occurrences]
 
     if not filtered_matches:
         if not quiet:
@@ -401,47 +505,40 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
         print(f"Target {target_percentile:.0f}% cumulative frequency consists of {len(top_words)} unique words.\n")
 
     results = []
+    page_spans = getattr(full_text, 'page_spans', [(0, len(full_text), 1)])
+    page_starts = [start for start, _end, _number in page_spans]
     for word, freq in top_words:
         pct = (freq / total_occurrences) * 100
         pronunciations = global_dict.get(word, ["No global pronunciation recorded yet"])
         contexts = []
-        if mode == "fantasy_litrpg":
-            term_chars = r"A-Za-z0-9'"
-        elif mode == "greek_hebrew":
-            term_chars = BIBLICAL_TERM_CHARS
-        elif mode == "all_foreign":
-            term_chars = ALL_FOREIGN_TERM_CHARS
-        else:
-            term_chars = r"\w"
+        selected_occurrences = []
         editorial_spellings = sorted({
             printed for _start, _end, printed, expanded in editorial_words
             if expanded.casefold() == word.casefold()
         })
-        spellings = '|'.join(re.escape(spelling) for spelling in [word, *editorial_spellings])
-        complete_term_pattern = re.compile(
-            rf"(?<![{term_chars}])(?:{spellings})(?![{term_chars}])",
-            re.IGNORECASE,
-        )
-        for match in complete_term_pattern.finditer(full_text):
-            start = max(
-                full_text.rfind(".", 0, match.start()),
-                full_text.rfind("!", 0, match.start()),
-                full_text.rfind("?", 0, match.start()),
-                full_text.rfind("\n", 0, match.start()),
+        for occurrence in occurrences_by_word[word]:
+            source_start = occurrence['start']
+            source_end = occurrence['end']
+            page_index = max(0, bisect_right(page_starts, source_start) - 1)
+            page_start, page_end, pdf_page = page_spans[page_index]
+            context, target_start, target_end = target_centered_context(
+                full_text, source_start, source_end, page_start, page_end,
             )
-            endings = [
-                pos for pos in (
-                    full_text.find(".", match.end()),
-                    full_text.find("!", match.end()),
-                    full_text.find("?", match.end()),
-                    full_text.find("\n", match.end()),
-                ) if pos >= 0
-            ]
-            end = min(endings) + 1 if endings else min(len(full_text), match.end() + 180)
-            context = full_text[start + 1:end].strip()
-            if context and context not in contexts:
-                contexts.append(context[:320])
-            if len(contexts) >= 2:
+            if not context or context in contexts:
+                continue
+            contexts.append(context)
+            selected_occurrences.append({
+                'surfaceTerm': occurrence['surfaceTerm'],
+                'normalizedTerm': unicodedata.normalize('NFC', word),
+                'pdfPage': pdf_page,
+                'sourceStart': source_start,
+                'sourceEnd': source_end,
+                'context': context,
+                'contextTargetStart': target_start,
+                'contextTargetEnd': target_end,
+                'extractionMethod': getattr(full_text, 'extraction_method', 'provided-text'),
+            })
+            if len(selected_occurrences) >= 2:
                 break
         result = {
             "word": word,
@@ -450,6 +547,7 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
             "percentage": round(pct, 2),
             "pronunciations": pronunciations,
             "contexts": contexts,
+            "occurrences": selected_occurrences,
         }
         if editorial_spellings:
             result["editorialSpellings"] = sorted(set(editorial_spellings))

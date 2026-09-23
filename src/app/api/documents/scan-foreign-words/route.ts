@@ -36,6 +36,7 @@ import {
   createGeminiHttpError,
   collectGeminiPronunciationRepairRequests,
   foreignWordCandidateCacheKey,
+  FOREIGN_WORD_CANDIDATE_CACHE_VERSION,
   GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA,
   GeminiHttpError,
   type GeminiForeignWordResult,
@@ -208,7 +209,7 @@ export async function POST(req: NextRequest) {
           if (!Array.isArray(words)) {
             throw new Error('PDF foreign-word scanner returned an invalid candidate list.');
           }
-          const cachedCandidates = JSON.stringify({ version: 10, words });
+          const cachedCandidates = JSON.stringify({ version: FOREIGN_WORD_CANDIDATE_CACHE_VERSION, words });
           await db.insert(adminSettings).values({
             key: candidateCacheKey,
             valueJson: cachedCandidates,
