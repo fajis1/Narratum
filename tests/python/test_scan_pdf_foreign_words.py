@@ -51,6 +51,24 @@ class ForeignWordContextTests(unittest.TestCase):
         self.assertEqual(occurrence['sourceStart'], text.index('haššāmayim'))
         self.assertEqual(occurrence['normalizedTerm'], 'haššāmayim')
 
+    def test_disagreeing_hebrew_extractors_signal_source_review_not_a_replacement(self):
+        primary = 'The damaged reading ַיאמרָי appears here.'
+        alternative = 'The other extraction רמאַי is different.'
+        flags, evidence = scan_pdf_foreign_words.assess_hebrew_page_quality(primary, alternative)
+        self.assertIn('hebrew_extractor_disagreement', flags)
+        self.assertGreater(evidence['primaryHebrewTokenCount'], 0)
+        self.assertIn('hebrew_extractor_disagreement', scan_pdf_foreign_words.source_quality_flags('ַיאמרָי', flags))
+
+    def test_unpointed_hebrew_is_not_inherently_damaged(self):
+        flags, _evidence = scan_pdf_foreign_words.assess_hebrew_page_quality('שלום', 'שלום')
+        self.assertEqual(flags, [])
+        self.assertEqual(scan_pdf_foreign_words.source_quality_flags('שלום', flags), [])
+        self.assertEqual(scan_pdf_foreign_words.source_status_for_flags(flags), 'unverified')
+        self.assertEqual(scan_pdf_foreign_words.source_status_for_flags(['hebrew_extractor_disagreement']), 'source_review_recommended')
+        self.assertEqual(scan_pdf_foreign_words.source_status_for_flags([
+            'hebrew_extractor_disagreement', 'detached_combining_mark',
+        ]), 'needs_source_repair')
+
     def test_internal_editorial_letters_remain_one_candidate_with_original_context(self):
         text = 'The gifts of God (ἐκ τῶν τοῦ θε(οῦ) δωρεῶν). Hebrew של(ו)ם remains.'
         for mode in ('greek_hebrew', 'all_foreign'):

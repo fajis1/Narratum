@@ -77,9 +77,13 @@ describe('Gemini foreign-word structured output', () => {
       mode: 'greek_hebrew',
     }));
     expect(parseForeignWordCandidateCache(JSON.stringify({
-      version: 11,
+      version: 12,
       words: [{ word: 'λόγος' }],
     }))).toEqual([{ word: 'λόγος' }]);
+    expect(parseForeignWordCandidateCache(JSON.stringify({
+      version: 11,
+      words: [{ word: 'without-quality-evidence' }],
+    }))).toBeNull();
     expect(parseForeignWordCandidateCache(JSON.stringify({
       version: 10,
       words: [{ word: 'old-fragment' }],

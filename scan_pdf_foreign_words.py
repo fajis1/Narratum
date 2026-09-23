@@ -255,11 +255,61 @@ def classify_automatic_ocr_ignore(word):
 class ExtractedPdfText(str):
     """Keep page offsets attached to the legacy flattened-text interface."""
 
-    def __new__(cls, text, page_spans, extraction_method):
+    def __new__(cls, text, page_spans, extraction_method, alternate_pages=None, alternate_blocks=None):
         value = super().__new__(cls, text)
         value.page_spans = page_spans
         value.extraction_method = extraction_method
+        value.alternate_pages = alternate_pages or {}
+        value.alternate_blocks = alternate_blocks or {}
         return value
+
+
+def assess_hebrew_page_quality(primary_text, alternative_text):
+    """Signal disagreement, never silently choose or reverse Hebrew readings."""
+    def hebrew_tokens(text):
+        return {
+            unicodedata.normalize('NFC', surface)
+            for _start, _end, surface in iter_complete_word_tokens(text)
+            if HEBREW_REGEX.search(surface)
+        }
+
+    primary = hebrew_tokens(primary_text)
+    alternative = hebrew_tokens(alternative_text)
+    overlap = len(primary & alternative) / max(1, min(len(primary), len(alternative)))
+    flags = []
+    if primary and alternative and overlap < 0.25:
+        flags.append('hebrew_extractor_disagreement')
+    return flags, {
+        'primaryHebrewTokenCount': len(primary),
+        'alternativeHebrewTokenCount': len(alternative),
+        'hebrewTokenOverlap': round(overlap, 3),
+    }
+
+
+def source_quality_flags(surface, page_flags):
+    """Treat script/extraction anomalies as source-review evidence only."""
+    flags = list(page_flags) if HEBREW_REGEX.search(surface) else []
+    scripts = sum(bool(pattern.search(surface)) for pattern in (GREEK_REGEX, HEBREW_REGEX, ASCII_LETTER_REGEX))
+    if scripts > 1:
+        flags.append('mixed_script_token')
+    if HEBREW_REGEX.search(surface) and any(
+        character in 'ךםןףץ'
+        and any(unicodedata.category(later).startswith('L') and HEBREW_REGEX.match(later) for later in surface[index + 1:])
+        for index, character in enumerate(surface)
+    ):
+        flags.append('internal_hebrew_final_letter')
+    if surface and unicodedata.category(surface[0]) == 'Mn':
+        flags.append('detached_combining_mark')
+    return flags
+
+
+def source_status_for_flags(flags):
+    evidence = set(flags)
+    if 'hebrew_extractor_disagreement' in evidence and evidence.intersection({
+        'detached_combining_mark', 'internal_hebrew_final_letter', 'mixed_script_token',
+    }):
+        return 'needs_source_repair'
+    return 'source_review_recommended' if evidence else 'unverified'
 
 
 def target_centered_context(text, start, end, page_start=0, page_end=None, max_chars=1000):
@@ -301,7 +351,20 @@ def load_pdf_text(pdf_path):
                 text += t + "\n"
                 page_spans.append((start, len(text), page_number))
         if text.strip():
-            return ExtractedPdfText(text, page_spans, 'pypdf')
+            alternate_pages = {}
+            alternate_blocks = {}
+            try:
+                import fitz  # PyMuPDF supplies independent text and block geometry.
+                with fitz.open(pdf_path) as document:
+                    for page_number, page in enumerate(document, start=1):
+                        blocks = [block for block in page.get_text('blocks') if len(block) >= 7 and block[6] == 0]
+                        alternate_blocks[page_number] = blocks
+                        alternate_pages[page_number] = ''.join(block[4] for block in blocks)
+            except Exception:
+                # Missing alternate extraction is explicit metadata, not a reason
+                # to discard the usable primary extraction.
+                pass
+            return ExtractedPdfText(text, page_spans, 'pypdf', alternate_pages, alternate_blocks)
     except Exception:
         pass
 
@@ -507,6 +570,13 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
     results = []
     page_spans = getattr(full_text, 'page_spans', [(0, len(full_text), 1)])
     page_starts = [start for start, _end, _number in page_spans]
+    page_quality = {}
+    for page_start, page_end, pdf_page in page_spans:
+        alternate_text = getattr(full_text, 'alternate_pages', {}).get(pdf_page)
+        if alternate_text is not None:
+            page_quality[pdf_page] = assess_hebrew_page_quality(
+                full_text[page_start:page_end], alternate_text,
+            )
     for word, freq in top_words:
         pct = (freq / total_occurrences) * 100
         pronunciations = global_dict.get(word, ["No global pronunciation recorded yet"])
@@ -521,22 +591,41 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
             source_end = occurrence['end']
             page_index = max(0, bisect_right(page_starts, source_start) - 1)
             page_start, page_end, pdf_page = page_spans[page_index]
+            page_flags, page_evidence = page_quality.get(pdf_page, ([], {}))
+            quality_flags = source_quality_flags(occurrence['surfaceTerm'], page_flags)
+            if source_start > page_start and unicodedata.category(full_text[source_start - 1]) == 'Mn':
+                quality_flags.append('detached_combining_mark')
+            quality_flags = sorted(set(quality_flags))
             context, target_start, target_end = target_centered_context(
                 full_text, source_start, source_end, page_start, page_end,
             )
             if not context or context in contexts:
                 continue
             contexts.append(context)
+            alternate_blocks = getattr(full_text, 'alternate_blocks', {}).get(pdf_page, [])
+            matching_blocks = [
+                block for block in alternate_blocks
+                if unicodedata.normalize('NFC', occurrence['surfaceTerm']) in unicodedata.normalize('NFC', block[4])
+            ]
+            matching_block = matching_blocks[0] if len(matching_blocks) == 1 else None
             selected_occurrences.append({
                 'surfaceTerm': occurrence['surfaceTerm'],
                 'normalizedTerm': unicodedata.normalize('NFC', word),
                 'pdfPage': pdf_page,
                 'sourceStart': source_start,
                 'sourceEnd': source_end,
+                'pageSourceStart': source_start - page_start,
+                'pageSourceEnd': source_end - page_start,
                 'context': context,
                 'contextTargetStart': target_start,
                 'contextTargetEnd': target_end,
                 'extractionMethod': getattr(full_text, 'extraction_method', 'provided-text'),
+                'blockId': f'{pdf_page}:{matching_block[5]}' if matching_block else None,
+                'bbox': [round(value, 2) for value in matching_block[:4]] if matching_block else None,
+                'coordinateSource': 'pymupdf' if matching_block else None,
+                'qualityFlags': quality_flags,
+                'qualityEvidence': page_evidence if quality_flags else {},
+                'sourceStatus': source_status_for_flags(quality_flags),
             })
             if len(selected_occurrences) >= 2:
                 break
@@ -548,6 +637,14 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
             "pronunciations": pronunciations,
             "contexts": contexts,
             "occurrences": selected_occurrences,
+            "sourceStatus": 'needs_source_repair' if selected_occurrences and all(
+                occurrence['sourceStatus'] == 'needs_source_repair' for occurrence in selected_occurrences
+            ) else 'source_review_recommended' if any(
+                occurrence['qualityFlags'] for occurrence in selected_occurrences
+            ) else 'unverified',
+            "qualityFlags": sorted({
+                flag for occurrence in selected_occurrences for flag in occurrence['qualityFlags']
+            }),
         }
         if editorial_spellings:
             result["editorialSpellings"] = sorted(set(editorial_spellings))
