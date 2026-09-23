@@ -220,7 +220,7 @@ describe('global pronunciation administration', () => {
       'utf8',
     );
     expect(component).toContain('useState(true)');
-    expect(component).toContain('skip existing global/profile pronunciations');
+    expect(component).toContain('Show one stored option for known words');
     expect(route).toContain('body.generateOnlyForNewWords !== false');
     expect(route).toContain('compatibleGlobalChoices.length === 0');
     expect(route).toContain('!compatibleOverrides[w.word]');

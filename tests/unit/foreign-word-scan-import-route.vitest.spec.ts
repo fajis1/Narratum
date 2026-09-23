@@ -81,3 +81,23 @@ test('refuses an import that a profile override would silently supersede', async
   expect(response.status).toBe(409);
   expect(mocks.writeLexicon).not.toHaveBeenCalled();
 });
+
+test('does not save edits for a trusted scan row requiring PDF source repair', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed',
+    words: [{ word: 'λόγος', sourceStatus: 'needs_source_repair' }],
+  }) }]);
+  const response = await POST(request({ documentId: 'book', jobId: 'job', scan }) as never);
+  expect(response.status).toBe(400);
+  expect(mocks.writeLexicon).not.toHaveBeenCalled();
+});
+
+test('does not trust a v1 import when Gemini marked the stored source insufficient', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed',
+    words: [{ word: 'λόγος', sourceOutcome: 'insufficient_context' }],
+  }) }]);
+  const response = await POST(request({ documentId: 'book', jobId: 'job', scan }) as never);
+  expect(response.status).toBe(400);
+  expect(mocks.writeLexicon).not.toHaveBeenCalled();
+});

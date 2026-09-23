@@ -40,7 +40,16 @@ export async function POST(req: NextRequest) {
     }
     let changes;
     try {
-      changes = parseForeignWordScanImport(body.scan, documentId, new Set(job.words.map((row: { word?: unknown }) => row.word).filter((word: unknown): word is string => typeof word === 'string')));
+      changes = parseForeignWordScanImport(
+        body.scan,
+        documentId,
+        new Set(job.words.map((row: { word?: unknown }) => row.word).filter((word: unknown): word is string => typeof word === 'string')),
+        new Map(job.words.map((row: { word?: unknown; sourceStatus?: unknown; sourceOutcome?: unknown }) => [
+          row.word,
+          row.sourceStatus === 'needs_source_repair' || row.sourceOutcome === 'needs_source_repair'
+            || row.sourceOutcome === 'insufficient_context' ? 'needs_source_repair' : row.sourceStatus,
+        ]).filter((entry: unknown[]): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')),
+      );
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid scan JSON.' }, { status: 400 });
     }

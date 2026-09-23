@@ -10,7 +10,7 @@ const rows = [
 describe('foreign-word scan JSON transfer', () => {
   it('exports every word with context and empty proposal fields', () => {
     const exported = exportForeignWordScan(documentId, rows);
-    expect(exported).toMatchObject({ format: 'openreader-foreign-word-scan', version: 1, documentId });
+    expect(exported).toMatchObject({ format: 'openreader-foreign-word-scan', version: 2, documentId });
     expect(exported.words).toHaveLength(2);
     expect(exported.words[0]).toMatchObject({ word: 'λόγος', count: 12, currentDefinition: 'word', proposedPronunciation: null });
   });
@@ -44,5 +44,28 @@ describe('foreign-word scan JSON transfer', () => {
     expect(parseForeignWordScanImport(exported, documentId, new Set(rows.map((row) => row.word)))).toEqual([
       { word: 'λόγος', definition: null },
     ]);
+  });
+
+  it('preserves source evidence in v2 while accepting legacy v1 edit semantics', () => {
+    const evidence = exportForeignWordScan(documentId, [{
+      ...rows[0], sourceStatus: 'needs_source_repair', qualityFlags: ['detached_combining_mark'],
+      editorialSpellings: ['θε(οῦ)'], ocrEvidence: ['damaged token'],
+      occurrences: [{ pdfPage: 179, surfaceTerm: 'λόγος', context: 'The λόγος appears.',
+        sourceStart: 1500, sourceEnd: 1505, pageSourceStart: 120, pageSourceEnd: 125,
+        contextTargetStart: 4, contextTargetEnd: 9, qualityFlags: ['detached_combining_mark'] }],
+    }]);
+    expect(evidence.words[0]).toMatchObject({
+      sourceStatus: 'needs_source_repair', qualityFlags: ['detached_combining_mark'],
+      occurrences: [{ pdfPage: 179, sourceStart: 1500, pageSourceStart: 120, contextTargetStart: 4 }],
+    });
+    evidence.words[0].proposedDefinition = 'spoken word';
+    expect(() => parseForeignWordScanImport(evidence, documentId, new Set(['λόγος']), new Map([
+      ['λόγος', 'needs_source_repair'],
+    ]))).toThrow(/PDF source repair/);
+    expect(parseForeignWordScanImport(evidence, documentId, new Set(['λόγος']))).toEqual([
+      { word: 'λόγος', definition: 'spoken word' },
+    ]);
+    const legacy = { ...evidence, version: 1 };
+    expect(parseForeignWordScanImport(legacy, documentId, new Set(['λόγος']))).toHaveLength(1);
   });
 });

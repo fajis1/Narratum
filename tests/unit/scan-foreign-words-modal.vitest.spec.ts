@@ -67,7 +67,7 @@ describe('foreign-word scan modal', () => {
     expect(source).toContain('<col className="w-[16%]" />');
     expect(source).toContain('[overflow-wrap:anywhere]');
     expect(source).toContain('generateOnlyForNewWords');
-    expect(source).toContain('Generate 5 only for new words');
+    expect(source).toContain('Show one stored option for known words');
     expect(source).toContain('/api/documents/scan-foreign-words/status?jobId=');
     expect(source).toContain('setInterval(() => void pollScanJob');
     expect(source).not.toContain('warmGeminiDefaults');

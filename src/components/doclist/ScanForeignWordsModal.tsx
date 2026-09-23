@@ -993,14 +993,14 @@ export function ScanForeignWordsModal({
                 >
                   {loading ? 'Scanning…' : hasScanned ? 'Scan Again' : 'Start Scan'}
                 </button>
-                <label className="flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300 whitespace-nowrap" title="Avoids extra Gemini calls for words that already have a global pronunciation.">
+                <label className="flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300 whitespace-nowrap" title="Show only the first stored option for words with a global pronunciation. One safe pronunciation now completes a new word.">
                   <input
                     type="checkbox"
                     checked={generateOnlyForNewWords}
                     onChange={(event) => setGenerateOnlyForNewWords(event.target.checked)}
                     disabled={loading || scanActive}
                   />
-                  Generate 5 only for new words (skip existing global/profile pronunciations)
+                  Show one stored option for known words
                 </label>
                 {backupApiKeyLast4 && (
                   <label className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300 font-semibold whitespace-nowrap" title="Bypasses the primary API key and uses the backup Gemini key immediately for this scan.">
@@ -1174,7 +1174,7 @@ export function ScanForeignWordsModal({
               <button type="button" onClick={downloadScanJson} disabled={!activeDocId || words.length === 0} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Export all words JSON</button>
               <button type="button" onClick={() => importFileRef.current?.click()} disabled={!scanJobId || scanActive || importingWords} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">{importingWords ? 'Importing…' : 'Import edited JSON'}</button>
               <input ref={importFileRef} type="file" accept="application/json,.json" className="hidden" aria-label="Import edited foreign-word scan JSON" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importScanJson(file); }} />
-              <p className="w-full text-xs text-soft">The export includes every scanned word and its context. Fill proposedPronunciation or proposedDefinition in the JSON, then import it into this document after the scan finishes.</p>
+              <p className="w-full text-xs text-soft">The export includes source pages and quality evidence. Fill proposedPronunciation or proposedDefinition only for verified complete words, then import into this document after the scan finishes. Damaged source tokens need a source rescan, not a JSON word rename.</p>
             </div>
           )}
           {!activeDocId ? (
@@ -1251,11 +1251,30 @@ export function ScanForeignWordsModal({
                   .filter((w) => !searchQuery || matchesTransliteratedTerm(w.word, searchQuery))
                   .map((w, i) => {
                   const isMissing = (!w.pronunciations || w.pronunciations.length === 0) && !w.userOverride;
+                  const needsSourceRepair = w.sourceStatus === 'needs_source_repair' || w.sourceOutcome === 'needs_source_repair';
+                  const sourceReviewRecommended = !needsSourceRepair && (w.sourceStatus === 'source_review_recommended' || w.sourceOutcome === 'insufficient_context');
                   return (
                   <tr key={i} className={`transition-colors ${isMissing ? 'bg-amber-50/60 dark:bg-amber-950/20 hover:bg-amber-100/60 dark:hover:bg-amber-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'}`}>
                     <td className="px-4 py-3 font-medium text-lg text-gray-900 dark:text-gray-100 align-top [overflow-wrap:anywhere]">
                       <div className="flex flex-col gap-1">
                         <span>{w.word}</span>
+                        {(needsSourceRepair || sourceReviewRecommended) && (
+                          <span className="inline-block w-fit rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+                            {needsSourceRepair ? 'Source extraction needs repair' : 'Check source context'}
+                          </span>
+                        )}
+                        {Array.isArray(w.occurrences) && w.occurrences.length > 0 && (
+                          <details className="text-xs font-normal text-soft">
+                            <summary className="cursor-pointer">Source page and context</summary>
+                            {w.occurrences.slice(0, 2).map((occurrence: any, occurrenceIndex: number) => (
+                              <p key={occurrenceIndex} className="mt-1 break-words">
+                                PDF page {occurrence.pdfPage ?? '?'}: {occurrence.context}
+                                {Array.isArray(occurrence.qualityFlags) && occurrence.qualityFlags.length > 0
+                                  ? ` — ${occurrence.qualityFlags.join(', ')}` : ''}
+                              </p>
+                            ))}
+                          </details>
+                        )}
                         {Array.isArray(w.fuzzyGroupVariants) && w.fuzzyGroupVariants.length > 1 && (
                           <span
                             className="inline-block w-fit rounded bg-accent-wash px-1.5 py-0.5 text-[10px] font-semibold text-accent border border-accent-line"
@@ -1264,7 +1283,7 @@ export function ScanForeignWordsModal({
                             Fuzzy priority · {w.fuzzyGroupCount} combined · {w.fuzzyGroupVariants.length} direct variants
                           </span>
                         )}
-                        {isMissing && (
+                        {isMissing && !needsSourceRepair && (
                           <span className="inline-block w-fit rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 border border-amber-500/30">
                             ⚠️ Missing / Needs Fix
                           </span>
@@ -1314,7 +1333,9 @@ export function ScanForeignWordsModal({
                           })}
                         {(!w.pronunciations || w.pronunciations.length === 0) && (
                           <span className="text-gray-500 text-xs italic">
-                            {scanJobStatus === 'queued' || scanJobStatus === 'running'
+                            {needsSourceRepair
+                              ? 'Source extraction needs review before a pronunciation can be trusted.'
+                              : scanJobStatus === 'queued' || scanJobStatus === 'running'
                               ? 'Waiting for Gemini pronunciation choices…'
                               : 'No Gemini pronunciation was generated for this word; see the scan status above.'}
                           </span>
