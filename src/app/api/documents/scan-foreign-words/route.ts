@@ -413,8 +413,8 @@ export async function POST(req: NextRequest) {
         const updatedGlobalWords = new Set<string>();
         const confirmedOcrFragments = new Set<string>(automaticOcrFragments);
         const sourceOutcomes = new Map<string, string>(
-          words.filter((word: any) => word.sourceStatus === 'needs_source_repair' && !compatibleOverrides[word.word])
-            .map((word: any) => [word.word, 'needs_source_repair']),
+          words.filter((word: { word: string; sourceStatus?: string }) => word.sourceStatus === 'needs_source_repair' && !compatibleOverrides[word.word])
+            .map((word: { word: string }) => [word.word, 'needs_source_repair']),
         );
         const resolvedGeminiWords = new Set<string>();
         let acceptedChoices = 0;
@@ -437,11 +437,12 @@ export async function POST(req: NextRequest) {
             ? transliterationMatch.pronunciation
             : null;
           const libraryPronunciation = userPronunciation || globalPronunciation || transliterationPronunciation;
-          const globalChoices = (sourceBlocked ? [] : globalDict[w.word] || []).map((item: any) => ({
+          const globalChoices: Array<{ phonetic?: string; isInGlobalLibrary: boolean; isTransliterationMatch?: boolean }> =
+            (sourceBlocked ? [] : globalDict[w.word] || []).map((item: { phonetic?: string } | string) => ({
             ...(typeof item === 'string' ? { phonetic: item } : item),
             isInGlobalLibrary: preExistingCompatibleGlobalPhonetics
               .get(w.word)
-              ?.has(item?.phonetic) === true,
+              ?.has(typeof item === 'string' ? item : item.phonetic || '') === true,
           }));
           if (
             transliterationPronunciation
@@ -525,7 +526,7 @@ export async function POST(req: NextRequest) {
             sourceStatus: scanned?.sourceStatus || 'unverified',
             qualityFlags: Array.isArray(scanned?.qualityFlags) ? scanned.qualityFlags : [],
             sourcePages: Array.isArray(scanned?.occurrences)
-              ? scanned.occurrences.slice(0, 2).map((occurrence: any) => occurrence.pdfPage)
+              ? scanned.occurrences.slice(0, 2).map((occurrence: { pdfPage?: number }) => occurrence.pdfPage)
               : [],
             ocrSuspect: scanned?.ocrSuspect === true,
             ocrEvidence: Array.isArray(scanned?.ocrEvidence) ? scanned.ocrEvidence.slice(0, 2) : [],
