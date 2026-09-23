@@ -1,0 +1,17 @@
+{
+  "document_id": 22,
+  "document_title": "Constructing_the_Human",
+  "pdf_page": 179,
+  "printed_page": 165,
+  "line_index": 44,
+  "text": "יַאמר יָהוָה אַמַחָה אַת־הָאָדָם אַשַּׁר־בָּרָאתִי מַעל פּנִי הָאָדָמָה מָאָדָם עַד־בְּהַמָּה עַד־רַמְשׁ וַעַד־עוֹף הַשְּׁמִים",
+  "source_markup": "יַאמר יָהוָה אַמַחָה אַת־הָאָדָם אַשַּׁר־בָּרָאתִי מַעל פּנִי הָאָדָמָה מָאָדָם עַד־בְּהַמָּה עַד־רַמְשׁ וַעַד־עוֹף הַשְּׁמִים",
+  "confidence": 0.8870803337777033,
+  "bbox": [153.0, 975.0, 775.0, 990.0],
+  "polygon": [[153.0, 975.0], [775.0, 975.0], [775.0, 990.0], [153.0, 990.0]],
+  "raster_dimensions": [902, 1330],
+  "pdf_dimensions_points": [324.47998046875, 478.55999755859375],
+  "cache_json_sha256": "277bc02416094be102b2d5694499f8984e9961f9f05b2f5dbe71f9f0d3aca8ba",
+  "cache_png_sha256": "2c29bf9f1d1026cbb8cd6f8dc926e3b477af962feb0aced12b3970dd8c090c09",
+  "confidence_scope": "whole line, not per character or vowel point"
+}
