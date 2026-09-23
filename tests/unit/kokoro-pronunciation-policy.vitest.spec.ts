@@ -153,7 +153,7 @@ describe('Kokoro pronunciation policy', () => {
     expect(source).toContain('geminiRecommendations');
     expect(source).toContain('libraryPronunciation');
     expect(source).toContain('pronunciationSource');
-    expect(source).toContain('put the best first');
+    expect(source).toContain('return one reliable Kokoro IPA pronunciation');
     expect(source).toContain('generateOnlyForNewWords');
     expect(source).toContain('globalChoices.slice(0, 1)');
     expect(source).toContain('after(async () =>');

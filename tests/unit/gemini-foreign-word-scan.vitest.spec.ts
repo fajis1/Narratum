@@ -13,6 +13,7 @@ import {
   isUsableForeignWordCandidate,
   parseForeignWordCandidateCache,
   parseGeminiForeignWordResults,
+  validateForeignWordResultBatch,
 } from '@/lib/server/smart-audio/gemini-foreign-word-scan';
 
 describe('Gemini foreign-word structured output', () => {
@@ -22,6 +23,7 @@ describe('Gemini foreign-word structured output', () => {
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.properties.term.type).toBe('string');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.properties.definitionOmitted.type).toBe('boolean');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.properties.ocrFragment.type).toBe('boolean');
+    expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.properties.sourceOutcome.enum).toContain('needs_source_repair');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('term');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('definitionOmitted');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('ocrFragment');
@@ -134,7 +136,7 @@ describe('Gemini foreign-word structured output', () => {
     ], 'user-a', 'doc-a')).toBeNull();
   });
 
-  test('requests one correction for omitted, unsafe, or incomplete pronunciation results', () => {
+  test('requests one correction only for omitted or unsafe pronunciation results', () => {
     const terms = [
       { term: 'υἱοὶ', contexts: [], currentPronunciation: null },
       { term: 'κτλ', contexts: [], currentPronunciation: null },
@@ -144,11 +146,36 @@ describe('Gemini foreign-word structured output', () => {
       { term: 'υἱοὶ', pronunciations: ['/hyjoɪ/'] },
       { term: 'κτλ', pronunciations: ['/K, T, L/'] },
     ]);
-    expect(repairs.map(({ term }) => term)).toEqual(['υἱοὶ', 'κτλ', 'λόγος']);
+    expect(repairs.map(({ term }) => term)).toEqual(['υἱοὶ', 'λόγος']);
     expect(repairs[0].rejectedPronunciations[0].violations[0]).toContain('adjacent /y/ and /j/');
-    expect(repairs[1].acceptedPronunciations).toEqual(['/K, T, L/']);
-    expect(repairs[1].choicesNeeded).toBe(4);
-    expect(repairs[2].rejectedPronunciations[0].violations[0]).toContain('omitted');
+    expect(repairs[1].rejectedPronunciations[0].violations[0]).toContain('omitted');
+  });
+
+  test('does not demand invented pronunciations for a source-repair outcome without a local OCR flag', () => {
+    const terms = [{ term: 'אדם', contexts: [], currentPronunciation: null }];
+    expect(collectGeminiPronunciationRepairRequests(terms, [{
+      term: 'אדם', sourceOutcome: 'needs_source_repair', pronunciations: [],
+    }])).toEqual([]);
+  });
+
+  test('rejects unknown, duplicate, and contradictory source outcomes while reporting omitted terms', () => {
+    const valid = {
+      term: 'λόγος', language: 'koine_greek', sourceOutcome: 'valid_word',
+      pronunciations: ['/loʊɡos/'], ocrFragment: false, definition: 'word',
+      definitionOmitted: false, confidence: 0.9, needsReview: false,
+    };
+    expect(validateForeignWordResultBatch(['λόγος', 'θεός'], [valid])).toEqual(['θεός']);
+    expect(() => validateForeignWordResultBatch(['λόγος'], [valid, valid])).toThrow(/Duplicate/);
+    expect(() => validateForeignWordResultBatch(['θεός'], [valid])).toThrow(/Unexpected/);
+    expect(() => validateForeignWordResultBatch(['λόγος'], [{
+      ...valid, sourceOutcome: 'needs_source_repair',
+    }])).toThrow(/cannot carry a pronunciation/);
+    expect(() => validateForeignWordResultBatch(['λόγος'], [{
+      ...valid, confidence: 'high',
+    }])).toThrow(/Invalid result fields/);
+    expect(() => validateForeignWordResultBatch(['λόγος'], [{
+      ...valid, pronunciations: [3],
+    }])).toThrow(/Invalid pronunciation value/);
   });
 
   test('does not send a Gemini-confirmed OCR fragment through pronunciation repair', () => {
@@ -191,6 +218,15 @@ describe('Gemini foreign-word structured output', () => {
     }]);
   });
 
+  test('an unresolved source repair clears the earlier pronunciation guess', () => {
+    expect(mergeGeminiPronunciationRepairResults(
+      [{ term: 'אדם', sourceOutcome: 'valid_word', pronunciations: ['/ɑdɑm/'] }],
+      [{ term: 'אדם', sourceOutcome: 'needs_source_repair', pronunciations: [], needsReview: true }],
+    )).toEqual([{
+      term: 'אדם', sourceOutcome: 'needs_source_repair', pronunciations: [], needsReview: true,
+    }]);
+  });
+
   test('limits scan quality correction to one Gemini pass', () => {
     const route = readFileSync(resolve(
       process.cwd(),
@@ -211,6 +247,17 @@ describe('Gemini foreign-word structured output', () => {
     expect(route).toContain('ocrEvidence: Array.isArray(scanned?.ocrEvidence)');
     expect(route).toContain('Gemini, not a brittle local heuristic, made the final call.');
     expect(route).toContain('result.ocrFragment === true');
+  });
+
+  test('sends provenance and source uncertainty instead of demanding five variants', () => {
+    const route = readFileSync(resolve(
+      process.cwd(), 'src/app/api/documents/scan-foreign-words/route.ts',
+    ), 'utf8');
+    expect(route).toContain('existingSuggestion: existingSuggestion || null');
+    expect(route).toContain('currentPronunciation: compatibleOverrides[word] || null');
+    expect(route).toContain('one reliable Kokoro IPA pronunciation');
+    expect(route).toContain('sourceOutcome to valid_word, needs_source_repair, insufficient_context, or not_applicable');
+    expect(route).not.toContain('return 5 distinct');
   });
 
   test('classifies rare Latin candidates before allowing dictionary persistence', () => {

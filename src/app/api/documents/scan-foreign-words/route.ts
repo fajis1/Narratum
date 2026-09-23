@@ -42,9 +42,11 @@ import {
   type GeminiForeignWordResult,
   mergeGeminiPronunciationRepairResults,
   isRejectedLatinTransliteration,
+  isUnresolvedForeignWordOutcome,
   isUsableForeignWordCandidate,
   parseForeignWordCandidateCache,
   parseGeminiForeignWordResults,
+  validateForeignWordResultBatch,
 } from '@/lib/server/smart-audio/gemini-foreign-word-scan';
 import {
   normalizeDictionaryDefinition,
@@ -330,6 +332,7 @@ export async function POST(req: NextRequest) {
         for (const w of words) {
           const term = w.word;
           if (!term || typeof term !== 'string') continue;
+          if (w.sourceStatus === 'needs_source_repair' && !compatibleOverrides[term]) continue;
           const transliterationMatch = transliterationMatches.get(term);
           const userPron = compatibleOverrides[term] || null;
           const globalPron = preExistingCompatibleGlobalWords.has(term)
@@ -379,6 +382,7 @@ export async function POST(req: NextRequest) {
         const wordsMissingOptions = words
           .filter((w: any) => {
             if (automaticOcrFragments.has(w.word)) return false;
+            if (w.sourceStatus === 'needs_source_repair' && !compatibleOverrides[w.word]) return false;
             const transliterationPronunciation = transliterationMatches.get(w.word)?.pronunciation;
             const compatibleGlobalChoices = (globalDict[w.word] || []).filter((choice) => (
               isKokoroSafePronunciation(w.word, choice?.phonetic)
@@ -388,8 +392,7 @@ export async function POST(req: NextRequest) {
                 transliterationPronunciation
                 && isKokoroSafePronunciation(w.word, transliterationPronunciation)
               )
-              && (compatibleGlobalChoices.length === 0
-                || (!generateOnlyForNewWords && compatibleGlobalChoices.length < 5));
+              && compatibleGlobalChoices.length === 0;
             const language = languageForTerm(w.word);
             const lexiconEntry = lexiconEntries[w.word];
             const needsDefinition = needsScholarDefinition
@@ -409,6 +412,10 @@ export async function POST(req: NextRequest) {
         );
         const updatedGlobalWords = new Set<string>();
         const confirmedOcrFragments = new Set<string>(automaticOcrFragments);
+        const sourceOutcomes = new Map<string, string>(
+          words.filter((word: any) => word.sourceStatus === 'needs_source_repair' && !compatibleOverrides[word.word])
+            .map((word: any) => [word.word, 'needs_source_repair']),
+        );
         const resolvedGeminiWords = new Set<string>();
         let acceptedChoices = 0;
         let updatedLexicon = false;
@@ -417,17 +424,20 @@ export async function POST(req: NextRequest) {
         const enrichWords = () => words.map((w: any) => {
           const transliterationMatch = transliterationMatches.get(w.word);
           const userPronunciation = compatibleOverrides[w.word] || null;
-          const globalPronunciation = preExistingCompatibleGlobalWords.has(w.word)
+          const sourceBlocked = (w.sourceStatus === 'needs_source_repair'
+            || sourceOutcomes.get(w.word) === 'needs_source_repair'
+            || sourceOutcomes.get(w.word) === 'insufficient_context') && !userPronunciation;
+          const globalPronunciation = !sourceBlocked && preExistingCompatibleGlobalWords.has(w.word)
             ? globalDict[w.word]
               ?.map((choice) => choice?.phonetic)
               .find((pronunciation) => isKokoroSafePronunciation(w.word, pronunciation)) || null
             : null;
-          const transliterationPronunciation = transliterationMatch?.pronunciation
+          const transliterationPronunciation = !sourceBlocked && transliterationMatch?.pronunciation
             && isKokoroSafePronunciation(w.word, transliterationMatch.pronunciation)
             ? transliterationMatch.pronunciation
             : null;
           const libraryPronunciation = userPronunciation || globalPronunciation || transliterationPronunciation;
-          const globalChoices = (globalDict[w.word] || []).map((item: any) => ({
+          const globalChoices = (sourceBlocked ? [] : globalDict[w.word] || []).map((item: any) => ({
             ...(typeof item === 'string' ? { phonetic: item } : item),
             isInGlobalLibrary: preExistingCompatibleGlobalPhonetics
               .get(w.word)
@@ -459,6 +469,7 @@ export async function POST(req: NextRequest) {
             definitionNeedsReview: lexiconEntries[w.word]?.needsReview === true,
             ocrSuspect: w.ocrSuspect === true,
             ocrFragment: confirmedOcrFragments.has(w.word),
+            sourceOutcome: sourceOutcomes.get(w.word) || null,
             automaticIgnore: w.automaticIgnore === true || rejectedLatinTransliterations.has(w.word),
             automaticIgnoreReason: rejectedLatinTransliterations.has(w.word)
               ? 'Gemini did not recognize this rare Latin term as Koine Greek or Biblical Hebrew transliteration'
@@ -487,7 +498,7 @@ export async function POST(req: NextRequest) {
             : resolvePronunciationAiModels(activeProfile).slice(1);
           let effectiveModel = model;
       
-      const chunkSize = 35;
+      const chunkSize = 15;
           for (let i = 0; i < wordsMissingOptions.length; i += chunkSize) {
         await ensureScanNotCancelled();
         if (i > 0) {
@@ -499,8 +510,7 @@ export async function POST(req: NextRequest) {
         const terms = chunk.map((word: string) => {
           const scanned = words.find((item: any) => item.word === word);
           const transliterationPronunciation = transliterationMatches.get(word)?.pronunciation;
-          const storedPronunciation = compatibleOverrides[word]
-            || (globalDict[word] || [])
+          const existingSuggestion = (globalDict[word] || [])
               .map((choice) => choice?.phonetic)
               .find((choice) => isKokoroSafePronunciation(word, choice))
             || (transliterationPronunciation && isKokoroSafePronunciation(word, transliterationPronunciation)
@@ -510,7 +520,13 @@ export async function POST(req: NextRequest) {
           return {
             term: word,
             contexts: Array.isArray(scanned?.contexts) ? scanned.contexts.slice(0, 2) : [],
-            currentPronunciation: storedPronunciation || null,
+            currentPronunciation: compatibleOverrides[word] || null,
+            existingSuggestion: existingSuggestion || null,
+            sourceStatus: scanned?.sourceStatus || 'unverified',
+            qualityFlags: Array.isArray(scanned?.qualityFlags) ? scanned.qualityFlags : [],
+            sourcePages: Array.isArray(scanned?.occurrences)
+              ? scanned.occurrences.slice(0, 2).map((occurrence: any) => occurrence.pdfPage)
+              : [],
             ocrSuspect: scanned?.ocrSuspect === true,
             ocrEvidence: Array.isArray(scanned?.ocrEvidence) ? scanned.ocrEvidence.slice(0, 2) : [],
             editorialSpellings: Array.isArray(scanned?.editorialSpellings) ? scanned.editorialSpellings.slice(0, 2) : [],
@@ -522,19 +538,19 @@ export async function POST(req: NextRequest) {
         const prompt = `${buildKokoroPronunciationInstructions(activeProfile)}
 
 Create pronunciation choices and short audiobook definitions for these terms.
-Where a "lexiconEntry" field is present in a term's data, it contains ground-truth lexical data from academic sources (BDB, Jastrow, LSJ, or Perseus). Treat the provided definitions as authoritative; generate IPA consistent with the supplied transliteration and morphology. Do not contradict or override the lexicon definitions.
+Where a "lexiconEntry" field is present, treat it as a dictionary match candidate. Verify that its spelling, morphology, and meaning fit the actual term and passage before using it. A reliable dictionary can still have been matched to the wrong extracted token.
 Internal Greek/Hebrew editorial parentheses have been expanded for lookup: θε(οῦ) requests θεοῦ as one word. editorialSpellings preserves the printed notation. Include those letters in the complete pronunciation; this is a narration convention, not a manuscript judgment. Never pronounce only the prefix or suffix.
-For each term without currentPronunciation, return 5 distinct, plausible Kokoro IPA pronunciation variations and put the best first, except for a rejected Latin transliteration candidate as described below.
-If currentPronunciation is supplied, preserve it exactly and return it as the only pronunciation; do not generate extra variations.
+For each valid term without currentPronunciation, return one reliable Kokoro IPA pronunciation. Optional alternatives are allowed only when linguistically justified. Never invent alternatives to fill a quota.
+If currentPronunciation is supplied, it is a user-approved override: preserve it exactly and return it as the only pronunciation. existingSuggestion is unverified and may be corrected.
+Set sourceOutcome to valid_word, needs_source_repair, insufficient_context, or not_applicable. If the extracted text is damaged or context cannot support a reliable reading, return no pronunciation and the appropriate unresolved outcome, with needsReview true. You may identify source damage even when ocrSuspect is false. qualityFlags are review evidence, not automatic proof of corruption.
 For Koine Greek or Biblical Hebrew, use the supplied contexts to return a contextual English definition of one to four words.
-When latinTransliterationCandidate is true, decide from the spelling and supplied context whether the term is genuinely a Latin-letter transliteration of Koine Greek or Biblical Hebrew. If it is, classify it as koine_greek or biblical_hebrew and provide its pronunciation and contextual definition normally. If it is ordinary English, a proper name, Latin, another language, or otherwise not a credible biblical-language transliteration, set language to other, return pronunciations as [], definition as null, definitionOmitted as true, and needsReview as false. Never invent a biblical-language identity merely because the word is uncommon.
+When latinTransliterationCandidate is true, decide from the spelling and supplied context whether the term is genuinely a Latin-letter transliteration of Koine Greek or Biblical Hebrew. If it is, classify it as koine_greek or biblical_hebrew and provide its pronunciation and contextual definition normally. If it is ordinary English, a proper name, Latin, another language, or otherwise not a credible biblical-language transliteration, set sourceOutcome to not_applicable, language to other, pronunciations to [], definition to null, definitionOmitted to true, and needsReview to false. Never invent a biblical-language identity merely because the word is uncommon.
 Return exactly one meaning, never a comma-, slash-, semicolon-, "and"-, or "or"-separated list of synonyms or alternatives.
 Do not return a definition that consists only of a common function or connecting word such as "the", "or", "of", "off", or "like"; return null and set definitionOmitted to true instead.
 If the surrounding book context already states the definition, return that same concise gloss; OpenReader will recognize the author-supplied definition and will not speak it twice.
 Set language to "koine_greek", "biblical_hebrew", or "other". For other languages, abbreviations, or invented names, set language to "other" and definition to null.
 If a token is an OCR fragment, an unidentifiable fragment, or an inflected form with no reliable contextual English gloss, return definition as null and definitionOmitted as true. Never use placeholder text such as "Fragment or inflected form" as a definition.
-When ocrSuspect is true, inspect ocrEvidence before deciding. Set ocrFragment to true only if that raw mixed-script/bracketed OCR token proves the requested term is a damaged fragment. For a confirmed OCR fragment return pronunciations as [], language as "other", definition as null, definitionOmitted as true, and needsReview as false. Do not attempt to reconstruct or invent a replacement term.
-For all other terms set ocrFragment to false.
+When ocrSuspect is true, inspect ocrEvidence before deciding. Set ocrFragment to true only if evidence proves this is a damaged fragment, and then use needs_source_repair with no pronunciation. Do not attempt to reconstruct or invent a replacement term. Otherwise set ocrFragment to false.
 Otherwise return a useful contextual definition and set definitionOmitted to false.
 Return a JSON array with exactly one result object per requested term. Copy each requested term exactly into that result object's "term" field.
 
@@ -643,6 +659,13 @@ ${JSON.stringify(terms)}`;
                 await saveJob({ statusMessage: `Trying ${providerLabel} key (${orderedProviders.indexOf(provider) + 1}/${orderedProviders.length})…` });
                 generated = await requestGeminiSingleKey(prompt, 'pronunciation_definition_scan');
               }
+              const missingResults = validateForeignWordResultBatch(chunk, generated);
+              if (missingResults.length > 0) {
+                serverLogger.warn({
+                  event: 'pdf.scan.gemini.missing_results', jobId,
+                  batch: i / chunkSize + 1, missingCount: missingResults.length,
+                }, 'The bounded correction pass will request missing terms');
+              }
               providerSucceeded = true;
               await saveJob({ statusMessage: null });
               break; // success — stop trying providers
@@ -675,8 +698,8 @@ ${JSON.stringify(terms)}`;
           if (repairRequests.length > 0) {
             const repairPrompt = `${buildKokoroPronunciationInstructions(activeProfile)}
 
-This is the only automatic correction pass for these terms. Your previous response violated OpenReader's Kokoro pronunciation policy or omitted required choices.
-Return only the listed terms, using the same JSON response structure. Correct every listed violation and provide exactly choicesNeeded new, distinct choices for each term.
+This is the only automatic correction pass for these terms. Your previous response violated OpenReader's Kokoro pronunciation policy or omitted a valid requested term.
+Return only the listed terms, using the same JSON response structure. Correct every listed violation and provide one safe pronunciation for each valid term. If source evidence is insufficient, return needs_source_repair or insufficient_context with no pronunciation instead.
 Do not return any rejected pronunciation or repeat an accepted pronunciation.
 Never place /y/ directly beside /j/ and never repeat /j/; choose one appropriate glide.
 For an initialism, return separated single English capital letters such as /K, T, L/, never grouped capitals such as /K, TL/ or /TH, N/.
@@ -690,6 +713,7 @@ ${JSON.stringify(repairRequests)}`;
             });
             try {
               const repairs = await requestGeminiResults(repairPrompt, 'pronunciation_quality_repair');
+              validateForeignWordResultBatch(repairRequests.map((request) => request.term), repairs);
               generated = mergeGeminiPronunciationRepairResults(generated, repairs);
             } catch (repairError) {
               serverLogger.warn({
@@ -726,6 +750,15 @@ ${JSON.stringify(repairRequests)}`;
             if (w) {
               const scanned = words.find((item: any) => item.word === w);
               const requestedTerm = terms.find((term) => term.term === w);
+              if (isUnresolvedForeignWordOutcome(result)) {
+                sourceOutcomes.set(w, String(result.sourceOutcome));
+                if (requestedTerm && isRejectedLatinTransliteration(requestedTerm, result)
+                    && result.sourceOutcome === 'not_applicable') {
+                  rejectedLatinTransliterations.add(w);
+                }
+                acceptedWords.add(w);
+                continue;
+              }
               if (requestedTerm && isRejectedLatinTransliteration(requestedTerm, result)) {
                 // Latin candidates are deliberately broad enough to find
                 // unknown transliterations. Gemini-confirmed non-biblical
@@ -735,14 +768,16 @@ ${JSON.stringify(repairRequests)}`;
                 acceptedWords.add(w);
                 continue;
               }
-              if (scanned?.ocrSuspect === true && result.ocrFragment === true) {
+              if (result.ocrFragment === true) {
                 // Gemini, not a brittle local heuristic, made the final call.
                 // Do not let a confirmed OCR shard reuse or create a global entry.
                 confirmedOcrFragments.add(w);
-                if (Object.prototype.hasOwnProperty.call(lexiconEntries, w)) {
+                if (!compatibleOverrides[w] && lexiconEntries[w]?.approvedRepair !== true
+                    && Object.prototype.hasOwnProperty.call(lexiconEntries, w)) {
                   delete lexiconEntries[w];
                   updatedLexicon = true;
                 }
+                sourceOutcomes.set(w, 'needs_source_repair');
                 acceptedWords.add(w);
                 continue;
               }
@@ -755,6 +790,7 @@ ${JSON.stringify(repairRequests)}`;
               for (const p of prons) {
                 if (
                   !compatibleOverrides[w]
+                  && scanned?.sourceStatus !== 'source_review_recommended'
                   && isKokoroSafePronunciation(w, p)
                   && !existingPhonetics.has(p)
                   && current.length < 5
@@ -863,6 +899,12 @@ ${JSON.stringify(repairRequests)}`;
           }
           const batchDefinitions = Object.fromEntries(
             chunk
+              .filter((term: string) => {
+                const scanned = words.find((item: { word: string; sourceStatus?: string }) => item.word === term);
+                return scanned?.sourceStatus !== 'needs_source_repair'
+                  && scanned?.sourceStatus !== 'source_review_recommended'
+                  && !['needs_source_repair', 'insufficient_context'].includes(sourceOutcomes.get(term) || '');
+              })
               .map((term: string) => [term, lexiconEntries[term]?.definition] as const)
               .filter(([, definition]) => Boolean(definition)),
           );
@@ -879,6 +921,10 @@ ${JSON.stringify(repairRequests)}`;
           // don't already have a definition stored in the global library.
           const sefariaDefinitions: Record<string, string> = {};
           for (const word of chunk) {
+            const scanned = words.find((item: { word: string; sourceStatus?: string }) => item.word === word);
+            if (scanned?.sourceStatus === 'needs_source_repair'
+                || scanned?.sourceStatus === 'source_review_recommended'
+                || ['needs_source_repair', 'insufficient_context'].includes(sourceOutcomes.get(word) || '')) continue;
             const lex = lexiconEnrichments.get(word);
             if (lex && lex.definitions.length > 0 && !globalDefinitions[word] && !batchDefinitions[word]) {
               const primaryDef = lex.definitions[0];

@@ -28,6 +28,11 @@ export const GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA = {
         type: 'boolean',
         description: 'True only when supplied OCR evidence proves this is a damaged fragment, not a lexical term.',
       },
+      sourceOutcome: {
+        type: 'string',
+        enum: ['valid_word', 'needs_source_repair', 'insufficient_context', 'not_applicable'],
+        description: 'Whether the extracted source supports a reliable pronunciation; uncertainty is an explicit result.',
+      },
       definition: {
         type: ['string', 'null'],
         description: 'One concise contextual English meaning, never a list of alternative glosses or a function-word-only gloss.',
@@ -50,6 +55,7 @@ export const GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA = {
       'language',
       'pronunciations',
       'ocrFragment',
+      'sourceOutcome',
       'definition',
       'definitionOmitted',
       'confidence',
@@ -69,7 +75,57 @@ export type GeminiForeignWordTerm = {
   ocrSuspect?: boolean;
   ocrEvidence?: string[];
   latinTransliterationCandidate?: boolean;
+  sourceStatus?: string;
+  qualityFlags?: string[];
+  occurrences?: unknown[];
 };
+
+export type ForeignWordSourceOutcome = 'valid_word' | 'needs_source_repair' | 'insufficient_context' | 'not_applicable';
+
+export function isUnresolvedForeignWordOutcome(result: GeminiForeignWordResult | undefined): boolean {
+  return result?.sourceOutcome === 'needs_source_repair'
+    || result?.sourceOutcome === 'insufficient_context'
+    || result?.sourceOutcome === 'not_applicable';
+}
+
+export function validateForeignWordResultBatch(
+  requestedTerms: readonly string[],
+  results: readonly GeminiForeignWordResult[],
+): string[] {
+  const requested = new Set(requestedTerms);
+  const seen = new Set<string>();
+  for (const result of results) {
+    if (!result || typeof result !== 'object' || typeof result.term !== 'string') {
+      throw new Error('Invalid foreign-word result object');
+    }
+    if (!requested.has(result.term)) throw new Error(`Unexpected foreign-word result: ${result.term}`);
+    if (seen.has(result.term)) throw new Error(`Duplicate foreign-word result: ${result.term}`);
+    seen.add(result.term);
+    if (!['valid_word', 'needs_source_repair', 'insufficient_context', 'not_applicable'].includes(String(result.sourceOutcome))) {
+      throw new Error(`Invalid source outcome for ${result.term}`);
+    }
+    if (!Array.isArray(result.pronunciations)) throw new Error(`Invalid pronunciation list for ${result.term}`);
+    if (result.pronunciations.some((pronunciation) => typeof pronunciation !== 'string')) {
+      throw new Error(`Invalid pronunciation value for ${result.term}`);
+    }
+    if (!['koine_greek', 'biblical_hebrew', 'other'].includes(String(result.language))) {
+      throw new Error(`Invalid language for ${result.term}`);
+    }
+    if (typeof result.ocrFragment !== 'boolean' || typeof result.definitionOmitted !== 'boolean'
+        || typeof result.needsReview !== 'boolean' || (result.definition !== null && typeof result.definition !== 'string')
+        || typeof result.confidence !== 'number' || !Number.isFinite(result.confidence)
+        || result.confidence < 0 || result.confidence > 1) {
+      throw new Error(`Invalid result fields for ${result.term}`);
+    }
+    if (isUnresolvedForeignWordOutcome(result) && result.pronunciations.length > 0) {
+      throw new Error(`Unresolved source cannot carry a pronunciation: ${result.term}`);
+    }
+    if (result.ocrFragment === true && result.sourceOutcome !== 'needs_source_repair') {
+      throw new Error(`OCR fragment needs source repair: ${result.term}`);
+    }
+  }
+  return requestedTerms.filter((term) => !seen.has(term));
+}
 
 export function isRejectedLatinTransliteration(
   term: GeminiForeignWordTerm,
@@ -108,7 +164,7 @@ export function collectGeminiPronunciationRepairRequests(
   const resultsByTerm = new Map(results.map((result) => [result.term, result]));
   return terms.flatMap((term) => {
     const result = resultsByTerm.get(term.term);
-    if (term.ocrSuspect === true && result?.ocrFragment === true) return [];
+    if (result?.ocrFragment === true || isUnresolvedForeignWordOutcome(result)) return [];
     if (isRejectedLatinTransliteration(term, result)) return [];
     const pronunciations = Array.isArray(result?.pronunciations) ? result.pronunciations : [];
     const acceptedPronunciations = pronunciations
@@ -131,7 +187,7 @@ export function collectGeminiPronunciationRepairRequests(
         violations: ['Gemini returned no pronunciation choices for this term.'],
       });
     }
-    const expectedChoices = term.currentPronunciation ? 1 : 5;
+    const expectedChoices = 1;
     const choicesNeeded = Math.max(0, expectedChoices - acceptedPronunciations.length);
     if (choicesNeeded === 0) return [];
     return [{
@@ -150,7 +206,7 @@ export function mergeGeminiPronunciationRepairResults(
   const merged = new Map(initialResults.map((result) => [result.term, { ...result }]));
   for (const repair of repairResults) {
     const initial = merged.get(repair.term);
-    const pronunciations = [
+    const pronunciations = isUnresolvedForeignWordOutcome(repair) ? [] : [
       ...(Array.isArray(initial?.pronunciations) ? initial.pronunciations : []),
       ...(Array.isArray(repair.pronunciations) ? repair.pronunciations : []),
     ].filter((pronunciation): pronunciation is string => (
