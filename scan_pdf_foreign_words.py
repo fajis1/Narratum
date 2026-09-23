@@ -327,14 +327,13 @@ def target_centered_context(text, start, end, page_start=0, page_end=None, max_c
     if sentence_end:
         right = end + sentence_end.start() + 1
 
-    def collapse(value):
-        return re.sub(r'\s+', ' ', value).strip()
-
-    before = collapse(text[left:start])
-    target = collapse(text[start:end])
-    after = collapse(text[end:right])
-    context = ' '.join(part for part in (before, target, after) if part)
-    target_start = len(before) + (1 if before else 0)
+    # Normalize PDF line wrapping without inventing spaces at the target
+    # boundary. Hebrew maqqef, apostrophes, and punctuation often touch a word.
+    before = re.sub(r'\s+', ' ', text[left:start]).lstrip()
+    target = re.sub(r'\s+', ' ', text[start:end])
+    after = re.sub(r'\s+', ' ', text[end:right]).rstrip()
+    context = before + target + after
+    target_start = len(before)
     return context, target_start, target_start + len(target)
 
 def load_pdf_text(pdf_path):

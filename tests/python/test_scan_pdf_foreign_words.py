@@ -32,6 +32,33 @@ class ForeignWordContextTests(unittest.TestCase):
         self.assertEqual(row['occurrences'][0]['surfaceTerm'], 'haššāmayim')
         self.assertEqual(row['occurrences'][0]['context'][row['occurrences'][0]['contextTargetStart']:row['occurrences'][0]['contextTargetEnd']], 'haššāmayim')
 
+    def test_context_does_not_insert_spaces_around_hebrew_maqqef(self):
+        text = 'מאדם עד־בהמה עד־רמש'
+        start = text.index('בהמה')
+        context, target_start, target_end = scan_pdf_foreign_words.target_centered_context(
+            text, start, start + len('בהמה'), max_chars=100,
+        )
+        self.assertEqual(context, text)
+        self.assertEqual(context[target_start:target_end], 'בהמה')
+
+    def test_recovered_page_excerpt_scans_into_complete_hebrew_words(self):
+        text = 'מאדם עד־בהמה עד־רמש ועד־עוף השמים'
+        extracted = scan_pdf_foreign_words.ExtractedPdfText(
+            text, [(0, len(text), 179)], 'verified-page-transcription',
+        )
+        with (
+            patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=extracted),
+            patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+        ):
+            rows = scan_pdf_foreign_words.scan_pdf_foreign_words(
+                'page-179-demo', target_percentile=100, mode='greek_hebrew', quiet=True,
+            )
+        self.assertEqual({row['word'] for row in rows}, {
+            'מאדם', 'בהמה', 'רמש', 'ועד', 'עוף', 'השמים',
+        })
+        self.assertTrue(all(row['occurrences'][0]['pdfPage'] == 179 for row in rows))
+        self.assertTrue(all(row['contexts'][0] == text for row in rows))
+
     def test_combining_marks_and_page_offsets_survive_tokenization(self):
         first_page = 'On this page, Aššurbanipal appears.\n'
         second_page = 'The NFD spelling haššāmayim has a gloss.\n'
