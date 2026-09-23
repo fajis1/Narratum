@@ -25,6 +25,24 @@ The new tokenizer retains `Aššurbanipal` and `haššāmayim` as complete candi
 
 On PDF page 179 (printed page 165), pypdf and PyMuPDF share only 5 Hebrew tokens among 44 and 49 unique tokens respectively (overlap 0.114 by the scanner's comparison). Neither extraction was automatically preferred. On that page, 26 selected occurrences need source repair, 14 recommend review, and one is unverified. PyMuPDF block geometry was uniquely associated with only seven of those selected occurrences. This is insufficient to reconstruct all printed readings automatically.
 
+## Page 179 manual source-to-token check
+
+The local rendered page crops are `/tmp/narratum-page-179-note1.png` and `/tmp/narratum-page-179-note3.png`; they are intentionally not committed. In note 3, the page image supports this **consonantal** reading:
+
+```text
+Broken pypdf extraction:
+ָאָדםַע ד־ְּבַהָּמהַע ד־ַרְמׁשַו ַעד־עֹוףַה ְּׁשִמים
+
+Image-checked consonants:
+מאדם עד־בהמה עד־רמש ועד־עוף השמים
+```
+
+The vowel points have not been certified. The image-to-text reading is evidence for word boundaries only and must not overwrite the book's pointed text as a verified transcription. A separate Chapter 1 note visibly contains `אדם` and the author's transliteration `'adam` with the gloss “human being”; pypdf omits that sentence, while PyMuPDF returns the Hebrew in reversed/damaged order.
+
+Passing the consonantal phrase as a page-179 corrected-text fixture through the `greek_hebrew` scanner at 100% yields six complete dictionary candidates: `מאדם`, `בהמה`, `רמש`, `ועד`, `עוף`, and `השמים`. Each candidate retains page 179 and the complete phrase as context; `עד` is tokenized but excluded as a low-value function word. The context preserves maqqef (`־`) without inserting spaces around it. Regression coverage is in `tests/python/test_scan_pdf_foreign_words.py`.
+
+This was a local visual transcription and tokenizer check. The requested live demonstration remains incomplete: this checkout has no Gemini key configured, and `127.0.0.1:8880` has no running Kokoro-compatible TTS service. No live image transcription, Gemini IPA, or audio sample was generated. The exact status and needed setup are in `docs/narratum-prescan-agent-handoff.md`.
+
 All 16 selected candidates from *Inventing the Individual* were `unverified` under the current quality checks. This does not validate their pronunciations or prove the book has no missed terms.
 
 ## Operational implications
@@ -32,6 +50,6 @@ All 16 selected candidates from *Inventing the Individual* were `unverified` und
 - Candidate-cache version 12 invalidates old version-10/11 candidate records so a new scan re-extracts the PDFs. It does not modify or delete existing book/global pronunciation entries.
 - Version-2 exports carry page/context/source-quality evidence. The importer checks the stored job's source status and rejects pronunciation/definition edits for `needs_source_repair`; changing the JSON's status cannot bypass that check. Version-1 edit semantics remain supported for unchanged terms.
 - Suspect extracted word keys cannot be repaired by renaming JSON rows. A corrected reading needs a source-region transcription with page evidence, occurrence remapping, and a new scan. No such mass transcription or production dictionary cleanup was performed.
-- No live Gemini or Groq call was made in this check. Provider success, repair-request counts, and production runtime are therefore not measured.
+- No live Gemini or Groq call was made in the broad scan. Provider success, repair-request counts, and production runtime are therefore not measured.
 
 Before cleaning old dictionary records, inventory the actual book/global entry provenance as well as the export comparison, back up the affected records, and keep manual/user-approved entries untouched. Validate recovered terms against the rendered source pages; do not infer them from the damaged JSON strings.
