@@ -1,5 +1,6 @@
 import {
   DEFAULT_DOCUMENT_SETTINGS,
+  SMART_AUDIO_REVIEW_FLAG_KINDS,
   type DocumentSettings,
   type SmartAudioBookLexicon,
   type SmartAudioBookLexiconEntry,
@@ -91,8 +92,8 @@ export function normalizeSmartAudioReviewFlags(value: unknown): SmartAudioReview
       ...(typeof record.resolvedAt === 'number' && Number.isFinite(record.resolvedAt) && record.resolvedAt > 0
         ? { resolvedAt: Math.round(record.resolvedAt) }
         : {}),
-      ...(record.kind === 'cloud-tts-failed' ? {
-        kind: 'cloud-tts-failed' as const,
+      ...(SMART_AUDIO_REVIEW_FLAG_KINDS.includes(record.kind as (typeof SMART_AUDIO_REVIEW_FLAG_KINDS)[number]) ? {
+        kind: record.kind as SmartAudioReviewFlag['kind'],
         ...(typeof record.speaker === 'string' ? { speaker: record.speaker.slice(0, 120) } : {}),
         ...(typeof record.sourceText === 'string' ? { sourceText: record.sourceText.slice(0, 4_000) } : {}),
         ...(typeof record.reason === 'string' ? { reason: record.reason.slice(0, 200) } : {}),

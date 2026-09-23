@@ -93,6 +93,19 @@ describe('document settings language', () => {
     });
   });
 
+  test('preserves Cloud Drama diagnostic flags through normalization', () => {
+    const settings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, {
+      smartAudioReviewFlags: ['cloud-tts-split', 'tts-retry-used', 'tts-fallback-used', 'director-validation-repair', 'prompt-compacted'].map((kind, index) => ({
+        id: `diagnostic-${index}`, chapterIndex: 0, timestampMs: 0, createdAt: 100,
+        kind: kind as 'cloud-tts-split', speaker: 'Hero', sourceText: 'A line.',
+        reason: 'Needs a listening check.', chunkIndex: 0, attempts: 1,
+      })),
+    });
+    expect(settings.smartAudioReviewFlags?.map((flag) => flag.kind)).toEqual([
+      'cloud-tts-split', 'tts-retry-used', 'tts-fallback-used', 'director-validation-repair', 'prompt-compacted',
+    ]);
+  });
+
   test('document settings PUT preserves the latest lexicon atomically in the database', () => {
     const route = fs.readFileSync(
       path.join(process.cwd(), 'src/app/api/documents/[id]/settings/route.ts'),

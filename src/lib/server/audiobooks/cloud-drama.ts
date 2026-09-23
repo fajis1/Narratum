@@ -28,6 +28,7 @@ export async function generateCloudDramaAudiobook(input: {
   directorModel: string;
   serviceAccountJson?: string;
   dramaGeminiTtsSettings?: unknown;
+  priorContinuityState?: string;
   signal?: AbortSignal;
 }): Promise<CloudDramaAudiobookResult> {
   const readiness = getCloudTtsCharacterMapReadiness(input.characterMap);
@@ -40,6 +41,7 @@ export async function generateCloudDramaAudiobook(input: {
   const castNames = Object.keys(readiness.map.entries);
   const sourceBatches = splitDramaTextByUtf8(input.cleanedText, 12_000);
   let silentSegment: Buffer | null = null;
+  let continuityState = input.priorContinuityState;
 
   for (const sourceText of sourceBatches) {
     if (input.signal?.aborted) throw new Error('ABORTED');
@@ -48,7 +50,13 @@ export async function generateCloudDramaAudiobook(input: {
       backupApiKey: input.backupGeminiApiKey,
       model: input.directorModel,
       policy,
+      priorContinuityState: continuityState,
+      onRepair: (attempt) => reviewFlags.push({
+        kind: 'director-validation-repair', speaker: 'Narrator', sourceText,
+        chunkIndex: 0, attempts: attempt, reason: `Director output required validation repair ${attempt}.`,
+      }),
     });
+    continuityState = directed.at(-1)?.sceneContext || continuityState;
     for (const segment of directed) {
       if (input.signal?.aborted) throw new Error('ABORTED');
       const result = await synthesizeDramaSegment({
@@ -58,9 +66,10 @@ export async function generateCloudDramaAudiobook(input: {
         policy,
       });
       reviewFlags.push(...result.reviewFlags);
-      if (result.reviewFlags.length > 0 && profileSettings.failedSegmentBehavior === 'stop-job') {
+      const failures = result.reviewFlags.filter((flag) => flag.kind === 'cloud-tts-failed');
+      if (failures.length && profileSettings.failedSegmentBehavior === 'stop-job') {
         throw new CloudDramaGenerationError(
-          `Cloud Drama stopped after ${result.reviewFlags.length} failed segment(s).`,
+          `Cloud Drama stopped after ${failures.length} failed segment(s).`,
           reviewFlags,
         );
       }

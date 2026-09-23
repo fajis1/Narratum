@@ -2,7 +2,8 @@ import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap, SmartAudioCharacterEntry } from '@/types/document-settings';
 import { CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
 import {
-  buildCloudTtsRequest, CloudTtsInputError, stripDisallowedTags,
+  buildCloudTtsRequest, CLOUD_TTS_SAFE_PROMPT_BYTES, CloudTtsInputError,
+  measureUtf8Bytes, stripDisallowedTags,
 } from './google-cloud-tts-client';
 import type { CloudTtsSynthesizeRequest, CloudTtsSynthesisOptions } from './google-cloud-tts-client';
 import type { DramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
@@ -48,10 +49,33 @@ export function buildDramaDirectorsBrief(segment: DramaDirectorSegment, entry: S
   ].join('\n');
 }
 
+function clipUtf8(value: string, limit: number): string {
+  let result = '';
+  for (const character of value) {
+    if (measureUtf8Bytes(result + character) > limit) break;
+    result += character;
+  }
+  return result;
+}
+
+function compactDramaDirectorsBrief(segment: DramaDirectorSegment, entry: SmartAudioCharacterEntry): string {
+  const performance = segment.performance;
+  return [
+    `Perform as ${clipUtf8(entry.name, 120)} with a consistent voice.`,
+    `Character identity: ${clipUtf8(entry.cloudDirection?.audioProfile || entry.description || '', 1_200)}`,
+    `Scene: ${clipUtf8(segment.sceneContext, 600)}`,
+    `Emotion: ${performance.primaryEmotion}; secondary: ${performance.secondaryEmotions.join(', ')}; social intent: ${performance.socialIntent}.`,
+    `Delivery: ${performance.delivery.join(', ')}; pace: ${performance.pace}; energy: ${performance.energy}; intensity: ${performance.intensity}.`,
+    ...(performance.nuance ? [`Nuance: ${clipUtf8(performance.nuance, 250)}`] : []),
+    'Speak the supplied text exactly.',
+  ].join('\n');
+}
+
 export interface DramaCloudRequest {
   request: CloudTtsSynthesizeRequest;
   synthesisOptions: CloudTtsSynthesisOptions;
   deferredTags: DramaDirectorSegment['performance']['tags'];
+  promptCompacted: boolean;
 }
 
 /** Build one exact Cloud REST request. Stage 9 owns localized tag placement and splitting. */
@@ -66,7 +90,9 @@ export function buildDramaCloudTtsRequest(input: {
   const entry = resolveCastEntry(input.characterMap, segment.speaker);
   const { stripped } = stripDisallowedTags(segment.text);
   if (stripped.length) throw new CloudTtsInputError('Source text contains bracketed content that Cloud TTS would remove.');
-  const stylePrompt = buildDramaDirectorsBrief(segment, entry, input.policy);
+  const fullPrompt = buildDramaDirectorsBrief(segment, entry, input.policy);
+  const promptCompacted = measureUtf8Bytes(fullPrompt) > CLOUD_TTS_SAFE_PROMPT_BYTES;
+  const stylePrompt = promptCompacted ? compactDramaDirectorsBrief(segment, entry) : fullPrompt;
   const synthesisOptions: CloudTtsSynthesisOptions = {
     text: segment.text,
     stylePrompt,
@@ -80,5 +106,6 @@ export function buildDramaCloudTtsRequest(input: {
     request: buildCloudTtsRequest(synthesisOptions),
     synthesisOptions,
     deferredTags: segment.performance.tags,
+    promptCompacted,
   };
 }

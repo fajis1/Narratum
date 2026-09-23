@@ -31,7 +31,7 @@ describe('Drama Director schema', () => {
     for (const value of ['desperate', 'uncertain', 'anxious', 'mischievous', 'awed', 'surprised', 'annoyed', 'serious', 'excited', 'frustrated', 'determined', 'calm']) {
       expect(DRAMA_PRIMARY_EMOTIONS).toContain(value);
     }
-    for (const value of ['vulnerable', 'hopeful', 'protective', 'weary']) {
+    for (const value of ['vulnerable', 'hopeful', 'protective', 'weary', 'worried', 'reflective']) {
       expect(DRAMA_SECONDARY_EMOTIONS).toContain(value);
     }
     for (const value of ['intimate', 'restrained', 'matter-of-fact', 'authoritative', 'warm']) {
@@ -40,6 +40,18 @@ describe('Drama Director schema', () => {
     expect(DRAMA_PACING).toContain('slightly-fast');
     expect(DRAMA_ENERGY).toContain('elevated');
     expect(DRAMA_INTENSITY).toContain('building');
+  });
+
+  it('includes the original plan vocabulary without duplicate choices', () => {
+    expect(DRAMA_PRIMARY_EMOTIONS).toEqual(expect.arrayContaining(['passionate', 'fearful', 'tense', 'contemptuous', 'worried', 'reflective']));
+    expect(DRAMA_SOCIAL_INTENTS).toEqual(expect.arrayContaining(['warning', 'protective', 'intimidating']));
+    expect(DRAMA_DELIVERY_STYLES).toEqual(expect.arrayContaining(['whispered', 'trembling', 'menacing']));
+    expect(DRAMA_PACING).toContain('accelerating');
+    expect(DRAMA_ENERGY).toContain('explosive');
+    expect(DRAMA_INTENSITY).toContain('very-high');
+    for (const choices of [DRAMA_PRIMARY_EMOTIONS, DRAMA_SOCIAL_INTENTS, DRAMA_DELIVERY_STYLES, DRAMA_PACING, DRAMA_ENERGY, DRAMA_INTENSITY]) {
+      expect(new Set(choices).size).toBe(choices.length);
+    }
   });
 
   it('shares the exact Cloud TTS tag allowlist', () => {

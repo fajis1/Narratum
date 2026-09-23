@@ -72,15 +72,17 @@ export function validateDramaDirectorOutput(input: {
     if (!inVocabulary(segment.utteranceType, DRAMA_UTTERANCE_TYPES)) issues.push(`${label}: invalid utteranceType.`);
     if (typeof segment.text !== 'string' || segment.text.length === 0) issues.push(`${label}: text must be non-empty.`);
     if (typeof segment.sceneContext !== 'string' || !segment.sceneContext.trim()) issues.push(`${label}: sceneContext is required.`);
-    if (typeof segment.omit_from_audio !== 'boolean') issues.push(`${label}: omit_from_audio must be a boolean.`);
+    // Source cleanup has already decided what is narratable. The Director cannot omit more text.
+    if (segment.omit_from_audio !== false) issues.push(`${label}: omit_from_audio must be false for cleaned source text.`);
+    if ('voiceId' in segment) issues.push(`${label}: voiceId must come from the reviewed cast.`);
     if (!inVocabulary(performance.primaryEmotion, DRAMA_PRIMARY_EMOTIONS)) issues.push(`${label}: invalid primaryEmotion.`);
-    if (!Array.isArray(performance.secondaryEmotions) || performance.secondaryEmotions.some((v) => !inVocabulary(v, DRAMA_SECONDARY_EMOTIONS))) issues.push(`${label}: invalid secondaryEmotions.`);
+    if (!Array.isArray(performance.secondaryEmotions) || performance.secondaryEmotions.length > 2 || performance.secondaryEmotions.some((v) => !inVocabulary(v, DRAMA_SECONDARY_EMOTIONS))) issues.push(`${label}: secondaryEmotions must contain 0–2 allowed values.`);
     if (!inVocabulary(performance.socialIntent, DRAMA_SOCIAL_INTENTS)) issues.push(`${label}: invalid socialIntent.`);
-    if (!Array.isArray(performance.delivery) || performance.delivery.some((v) => !inVocabulary(v, DRAMA_DELIVERY_STYLES))) issues.push(`${label}: invalid delivery.`);
+    if (!Array.isArray(performance.delivery) || performance.delivery.length < 1 || performance.delivery.length > 2 || performance.delivery.some((v) => !inVocabulary(v, DRAMA_DELIVERY_STYLES))) issues.push(`${label}: delivery must contain 1–2 allowed values.`);
     if (!inVocabulary(performance.pace, DRAMA_PACING)) issues.push(`${label}: invalid pace.`);
     if (!inVocabulary(performance.energy, DRAMA_ENERGY)) issues.push(`${label}: invalid energy.`);
     if (!inVocabulary(performance.intensity, DRAMA_INTENSITY)) issues.push(`${label}: invalid intensity.`);
-    if (!Array.isArray(performance.tags)) issues.push(`${label}: tags must be an array.`);
+    if (!Array.isArray(performance.tags) || performance.tags.filter((tag) => tagSet.has(tag)).length > 2) issues.push(`${label}: tags must contain 0–2 allowed values.`);
     if (performance.nuance !== undefined && typeof performance.nuance !== 'string') issues.push(`${label}: nuance must be a string.`);
     if (issues.length > issueCount) continue;
     segments.push({
@@ -113,7 +115,7 @@ export function validateDramaDirectorOutput(input: {
   return segments;
 }
 
-export function buildDramaDirectorPrompt(input: { sourceText: string; castNames: readonly string[]; policy?: DramaDirectorPolicy }): string {
+export function buildDramaDirectorPrompt(input: { sourceText: string; castNames: readonly string[]; policy?: DramaDirectorPolicy; priorContinuityState?: string }): string {
   return [
     'You are the OpenReader Drama Director. Return JSON only: {"segments": [...]} .',
     'Partition the entire source text into ordered, contiguous segments. The concatenation of every segment.text must equal the source exactly, including spaces, punctuation, and newlines. Never rewrite, add, omit, or normalize spoken text.',
@@ -126,7 +128,8 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
     `delivery: ${JSON.stringify(DRAMA_DELIVERY_STYLES)}`,
     `pace: ${JSON.stringify(DRAMA_PACING)}; energy: ${JSON.stringify(DRAMA_ENERGY)}; intensity: ${JSON.stringify(DRAMA_INTENSITY)}`,
     `Allowed tags only: ${JSON.stringify(DRAMA_AUDIO_TAG_ALLOWLIST)}. Do not put markup into text.`,
-    'Every segment needs speaker, utteranceType, text, sceneContext (1–3 sentences), performance with all required fields, and omit_from_audio (boolean). Keep all text in the segment list even when omit_from_audio is true.',
+    'Every segment needs speaker, utteranceType, text, sceneContext (1–3 sentences), performance with all required fields, and omit_from_audio: false. Source cleanup already decided what to narrate. Use 0–2 secondary emotions, 1–2 delivery styles, and 0–2 safe tags.',
+    ...(input.priorContinuityState ? [`Previous scene context: ${JSON.stringify(input.priorContinuityState)}`] : []),
     'Author examples (text is exact; direction illustrates context and performance):',
     ...(input.policy ? [
       `Director policy: ${JSON.stringify(input.policy)}. Apply this as a bias only; preserve scene-appropriate intensity and exact source text.`,
@@ -138,29 +141,36 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
   ].join('\n');
 }
 
-/** One bounded correction request. The caller supplies its Gemini transport. */
+/** Two bounded correction requests. The caller supplies its Gemini transport. */
 export async function directDramaWithRepair(input: {
   sourceText: string;
   castNames: readonly string[];
   generate: (prompt: string) => Promise<unknown>;
   policy?: DramaDirectorPolicy;
+  priorContinuityState?: string;
+  onRepair?: (attempt: number, issues: readonly string[]) => void;
 }): Promise<DramaDirectorSegment[]> {
   const prompt = buildDramaDirectorPrompt(input);
   let output: unknown;
-  try {
-    output = await input.generate(prompt);
-    return validateDramaDirectorOutput({ ...input, output });
-  } catch (error) {
-    if (!(error instanceof DramaDirectorValidationError)) throw error;
-    const repairPrompt = [
-      prompt,
-      'Your previous JSON failed validation. Correct it once. Return the full corrected JSON object only.',
-      `Validation issues: ${JSON.stringify(error.issues)}`,
-      `Previous output: ${JSON.stringify(output)}`,
-    ].join('\n');
-    output = await input.generate(repairPrompt);
-    return validateDramaDirectorOutput({ ...input, output });
+  let nextPrompt = prompt;
+  for (let attempt = 0; attempt <= 2; attempt += 1) {
+    try {
+      output = await input.generate(nextPrompt);
+      return validateDramaDirectorOutput({ ...input, output });
+    } catch (error) {
+      if (!(error instanceof DramaDirectorValidationError) || attempt === 2) throw error;
+      input.onRepair?.(attempt + 1, error.issues);
+      nextPrompt = [
+        prompt,
+        attempt === 0
+          ? 'Your previous JSON failed validation. Return the full corrected JSON object only.'
+          : 'Final repair: follow the schema and source text exactly. Return the full corrected JSON object only.',
+        `Validation issues: ${JSON.stringify(error.issues)}`,
+        `Previous output: ${JSON.stringify(output)}`,
+      ].join('\n');
+    }
   }
+  throw new DramaDirectorValidationError(['Director repair attempts exhausted.']);
 }
 
 /** Gemini JSON transport for the Director; orchestration supplies profile credentials. */
@@ -171,6 +181,8 @@ export async function directDramaWithGemini(input: {
   backupApiKey?: string;
   model: string;
   policy?: DramaDirectorPolicy;
+  priorContinuityState?: string;
+  onRepair?: (attempt: number, issues: readonly string[]) => void;
 }): Promise<DramaDirectorSegment[]> {
   return directDramaWithRepair({
     ...input,

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import examples from '../../src/lib/server/smart-audio/drama-director-examples.json';
 import {
   buildDramaDirectorPrompt, directDramaWithRepair,
   DRAMA_DIRECTOR_EVALUATION_EXAMPLES, DRAMA_DIRECTOR_PROMPT_EXAMPLES,
@@ -26,8 +27,8 @@ describe('Drama Director prompt and validation', () => {
     for (const example of DRAMA_DIRECTOR_EVALUATION_EXAMPLES) expect(prompt).not.toContain(example.text);
   });
 
-  it('validates the four held-out author directions as evaluation fixtures', () => {
-    for (const example of DRAMA_DIRECTOR_EVALUATION_EXAMPLES) {
+  it('validates all author directions, including held-out evaluation fixtures', () => {
+    for (const example of examples) {
       const output = { segments: [{
         ...example.direction,
         text: example.text,
@@ -45,6 +46,21 @@ describe('Drama Director prompt and validation', () => {
     const output = structuredClone(valid);
     (output.segments[0].performance.tags as string[]).push('sigh', 'scared');
     expect(validateDramaDirectorOutput({ ...input, output })[0].performance.tags).toEqual(['sigh']);
+  });
+
+  it('rejects unauthorized omissions, voice choices, and oversized performance arrays', () => {
+    for (const changes of [
+      { omit_from_audio: true },
+      { voiceId: 'Kore' },
+      { performance: { ...valid.segments[0].performance, secondaryEmotions: ['calm', 'sad', 'angry'] } },
+      { performance: { ...valid.segments[0].performance, delivery: [] } },
+      { performance: { ...valid.segments[0].performance, delivery: ['natural', 'soft', 'urgent'] } },
+      { performance: { ...valid.segments[0].performance, tags: ['sigh', 'laughing', 'long pause'] } },
+    ]) {
+      expect(() => validateDramaDirectorOutput({
+        ...input, output: { segments: [{ ...valid.segments[0], ...changes }] },
+      })).toThrow(DramaDirectorValidationError);
+    }
   });
 
   it.each([
@@ -67,13 +83,14 @@ describe('Drama Director prompt and validation', () => {
     expect(() => validateDramaDirectorOutput({ ...input, output })).toThrow(/exactly match/);
   });
 
-  it('repairs once and rejects a still-invalid correction', async () => {
+  it('makes up to two repairs and rejects a still-invalid correction', async () => {
     const generate = vi.fn().mockResolvedValueOnce({ segments: [] }).mockResolvedValueOnce(valid);
     expect(await directDramaWithRepair({ ...input, generate })).toHaveLength(1);
     expect(generate).toHaveBeenCalledTimes(2);
     expect(generate.mock.calls[1][0]).toContain('Validation issues');
     const broken = vi.fn().mockResolvedValue({ segments: [] });
     await expect(directDramaWithRepair({ ...input, generate: broken })).rejects.toThrow(DramaDirectorValidationError);
-    expect(broken).toHaveBeenCalledTimes(2);
+    expect(broken).toHaveBeenCalledTimes(3);
+    expect(broken.mock.calls[2][0]).toContain('Final repair');
   });
 });

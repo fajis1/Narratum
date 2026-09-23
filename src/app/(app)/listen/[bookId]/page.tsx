@@ -908,7 +908,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           <div className="mx-auto flex max-w-7xl flex-col gap-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm font-semibold">Audiobook recovery flags</h2>
+                <h2 className="text-sm font-semibold">Audiobook review flags</h2>
                 <p className="text-xs opacity-80">These chapter segments need a listening check after Cloud Drama generation.</p>
               </div>
               <button type="button" onClick={() => void fetchReviewFlags()} className="rounded border border-amber-700/40 px-2.5 py-1 text-xs font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/40">Refresh</button>
@@ -922,6 +922,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 text-xs">
                         <p className="font-semibold">Chapter {(flag.chapterIndex ?? 0) + 1}{flag.speaker ? ` · ${flag.speaker}` : ''}</p>
+                        {flag.kind && <p className="mt-1 capitalize opacity-80">{flag.kind.replaceAll('-', ' ')}</p>}
                         {flag.sourceText && <p className="mt-1 line-clamp-2 opacity-80">“{flag.sourceText}”</p>}
                         {flag.reason && <p className="mt-1 opacity-80">{flag.reason}</p>}
                       </div>

@@ -107,13 +107,18 @@ export interface SmartAudioCharacterMap {
   entries: Record<string, SmartAudioCharacterEntry>;
 }
 
+export const SMART_AUDIO_REVIEW_FLAG_KINDS = [
+  'cloud-tts-failed', 'cloud-tts-split', 'tts-retry-used', 'tts-fallback-used',
+  'director-validation-repair', 'prompt-compacted',
+] as const;
+
 export interface SmartAudioReviewFlag {
   id: string;
   chapterIndex: number;
   timestampMs: number;
   createdAt: number;
   resolvedAt?: number | null;
-  kind?: 'cloud-tts-failed';
+  kind?: (typeof SMART_AUDIO_REVIEW_FLAG_KINDS)[number];
   speaker?: string;
   sourceText?: string;
   reason?: string;

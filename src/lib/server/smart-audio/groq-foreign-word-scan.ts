@@ -11,6 +11,7 @@ export const GROQ_FALLBACK_MODELS: readonly string[] = [
   'llama-3.3-70b-versatile',
 ];
 export const GROQ_MAX_CANDIDATES_PER_SUB_BATCH = 7;
+export const GROQ_MAX_OUTPUT_TOKENS = 3072;
 export const MAX_GROQ_429_RETRIES = 3;
 
 export interface GroqForeignWordOptions {
@@ -70,6 +71,18 @@ export function isGroqModelUnavailable(status: number, errorText: string): boole
   );
 }
 
+function groqObjectPrompt(prompt: string): string {
+  const aligned = prompt.replace(
+    'Return a JSON array with exactly one result object per requested term.',
+    'Return a JSON object with a "results" array containing exactly one result object per requested term.',
+  );
+  const instruction = 'Groq response format: return one JSON object shaped {"results":[...]}; never a top-level array.';
+  const termsBoundary = aligned.search(/\n+Terms:\s*\n/i);
+  return termsBoundary < 0
+    ? `${aligned}\n\n${instruction}`
+    : `${aligned.slice(0, termsBoundary)}\n${instruction}${aligned.slice(termsBoundary)}`;
+}
+
 /**
  * Sends a single prompt to Groq, handling 429 rate limits and model fallbacks.
  */
@@ -116,14 +129,14 @@ async function sendGroqPromptWithFallback(
                 role: 'system',
                 content:
                   'You are an expert academic linguist and audiobook pronunciation specialist. '
-                  + 'You will be given a list of foreign-language terms and must return a JSON array '
-                  + 'following the exact schema described in the user message. '
+                  + 'You will be given a list of foreign-language terms and must return a JSON object '
+                  + 'with a results array following the schema described in the user message. '
                   + 'Respond ONLY with valid JSON — no markdown, no code fences, no extra text.',
               },
-              { role: 'user', content: prompt },
+              { role: 'user', content: groqObjectPrompt(prompt) },
             ],
             response_format: { type: 'json_object' },
-            max_tokens: 8192,
+            max_tokens: GROQ_MAX_OUTPUT_TOKENS,
             temperature: 0.1,
           }),
           signal: options.signal,
@@ -169,23 +182,28 @@ async function sendGroqPromptWithFallback(
           .replace(/[\r\n\t]+/g, ' ')
           .slice(0, 500);
 
-        if (isGroqModelUnavailable(response.status, errorText)) {
+        const modelUnavailable = isGroqModelUnavailable(response.status, errorText);
+        const tokenLimitExceeded = response.status === 413;
+        const jsonValidationFailed = response.status === 400 && errorText.includes('json_validate_failed');
+        if (modelUnavailable || tokenLimitExceeded || jsonValidationFailed) {
+          const reason = tokenLimitExceeded ? 'token limit exceeded'
+            : jsonValidationFailed ? 'JSON validation failed' : 'model unavailable';
           serverLogger.warn({
-            event: 'pdf.scan.groq.model_unavailable',
+            event: 'pdf.scan.groq.model_fallback',
             httpStatus: response.status,
             model,
             maskedKey,
-            error: sanitized,
-          }, 'Groq model unavailable or not found; trying fallback model');
+            reason,
+          }, 'Groq model could not complete the request; trying fallback model');
 
           const nextIndex = candidateModels.indexOf(model) + 1;
           const nextModel = candidateModels[nextIndex];
           if (nextModel && options.onStatusUpdate) {
             await options.onStatusUpdate(
-              `Groq model ${model} unavailable. Switching to fallback model ${nextModel}…`,
+              `Groq model ${model}: ${reason}. Switching to fallback model ${nextModel}…`,
             );
           }
-          lastError = new Error(`Groq API request failed (HTTP ${response.status}): ${sanitized}`);
+          lastError = new Error(`Groq API request failed (HTTP ${response.status}: ${reason}).`);
           break; // break out of 429 loop to try next model in candidateModels
         }
 
@@ -208,7 +226,7 @@ async function sendGroqPromptWithFallback(
       if (!textToParse.startsWith('[')) {
         try {
           const obj = JSON.parse(textToParse) as Record<string, unknown>;
-          const arrayValue = Object.values(obj).find(Array.isArray);
+          const arrayValue = obj?.results;
           if (Array.isArray(arrayValue)) {
             textToParse = JSON.stringify(arrayValue);
           }
@@ -237,7 +255,7 @@ async function sendGroqPromptWithFallback(
 
 /**
  * Sends a foreign-word pronunciation/definition batch to Groq's API.
- * Groq uses an OpenAI-compatible endpoint with json_object response_format.
+ * Groq uses an OpenAI-compatible endpoint with json_object response_format and a results wrapper.
  * Automatically chunks candidate terms into sub-batches (~7 terms each)
  * to prevent exceeding Groq free-tier TPM limits (e.g. 8,000 TPM).
  * Returns parsed GeminiForeignWordResult[] on success, throws on error.

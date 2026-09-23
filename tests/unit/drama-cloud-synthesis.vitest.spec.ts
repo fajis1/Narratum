@@ -42,7 +42,7 @@ describe('Drama Cloud synthesis', () => {
       segment: { ...segment, text, performance: { ...segment.performance, tags: ['sigh'] } },
       characterMap, synthesize,
     });
-    expect(result.reviewFlags).toEqual([]);
+    expect(result.reviewFlags).toEqual([expect.objectContaining({ kind: 'cloud-tts-split' })]);
     expect(result.chunks.length).toBeGreaterThan(1);
     expect(result.chunks.map((chunk) => chunk.sourceText).join('')).toBe(text);
     expect(result.chunks[0].requestText).toContain('[sigh]');
@@ -63,14 +63,28 @@ describe('Drama Cloud synthesis', () => {
     expect(result.reviewFlags[0]).toMatchObject({ speaker: 'Hero', sourceText: segment.text, attempts: 3, reason: 'Cloud TTS HTTP 503' });
   });
 
-  it('does not retry permanent failures and leaves omitted text explicit', async () => {
+  it('tries simplified and neutral direction after a content failure, preserving exact text', async () => {
     const synthesize = vi.fn().mockRejectedValue(new CloudTtsApiError('bad input', 400, 'bad input'));
     const failed = await synthesizeDramaSegment({ segment, characterMap, synthesize });
-    expect(synthesize).toHaveBeenCalledTimes(1);
-    expect(failed.reviewFlags[0].attempts).toBe(1);
+    expect(synthesize).toHaveBeenCalledTimes(3);
+    expect(synthesize.mock.calls.map(([options]) => options.text)).toEqual([
+      segment.text, segment.text, segment.text,
+    ]);
+    expect(failed.reviewFlags[0].attempts).toBe(3);
     const omitted = await synthesizeDramaSegment({ segment: { ...segment, omit_from_audio: true }, characterMap, synthesize });
     expect(omitted.chunks[0]).toMatchObject({ sourceText: segment.text, omitted: true, needsPlaceholder: false });
-    expect(synthesize).toHaveBeenCalledTimes(1);
+    expect(synthesize).toHaveBeenCalledTimes(3);
+  });
+
+  it('records a successful neutral fallback after simplified direction fails', async () => {
+    const synthesize = vi.fn()
+      .mockRejectedValueOnce(new CloudTtsApiError('content', 400, 'bad input'))
+      .mockRejectedValueOnce(new CloudTtsApiError('content', 400, 'bad input'))
+      .mockResolvedValueOnce(success);
+    const result = await synthesizeDramaSegment({ segment, characterMap, synthesize });
+    expect(result.chunks[0].audioBuffer).toEqual(success.audioBuffer);
+    expect(result.reviewFlags).toEqual([expect.objectContaining({ kind: 'tts-fallback-used', attempts: 3 })]);
+    expect(synthesize.mock.calls[2][0].stylePrompt).toContain('clearly and naturally');
   });
 
   it('retries a transient transport failure', async () => {
@@ -79,7 +93,7 @@ describe('Drama Cloud synthesis', () => {
       .mockResolvedValueOnce(success);
     const result = await synthesizeDramaSegment({ segment, characterMap, synthesize, wait: async () => {} });
     expect(synthesize).toHaveBeenCalledTimes(2);
-    expect(result.reviewFlags).toEqual([]);
+    expect(result.reviewFlags).toEqual([expect.objectContaining({ kind: 'tts-retry-used', attempts: 2 })]);
     expect(result.chunks[0].audioBuffer).toEqual(success.audioBuffer);
   });
 

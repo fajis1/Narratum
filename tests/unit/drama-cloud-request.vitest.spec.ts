@@ -72,7 +72,10 @@ describe('Drama Cloud TTS request builder', () => {
     expect(() => buildDramaCloudTtsRequest({ segment: { ...segment, text: '😀'.repeat(901) }, characterMap })).toThrow(/safe limit/);
     const longMap = structuredClone(characterMap);
     longMap.entries.Bethany.cloudDirection!.audioProfile = 'A'.repeat(3700);
-    expect(() => buildDramaCloudTtsRequest({ segment, characterMap: longMap })).toThrow(/safe limit/);
+    const compacted = buildDramaCloudTtsRequest({ segment, characterMap: longMap });
+    expect(compacted.promptCompacted).toBe(true);
+    expect(Buffer.byteLength(compacted.request.input.prompt || '', 'utf8')).toBeLessThanOrEqual(3600);
+    expect(compacted.request.input.prompt).toContain('Emotion: determined');
   });
 
   it('rejects technical overrides outside the current Cloud API range', () => {

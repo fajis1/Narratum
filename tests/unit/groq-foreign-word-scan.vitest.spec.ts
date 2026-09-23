@@ -3,6 +3,7 @@ import {
   GROQ_DEFAULT_MODEL,
   GROQ_FALLBACK_MODELS,
   GROQ_MAX_CANDIDATES_PER_SUB_BATCH,
+  GROQ_MAX_OUTPUT_TOKENS,
   fetchGroqForeignWordBatch,
   fetchGroqForeignWordCandidates,
   parseGroqRetryAfter,
@@ -27,6 +28,7 @@ describe('groq-foreign-word-scan', () => {
       expect(GROQ_DEFAULT_MODEL).toBe('openai/gpt-oss-20b');
       expect(GROQ_FALLBACK_MODELS).toContain('openai/gpt-oss-120b');
       expect(GROQ_MAX_CANDIDATES_PER_SUB_BATCH).toBe(7);
+      expect(GROQ_MAX_OUTPUT_TOKENS).toBeLessThan(8192);
     });
   });
 
@@ -95,6 +97,10 @@ describe('groq-foreign-word-scan', () => {
 
       const mockFetch = vi.fn(async (_url: string, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body || '{}'));
+        expect(body.response_format).toEqual({ type: 'json_object' });
+        expect(body.max_tokens).toBe(GROQ_MAX_OUTPUT_TOKENS);
+        expect(body.messages[0].content).toContain('JSON object');
+        expect(body.messages[1].content).toContain('{"results":[...]}');
         const userContent = body.messages?.[1]?.content || '';
         const match = userContent.match(/Terms:\n([\s\S]*)$/);
         const subTerms = match ? JSON.parse(match[1]) : [];
@@ -109,7 +115,7 @@ describe('groq-foreign-word-scan', () => {
         return new Response(JSON.stringify({
           choices: [{
             message: {
-              content: JSON.stringify(generated),
+              content: JSON.stringify({ results: generated }),
             },
           }],
           usage: { prompt_tokens: 1500, completion_tokens: 200 },
@@ -248,6 +254,23 @@ describe('groq-foreign-word-scan', () => {
       expect(modelsCalled).toEqual(['openai/gpt-oss-20b', 'openai/gpt-oss-120b']);
       expect(results[0].term).toBe('pneuma');
       expect(statusUpdates.some((s) => s.includes('unavailable. Switching to fallback model'))).toBe(true);
+    });
+
+    it.each([400, 413])('tries the next model after HTTP %i output-shape or request-size errors', async (status) => {
+      const models: string[] = [];
+      global.fetch = vi.fn(async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        models.push(body.model);
+        if (models.length === 1) return new Response(JSON.stringify({
+          error: { code: status === 400 ? 'json_validate_failed' : 'rate_limit_exceeded', failed_generation: '' },
+        }), { status });
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+          results: [{ term: 'λόγος', language: 'koine_greek', pronunciations: ['/loɡos/'], definition: 'word' }],
+        }) } }] }), { status: 200 });
+      }) as typeof fetch;
+      const results = await fetchGroqForeignWordBatch('Translate λόγος', 'gsk_testkey', { fallbackModels: ['openai/gpt-oss-120b'] });
+      expect(models).toEqual(['openai/gpt-oss-20b', 'openai/gpt-oss-120b']);
+      expect(results[0].term).toBe('λόγος');
     });
 
     it('aborts cleanly when AbortSignal is triggered', async () => {
