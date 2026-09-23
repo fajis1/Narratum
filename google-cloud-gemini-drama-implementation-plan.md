@@ -104,8 +104,8 @@ If a stage is blocked, the agent must state the exact blocker and stop instead o
 | 10 | End-to-end drama-gemini-tts orchestration | ✅ Complete with notes | Queue/chapter branching, Director and Cloud synthesis, MP3 stitching, silence placeholders, persisted review flags; live Cloud smoke remains |
 | 11 | Google Cloud Drama profile, performance settings, and credential UI | ✅ Complete with notes | Revised Narratum Stage 11 implemented: normalized performance policy, language/failure controls, write-only credential status, explicit removal, and sanitized synthesis-path connection test; automated/manual-environment checks pass; live Google Cloud credential verification remains user-required |
 | 12 | Cast direction UI and performance-aware voice previews | ✅ Complete with notes | Revised Narratum Stage 12 implemented: persistent direction/voice editing, rescan preservation, Voice Only/Character Performance/Scene Preview through shared Cloud request infrastructure; automated checks pass; listening/browser verification remains user-required |
-| 13 | Review/recovery UI | ⬜ Not started | |
-| 14 | Test matrix, documentation, migration, release readiness | ⬜ Not started | |
+| 13 | Review/recovery UI | ✅ Complete with notes | Listening-page flags, chapter retry, and resolve controls are implemented; segment-level retry remains deferred. |
+| 14 | Test matrix, documentation, migration, release readiness | ✅ Complete with notes | `docs/google-cloud-drama-release-readiness.md` records automated coverage; live Cloud synthesis, listening, and browser smoke checks remain. |
 
 *Legend: ⬜ Not started · 🟨 In progress · ✅ Complete · ⛔ Blocked*
 

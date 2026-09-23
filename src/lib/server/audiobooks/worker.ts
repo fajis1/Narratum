@@ -1684,6 +1684,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               directorModel: resolveCleanupAiModel(selectedProfile),
               serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
               dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
+              priorContinuityState: continuityState,
             });
             ttsBuffer = drama.audioBuffer;
             await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: drama.reviewFlags });

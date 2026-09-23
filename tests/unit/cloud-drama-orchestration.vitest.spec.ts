@@ -65,4 +65,23 @@ describe('Cloud Drama chapter orchestration', () => {
     expect(concatenate).toHaveBeenCalledWith([Buffer.from('silence')], undefined);
     expect(result.reviewFlags).toEqual([flag]);
   });
+
+  it('passes prior continuity into the Director and keeps repair diagnostics', async () => {
+    direct.mockImplementationOnce(async (options) => {
+      options.onRepair(1, ['invalid delivery']);
+      return [segment];
+    });
+    synthesize.mockResolvedValue({
+      chunks: [{ sourceText: 'Hello.', requestText: 'Hello.', audioBuffer: Buffer.from('spoken'), needsPlaceholder: false, omitted: false }],
+      reviewFlags: [{ kind: 'tts-retry-used', speaker: 'Narrator', sourceText: 'Hello.', chunkIndex: 0, attempts: 2, reason: 'Recovered.' }],
+    });
+    const result = await generateCloudDramaAudiobook({
+      cleanedText: 'Hello.', characterMap: map, geminiApiKey: 'test', directorModel: 'gemini-test',
+      priorContinuityState: 'The group has entered the room.',
+      dramaGeminiTtsSettings: { failedSegmentBehavior: 'stop-job' },
+    });
+    expect(direct).toHaveBeenCalledWith(expect.objectContaining({ priorContinuityState: 'The group has entered the room.' }));
+    expect(result.reviewFlags.map((flag) => flag.kind)).toEqual(['director-validation-repair', 'tts-retry-used']);
+    expect(result.audioBuffer).toEqual(Buffer.from('chapter'));
+  });
 });

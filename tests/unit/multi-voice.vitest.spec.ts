@@ -347,7 +347,7 @@ describe('LitRPG source and production wiring', () => {
     expect(batch).toContain('Replace & Regenerate');
     expect(listenPage).toContain("fetch('/api/audiobook/review-flags'");
     expect(listenPage).toContain('retryReviewFlag(flag)');
-    expect(listenPage).toContain('Audiobook recovery flags');
+    expect(listenPage).toContain('Audiobook review flags');
     expect(listenPage).toContain('Retry chapter');
     expect(listenPage).toContain('Chapters & Speakers');
     expect(listenPage).toContain('Speaker segments for selected chapter');

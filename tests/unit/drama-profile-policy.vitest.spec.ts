@@ -17,7 +17,7 @@ const output = {
       pace: 'normal',
       energy: 'low',
       intensity: 'controlled',
-      tags: ['shouting', 'long pause', 'sigh'],
+      tags: ['shouting', 'long pause'],
     },
   }],
 };

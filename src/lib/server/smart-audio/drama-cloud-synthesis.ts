@@ -15,7 +15,7 @@ const pause = new Set<string>(DRAMA_PAUSE_TAGS);
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 export interface DramaSynthesisReviewFlag {
-  kind: 'cloud-tts-failed';
+  kind: 'cloud-tts-failed' | 'cloud-tts-split' | 'tts-retry-used' | 'tts-fallback-used' | 'director-validation-repair' | 'prompt-compacted';
   speaker: string;
   sourceText: string;
   chunkIndex: number;
@@ -89,6 +89,12 @@ function retryable(error: unknown): boolean {
     (error instanceof CloudTtsApiError && RETRYABLE_STATUSES.has(error.statusCode));
 }
 
+function canSimplifyAfterFailure(error: unknown): boolean {
+  return error instanceof CloudTtsApiError
+    ? ![401, 403, 429, 500, 502, 503, 504].includes(error.statusCode)
+    : !(error instanceof CloudTtsTransportError);
+}
+
 function failureReason(error: unknown): string {
   if (error instanceof CloudTtsApiError) return `Cloud TTS HTTP ${error.statusCode}`;
   return error instanceof Error ? error.name : 'Unknown synthesis error';
@@ -130,10 +136,18 @@ export async function synthesizeDramaSegment(input: {
       policy: input.policy,
     });
     baseOptions = built.synthesisOptions;
+    if (built.promptCompacted) reviewFlags.push({
+      kind: 'prompt-compacted', speaker: segment.speaker, sourceText: segment.text,
+      chunkIndex: 0, attempts: 0, reason: 'Long character direction was shortened for the Cloud TTS prompt limit.',
+    });
     requestTexts = annotateDramaChunks(sourceChunks, segment.performance.tags);
     for (const requestText of requestTexts) {
       if (measureUtf8Bytes(requestText) > CLOUD_TTS_SAFE_TEXT_BYTES) throw new Error('Annotated chunk exceeds the Cloud TTS byte limit.');
     }
+    if (sourceChunks.length > 1) reviewFlags.push({
+      kind: 'cloud-tts-split', speaker: segment.speaker, sourceText: segment.text,
+      chunkIndex: 0, attempts: 0, reason: `Segment was split into ${sourceChunks.length} Cloud TTS chunks.`,
+    });
   } catch (error) {
     return {
       chunks: [{ sourceText: segment.text, requestText: '', audioBuffer: null, needsPlaceholder: true, omitted: false }],
@@ -156,12 +170,44 @@ export async function synthesizeDramaSegment(input: {
         });
         if (result.audioBuffer.length === 0) throw new Error('Empty Cloud TTS audio');
         chunks.push({ sourceText, requestText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
+        if (attempt > 1) reviewFlags.push({
+          kind: 'tts-retry-used', speaker: segment.speaker, sourceText,
+          chunkIndex: index, attempts: attempt, reason: 'Cloud TTS succeeded after a transient retry.',
+        });
         lastError = null;
         break;
       } catch (error) {
         lastError = error;
         if (!retryable(error) || attempt === attemptsLimit) break;
         await wait(250 * 2 ** (attempt - 1));
+      }
+    }
+    if (lastError && canSimplifyAfterFailure(lastError)) {
+      const fallbackPrompts = [
+        `Keep ${segment.speaker}'s established voice. Perform with ${segment.performance.primaryEmotion} emotion and ${segment.performance.socialIntent} intent. Speak the exact supplied text naturally.`,
+        `Read the exact supplied text clearly and naturally as ${segment.speaker}, using the established voice.`,
+      ];
+      for (const [fallbackIndex, stylePrompt] of fallbackPrompts.entries()) {
+        usedAttempts += 1;
+        try {
+          const result = await synthesize({
+            ...baseOptions, text: sourceText, stylePrompt,
+            serviceAccountJson: input.serviceAccountJson,
+            credentialCacheKey: input.credentialCacheKey,
+          });
+          if (result.audioBuffer.length === 0) throw new Error('Empty Cloud TTS audio');
+          chunks.push({ sourceText, requestText: sourceText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
+          reviewFlags.push({
+            kind: 'tts-fallback-used', speaker: segment.speaker, sourceText,
+            chunkIndex: index, attempts: usedAttempts,
+            reason: fallbackIndex === 0 ? 'Cloud TTS used simplified performance direction.' : 'Cloud TTS used neutral performance direction.',
+          });
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!canSimplifyAfterFailure(error)) break;
+        }
       }
     }
     if (lastError) {

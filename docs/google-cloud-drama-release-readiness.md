@@ -15,7 +15,7 @@ This document records the Stage 14 test matrix and deployment notes for the
 | Chunk retries, failed line retention, and MP3 placeholders | `drama-cloud-synthesis.vitest.spec.ts`, `segmented-audiobook-tts.vitest.spec.ts` | Pass |
 | End-to-end chapter orchestration and persisted review flags | `cloud-drama-orchestration.vitest.spec.ts`, `document-settings.vitest.spec.ts` | Pass |
 | Cast direction UI, previews, and listening-page recovery wiring | `drama-character-direction.vitest.spec.ts`, `multi-voice.vitest.spec.ts` | Pass |
-| Full repository unit suite | `pnpm test:unit` | 171 files, 1,278 tests passed |
+| Full repository unit suite | `pnpm exec vitest run --testTimeout=15000 --reporter=dot` | 175 files, 1,303 tests passed |
 
 Additional release gates passed on the staging branch:
 
@@ -25,6 +25,15 @@ Additional release gates passed on the staging branch:
 Live Google Cloud synthesis, real credentials, browser interaction, and
 production storage are not covered by the automated suite. Run those checks in
 the Listenary staging deployment before promoting the feature.
+
+The Director accepts the expanded acting vocabulary from the original plan,
+enforces limits on secondary emotions, delivery styles, and tags, and rejects
+new audio omissions after source cleanup. Director repairs, Cloud TTS splits,
+transient retries, prompt compaction, and simplified or neutral fallbacks are
+retained as listening-review flags. A successful diagnostic flag does not stop a
+job configured to stop on failed synthesis. The Director receives prior scene
+context for subsequent batches and receives the existing cleanup continuity
+state during queued generation.
 
 ## Migration and compatibility
 
