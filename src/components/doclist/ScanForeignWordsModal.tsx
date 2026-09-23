@@ -10,6 +10,7 @@ import {
   prepareForeignWordScanRows,
   sortForeignWordScanRows,
 } from '@/lib/shared/foreign-word-scan-results';
+import { exportForeignWordScan } from '@/lib/shared/foreign-word-scan-transfer';
 
 type SuspectPronunciation = {
   word: string;
@@ -50,6 +51,8 @@ export function ScanForeignWordsModal({
   const [words, setWords] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [hasScanned, setHasScanned] = useState(false);
+  const [importingWords, setImportingWords] = useState(false);
+  const importFileRef = useRef<HTMLInputElement>(null);
   const scanInFlight = useRef(false);
 
   // Map to store temporary inline edits before saving
@@ -488,6 +491,43 @@ export function ScanForeignWordsModal({
     } finally {
       scanInFlight.current = false;
       setLoading(false);
+    }
+  };
+
+  const downloadScanJson = () => {
+    if (!activeDocId || words.length === 0) return;
+    const payload = exportForeignWordScan(activeDocId, words);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `foreign-words-${activeDocId}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  };
+
+  const importScanJson = async (file: File) => {
+    if (!activeDocId || !scanJobId || scanActive) return;
+    if (file.size > 5_000_000) {
+      toast.error('Scan JSON must be under 5 MB.');
+      return;
+    }
+    setImportingWords(true);
+    try {
+      const scan = JSON.parse(await file.text());
+      const response = await fetch('/api/documents/scan-foreign-words/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: activeDocId, jobId: scanJobId, scan }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Import failed.');
+      setWords(data.words);
+      toast.success(`Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'} into this book.`);
+    } catch (error) {
+      toast.error(error instanceof SyntaxError ? 'This file is not valid JSON.' : error instanceof Error ? error.message : 'Import failed.');
+    } finally {
+      setImportingWords(false);
+      if (importFileRef.current) importFileRef.current.value = '';
     }
   };
 
@@ -1123,7 +1163,7 @@ export function ScanForeignWordsModal({
         </div>
         <div className="p-4 overflow-y-auto flex-1">
           {hasScanned && (
-            <div className="mb-4">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 placeholder="Search words..."
@@ -1131,6 +1171,10 @@ export function ScanForeignWordsModal({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full max-w-sm px-3 py-1.5 text-sm border rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-1 focus:ring-accent"
               />
+              <button type="button" onClick={downloadScanJson} disabled={!activeDocId || words.length === 0} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Export all words JSON</button>
+              <button type="button" onClick={() => importFileRef.current?.click()} disabled={!scanJobId || scanActive || importingWords} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">{importingWords ? 'Importing…' : 'Import edited JSON'}</button>
+              <input ref={importFileRef} type="file" accept="application/json,.json" className="hidden" aria-label="Import edited foreign-word scan JSON" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importScanJson(file); }} />
+              <p className="w-full text-xs text-soft">The export includes every scanned word and its context. Fill proposedPronunciation or proposedDefinition in the JSON, then import it into this document after the scan finishes.</p>
             </div>
           )}
           {!activeDocId ? (

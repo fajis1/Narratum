@@ -12,6 +12,14 @@ const scanRoute = readFileSync(
 );
 
 describe('foreign-word scan modal', () => {
+  test('offers a complete JSON export and a document-scoped edited JSON import', () => {
+    expect(source).toContain('Export all words JSON');
+    expect(source).toContain('Import edited JSON');
+    expect(source).toContain('exportForeignWordScan(activeDocId, words)');
+    expect(source).toContain("fetch('/api/documents/scan-foreign-words/import'");
+    expect(source).toContain('documentId: activeDocId, jobId: scanJobId, scan');
+  });
+
   test('starts a scan only from the explicit scan button', () => {
     expect(source.match(/loadWords\(/g)).toHaveLength(1);
     expect(source).toContain("hasScanned ? 'Scan Again' : 'Start Scan'");
