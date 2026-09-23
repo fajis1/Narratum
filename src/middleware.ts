@@ -24,6 +24,7 @@ const COUNTRY_HEADER_NAMES = [
 const PUBLIC_PATH_PREFIXES = [
   '/api/auth',   // Better Auth endpoints (sign-in, sign-up, callbacks, etc.)
   '/api/rate-limit/status',
+  '/api/v1',     // API key / Bearer-authenticated endpoints (e.g. /api/v1/upload)
   '/signin',
   '/signup',
   '/privacy',
