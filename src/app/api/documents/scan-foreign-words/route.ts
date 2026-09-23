@@ -553,6 +553,7 @@ If a token is an OCR fragment, an unidentifiable fragment, or an inflected form 
 When ocrSuspect is true, inspect ocrEvidence before deciding. Set ocrFragment to true only if evidence proves this is a damaged fragment, and then use needs_source_repair with no pronunciation. Do not attempt to reconstruct or invent a replacement term. Otherwise set ocrFragment to false.
 Otherwise return a useful contextual definition and set definitionOmitted to false.
 Return a JSON array with exactly one result object per requested term. Copy each requested term exactly into that result object's "term" field.
+Each result must contain: term (string), language ("koine_greek" | "biblical_hebrew" | "other"), pronunciations (string array), ocrFragment (boolean), sourceOutcome ("valid_word" | "needs_source_repair" | "insufficient_context" | "not_applicable"), definition (string or null), definitionOmitted (boolean), confidence (number from 0 to 1), and needsReview (boolean).
 
 Terms:
 ${JSON.stringify(terms)}`;

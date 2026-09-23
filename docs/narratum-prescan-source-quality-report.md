@@ -4,12 +4,14 @@ Date: 2026-09-23. This is a development check against the two PDFs supplied loca
 
 ## Inputs and scope
 
-| Local source | SHA-256 document ID | Pages | New `all_foreign` candidates |
+| Local source | SHA-256 document ID | Pages | New `all_foreign`, target 100% candidates |
 | --- | --- | ---: | ---: |
 | Constructing the Human | `8721c242553b57a17d7f1e830d27d82d81d82d1c07910d2f3b8ecc5f8fed9417` | 237 | 2,191 |
 | Inventing the Individual | `94a1126621774aa4c8b5f4720ce94bcae05122d5be6d9470b3c77ccc5ead6a77` | 364 | 16 |
 
 The uploaded 2,055-entry version-1 JSON belongs only to *Constructing the Human*. Its original scan settings cannot be established from the JSON alone, so 2,055 versus 2,191 is **not** a like-for-like recall measurement.
+
+A separate read-only comparison using the scanner's default 80% target returned 1,686 new candidates: 90 unverified, 405 source-review recommended, and 1,191 needing source repair. Of the 2,055 old unique terms, 1,628 are absent from that new 80% selection and 426 intersect a newly flagged candidate. **Absence is not evidence that an old entry should be deleted**: settings, candidate ranking, and tokenization all affect selection. This comparison is reproducible with `scripts/prescan_cleanup_dry_run.py --pdf <local-pdf> --old-export <local-json>`; it reads but does not change records.
 
 The new tokenizer retains `Aššurbanipal` and `haššāmayim` as complete candidates. The former `šš` and `ššā` substrings are no longer created from those terms. Every selected new occurrence context contains its recorded surface term; four old exported rows lacked their exact word in their context.
 
@@ -32,4 +34,4 @@ All 16 selected candidates from *Inventing the Individual* were `unverified` und
 - Suspect extracted word keys cannot be repaired by renaming JSON rows. A corrected reading needs a source-region transcription with page evidence, occurrence remapping, and a new scan. No such mass transcription or production dictionary cleanup was performed.
 - No live Gemini or Groq call was made in this check. Provider success, repair-request counts, and production runtime are therefore not measured.
 
-Before cleaning old dictionary records, generate a scoped dry-run inventory of automatically generated entries against the new scan, back up the affected records, and keep manual/user-approved entries untouched. Validate recovered terms against the rendered source pages; do not infer them from the damaged JSON strings.
+Before cleaning old dictionary records, inventory the actual book/global entry provenance as well as the export comparison, back up the affected records, and keep manual/user-approved entries untouched. Validate recovered terms against the rendered source pages; do not infer them from the damaged JSON strings.
