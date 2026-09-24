@@ -37,38 +37,72 @@ export interface ForeignWordScanTransfer {
   }>;
 }
 
-export function exportForeignWordScan(documentId: string, words: readonly ScanWord[]): ForeignWordScanTransfer {
+export interface ExportForeignWordScanOptions {
+  compactForAi?: boolean;
+  partIndex?: number;
+  totalParts?: number;
+}
+
+export interface ForeignWordScanBatch {
+  filename: string;
+  partIndex: number;
+  totalParts: number;
+  wordCount: number;
+  payload: ForeignWordScanTransfer;
+}
+
+export function exportForeignWordScan(
+  documentId: string,
+  words: readonly ScanWord[],
+  options?: ExportForeignWordScanOptions,
+): ForeignWordScanTransfer {
+  const isBatch = typeof options?.partIndex === 'number' && typeof options?.totalParts === 'number';
+  const batchPrefix = isBatch ? `Batch ${options!.partIndex} of ${options!.totalParts} (${words.length} words). ` : '';
+  const compactNotice = options?.compactForAi ? ' Compact AI prompt format (internal bounding-box coordinates omitted).' : '';
+
   return {
     format: 'openreader-foreign-word-scan',
     version: 2,
     documentId,
     exportedAt: new Date().toISOString(),
-    instructions: 'Read sourceStatus, qualityFlags, and occurrences before proposing edits. Edit proposedPronunciation and proposedDefinition only for a verified complete word. Leave null to keep the current value; set omitDefinition to true to clear a definition. Source terms, statuses, and occurrence evidence are read-only: correcting damaged PDF extraction requires source recovery and a rescan, not renaming a JSON word key. Import into the same document after the scan finishes. Version 1 imports remain supported.',
+    instructions: `${batchPrefix}Read sourceStatus, qualityFlags, and occurrences before proposing edits. Edit proposedPronunciation and proposedDefinition only for a verified complete word. Leave null to keep the current value; set omitDefinition to true to clear a definition. Source terms, statuses, and occurrence evidence are read-only: correcting damaged PDF extraction requires source recovery and a rescan, not renaming a JSON word key. Import into the same document after the scan finishes. Version 1 imports remain supported.${compactNotice}`,
     words: words.map((row) => ({
       word: row.word,
       count: typeof row.count === 'number' ? row.count : null,
       contexts: Array.isArray(row.contexts) ? row.contexts.filter((value): value is string => typeof value === 'string') : [],
       occurrences: Array.isArray(row.occurrences) ? row.occurrences
         .filter((value): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value))
-        .slice(0, 2).map((occurrence) => ({
-          surfaceTerm: occurrence.surfaceTerm,
-          normalizedTerm: occurrence.normalizedTerm,
-          pdfPage: occurrence.pdfPage,
-          sourceStart: occurrence.sourceStart,
-          sourceEnd: occurrence.sourceEnd,
-          pageSourceStart: occurrence.pageSourceStart,
-          pageSourceEnd: occurrence.pageSourceEnd,
-          blockId: occurrence.blockId,
-          bbox: occurrence.bbox,
-          coordinateSource: occurrence.coordinateSource,
-          context: occurrence.context,
-          contextTargetStart: occurrence.contextTargetStart,
-          contextTargetEnd: occurrence.contextTargetEnd,
-          extractionMethod: occurrence.extractionMethod,
-          qualityFlags: occurrence.qualityFlags,
-          qualityEvidence: occurrence.qualityEvidence,
-          sourceStatus: occurrence.sourceStatus,
-        })) : [],
+        .slice(0, 2).map((occurrence) => {
+          if (options?.compactForAi) {
+            return {
+              surfaceTerm: occurrence.surfaceTerm,
+              normalizedTerm: occurrence.normalizedTerm,
+              pdfPage: occurrence.pdfPage,
+              context: occurrence.context,
+              qualityFlags: occurrence.qualityFlags,
+              sourceStatus: occurrence.sourceStatus,
+            };
+          }
+          return {
+            surfaceTerm: occurrence.surfaceTerm,
+            normalizedTerm: occurrence.normalizedTerm,
+            pdfPage: occurrence.pdfPage,
+            sourceStart: occurrence.sourceStart,
+            sourceEnd: occurrence.sourceEnd,
+            pageSourceStart: occurrence.pageSourceStart,
+            pageSourceEnd: occurrence.pageSourceEnd,
+            blockId: occurrence.blockId,
+            bbox: occurrence.bbox,
+            coordinateSource: occurrence.coordinateSource,
+            context: occurrence.context,
+            contextTargetStart: occurrence.contextTargetStart,
+            contextTargetEnd: occurrence.contextTargetEnd,
+            extractionMethod: occurrence.extractionMethod,
+            qualityFlags: occurrence.qualityFlags,
+            qualityEvidence: occurrence.qualityEvidence,
+            sourceStatus: occurrence.sourceStatus,
+          };
+        }) : [],
       editorialSpellings: Array.isArray(row.editorialSpellings) ? row.editorialSpellings.filter((value): value is string => typeof value === 'string') : [],
       ocrEvidence: Array.isArray(row.ocrEvidence) ? row.ocrEvidence.filter((value): value is string => typeof value === 'string') : [],
       sourceStatus: typeof row.sourceStatus === 'string' ? row.sourceStatus : 'unverified',
@@ -85,6 +119,51 @@ export function exportForeignWordScan(documentId: string, words: readonly ScanWo
       omitDefinition: false,
     })),
   };
+}
+
+export function exportForeignWordScanBatches(
+  documentId: string,
+  words: readonly ScanWord[],
+  options?: {
+    batchSize?: number;
+    compactForAi?: boolean;
+  },
+): ForeignWordScanBatch[] {
+  const batchSize = Math.max(1, Math.min(options?.batchSize ?? 100, 5000));
+  if (words.length === 0) {
+    return [{
+      filename: `foreign-words-${documentId}-part-01.json`,
+      partIndex: 1,
+      totalParts: 1,
+      wordCount: 0,
+      payload: exportForeignWordScan(documentId, [], { ...options, partIndex: 1, totalParts: 1 }),
+    }];
+  }
+
+  const totalParts = Math.ceil(words.length / batchSize);
+  const padLen = Math.max(2, String(totalParts).length);
+  const batches: ForeignWordScanBatch[] = [];
+
+  for (let i = 0; i < totalParts; i++) {
+    const chunk = words.slice(i * batchSize, (i + 1) * batchSize);
+    const partIndex = i + 1;
+    const partStr = String(partIndex).padStart(padLen, '0');
+    const filename = `foreign-words-${documentId}-part-${partStr}.json`;
+    const payload = exportForeignWordScan(documentId, chunk, {
+      compactForAi: options?.compactForAi,
+      partIndex,
+      totalParts,
+    });
+    batches.push({
+      filename,
+      partIndex,
+      totalParts,
+      wordCount: chunk.length,
+      payload,
+    });
+  }
+
+  return batches;
 }
 
 export function parseForeignWordScanImport(

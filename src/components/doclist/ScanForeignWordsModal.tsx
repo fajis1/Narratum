@@ -10,7 +10,7 @@ import {
   prepareForeignWordScanRows,
   sortForeignWordScanRows,
 } from '@/lib/shared/foreign-word-scan-results';
-import { exportForeignWordScan } from '@/lib/shared/foreign-word-scan-transfer';
+import { exportForeignWordScan, exportForeignWordScanBatches } from '@/lib/shared/foreign-word-scan-transfer';
 
 type SuspectPronunciation = {
   word: string;
@@ -80,6 +80,7 @@ export function ScanForeignWordsModal({
   const [searchQuery, setSearchQuery] = useState('');
   const [hideHealthChecks, setHideHealthChecks] = useState(false);
   const [panelWidth, setPanelWidth] = useState<number | null>(null);
+  const [exportingBatches, setExportingBatches] = useState(false);
   const [scanJobStatus, setScanJobStatus] = useState<'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'>('idle');
   const [scanJobStage, setScanJobStage] = useState<string>('idle');
   const [scanJobId, setScanJobId] = useState<string | null>(null);
@@ -505,26 +506,113 @@ export function ScanForeignWordsModal({
     setTimeout(() => URL.revokeObjectURL(url), 1_000);
   };
 
-  const importScanJson = async (file: File) => {
-    if (!activeDocId || !scanJobId || scanActive) return;
-    if (file.size > 5_000_000) {
-      toast.error('Scan JSON must be under 5 MB.');
-      return;
+  const downloadScanBatchesZip = async () => {
+    if (!activeDocId || words.length === 0) return;
+    setExportingBatches(true);
+    try {
+      const batches = exportForeignWordScanBatches(activeDocId, words, {
+        batchSize: 100,
+        compactForAi: true,
+      });
+
+      if (batches.length === 1) {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(batches[0].payload, null, 2)], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = batches[0].filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1_000);
+        toast.success(`Exported ${batches[0].wordCount} words (compact AI format).`);
+        return;
+      }
+
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+
+      for (const batch of batches) {
+        zip.file(batch.filename, JSON.stringify(batch.payload, null, 2));
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `foreign-words-${activeDocId}-batches.zip`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      toast.success(`Exported ${words.length} words in ${batches.length} batch files (100 words/file ZIP).`);
+    } catch (err) {
+      console.error('Failed to export batches zip', err);
+      toast.error('Failed to create batch export zip.');
+    } finally {
+      setExportingBatches(false);
     }
+  };
+
+  const importScanJson = async (files: FileList | File[]) => {
+    if (!activeDocId || !scanJobId || scanActive) return;
+    const fileList = Array.from(files);
+    if (fileList.length === 0) return;
+
     setImportingWords(true);
     try {
-      const scan = JSON.parse(await file.text());
+      const allScans: any[] = [];
+
+      for (const file of fileList) {
+        if (file.size > 25_000_000) {
+          throw new Error(`File ${file.name} exceeds 25 MB limit.`);
+        }
+
+        if (file.name.toLowerCase().endsWith('.zip')) {
+          const JSZip = (await import('jszip')).default;
+          const zip = await JSZip.loadAsync(file);
+          const jsonEntries = Object.values(zip.files).filter(
+            (entry) => !entry.dir && entry.name.toLowerCase().endsWith('.json') && !entry.name.startsWith('__MACOSX/'),
+          );
+          if (jsonEntries.length === 0) {
+            throw new Error(`No JSON files found in ${file.name}.`);
+          }
+          for (const entry of jsonEntries) {
+            const text = await entry.async('string');
+            allScans.push(JSON.parse(text));
+          }
+        } else {
+          allScans.push(JSON.parse(await file.text()));
+        }
+      }
+
+      const combinedWords: any[] = [];
+      const seenWords = new Set<string>();
+      let baseScan = allScans[0];
+
+      for (const scan of allScans) {
+        if (!scan || typeof scan !== 'object' || !Array.isArray(scan.words)) {
+          throw new Error('One or more files is not a valid scan JSON.');
+        }
+        for (const wordObj of scan.words) {
+          if (wordObj && typeof wordObj.word === 'string' && !seenWords.has(wordObj.word)) {
+            seenWords.add(wordObj.word);
+            combinedWords.push(wordObj);
+          }
+        }
+      }
+
+      const mergedScan = {
+        ...baseScan,
+        words: combinedWords,
+      };
+
       const response = await fetch('/api/documents/scan-foreign-words/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: activeDocId, jobId: scanJobId, scan }),
+        body: JSON.stringify({ documentId: activeDocId, jobId: scanJobId, scan: mergedScan }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Import failed.');
       setWords(data.words);
       toast.success(`Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'} into this book.`);
     } catch (error) {
-      toast.error(error instanceof SyntaxError ? 'This file is not valid JSON.' : error instanceof Error ? error.message : 'Import failed.');
+      toast.error(error instanceof SyntaxError ? 'One or more files is not valid JSON.' : error instanceof Error ? error.message : 'Import failed.');
     } finally {
       setImportingWords(false);
       if (importFileRef.current) importFileRef.current.value = '';
@@ -1172,9 +1260,10 @@ export function ScanForeignWordsModal({
                 className="w-full max-w-sm px-3 py-1.5 text-sm border rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-1 focus:ring-accent"
               />
               <button type="button" onClick={downloadScanJson} disabled={!activeDocId || words.length === 0} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Export all words JSON</button>
+              <button type="button" onClick={downloadScanBatchesZip} disabled={!activeDocId || words.length === 0 || exportingBatches} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50" title="Split into compact ~100-word batch files in a ZIP archive for LLMs like Gemini Flash 3.1 Pro">{exportingBatches ? 'Packaging ZIP…' : 'Export Batches (100 / ZIP)'}</button>
               <button type="button" onClick={() => importFileRef.current?.click()} disabled={!scanJobId || scanActive || importingWords} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">{importingWords ? 'Importing…' : 'Import edited JSON'}</button>
-              <input ref={importFileRef} type="file" accept="application/json,.json" className="hidden" aria-label="Import edited foreign-word scan JSON" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importScanJson(file); }} />
-              <p className="w-full text-xs text-soft">The export includes source pages and quality evidence. Fill proposedPronunciation or proposedDefinition only for verified complete words, then import into this document after the scan finishes. Damaged source tokens need a source rescan, not a JSON word rename.</p>
+              <input ref={importFileRef} type="file" accept="application/json,.json,.zip,application/zip" multiple className="hidden" aria-label="Import edited foreign-word scan JSON or ZIP" onChange={(event) => { const files = event.target.files; if (files && files.length > 0) void importScanJson(files); }} />
+              <p className="w-full text-xs text-soft">The export includes source pages and quality evidence. Use <strong>Export Batches</strong> to split large scans into ~100-word chunks for AI processing (e.g. Gemini Flash/Pro). Fill proposedPronunciation or proposedDefinition for verified words, then import edited JSON or ZIP files back into this document.</p>
             </div>
           )}
           {!activeDocId ? (

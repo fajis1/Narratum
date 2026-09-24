@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { exportForeignWordScan, parseForeignWordScanImport } from '@/lib/shared/foreign-word-scan-transfer';
+import { exportForeignWordScan, exportForeignWordScanBatches, parseForeignWordScanImport } from '@/lib/shared/foreign-word-scan-transfer';
 
 const documentId = 'book-1';
 const rows = [
@@ -67,5 +67,69 @@ describe('foreign-word scan JSON transfer', () => {
     ]);
     const legacy = { ...evidence, version: 1 };
     expect(parseForeignWordScanImport(legacy, documentId, new Set(['λόγος']))).toHaveLength(1);
+  });
+
+  it('splits large scans into numbered batch files with optional compact AI format', () => {
+    const manyRows = Array.from({ length: 25 }, (_, i) => {
+      const letter = String.fromCharCode(97 + i);
+      const word = `word${letter}`;
+      return {
+        word,
+        count: 1,
+        contexts: [`Context for ${word}`],
+        occurrences: [{
+          pdfPage: 10 + i,
+          surfaceTerm: word,
+          normalizedTerm: word,
+          sourceStart: 100,
+          sourceEnd: 105,
+          pageSourceStart: 10,
+          pageSourceEnd: 15,
+          blockId: 'b1',
+          bbox: [10, 20, 30, 40],
+          coordinateSource: 'fitz',
+          context: `Context for ${word}`,
+          contextTargetStart: 12,
+          contextTargetEnd: 17,
+          extractionMethod: 'primary',
+          qualityFlags: [],
+          qualityEvidence: [],
+          sourceStatus: 'unverified',
+        }],
+      };
+    });
+
+    const batches = exportForeignWordScanBatches(documentId, manyRows, { batchSize: 10, compactForAi: true });
+    expect(batches).toHaveLength(3);
+
+    // Part 1: 10 words
+    expect(batches[0].filename).toBe('foreign-words-book-1-part-01.json');
+    expect(batches[0].partIndex).toBe(1);
+    expect(batches[0].totalParts).toBe(3);
+    expect(batches[0].wordCount).toBe(10);
+    expect(batches[0].payload.words).toHaveLength(10);
+    expect(batches[0].payload.instructions).toContain('Batch 1 of 3 (10 words)');
+    expect(batches[0].payload.instructions).toContain('Compact AI prompt format');
+
+    // Verify compact AI occurrence strips internal coordinate bloat
+    const firstOcc = batches[0].payload.words[0].occurrences[0];
+    expect(firstOcc).toHaveProperty('surfaceTerm', 'worda');
+    expect(firstOcc).toHaveProperty('pdfPage', 10);
+    expect(firstOcc).toHaveProperty('context', 'Context for worda');
+    expect(firstOcc).not.toHaveProperty('bbox');
+    expect(firstOcc).not.toHaveProperty('blockId');
+    expect(firstOcc).not.toHaveProperty('sourceStart');
+    expect(firstOcc).not.toHaveProperty('pageSourceStart');
+
+    // Part 3: remaining 5 words
+    expect(batches[2].filename).toBe('foreign-words-book-1-part-03.json');
+    expect(batches[2].partIndex).toBe(3);
+    expect(batches[2].wordCount).toBe(5);
+
+    // Editing part 1 and importing it works seamlessly
+    batches[0].payload.words[0].proposedPronunciation = '/wɜːrd/';
+    const allowed = new Set(manyRows.map((r) => r.word));
+    const changes = parseForeignWordScanImport(batches[0].payload, documentId, allowed);
+    expect(changes).toEqual([{ word: 'worda', pronunciation: '/wɜːrd/' }]);
   });
 });
