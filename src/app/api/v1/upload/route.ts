@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
     const namespace = getOpenReaderTestNamespace(req.headers);
 
     // Store in docstore (S3 / SeaweedFS / local filesystem based on OpenReader config)
-    const objectKey = await putDocumentBlob(documentId, buffer, file.type || 'application/octet-stream', namespace);
+    await putDocumentBlob(documentId, buffer, file.type || 'application/octet-stream', namespace);
 
     // 4. Insert Document into Database
     const now = Date.now();
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
       type: fileExt,
       size: file.size,
       lastModified: now,
-      filePath: objectKey,
+      filePath: documentId,
       createdAt: now,
     } as any).onConflictDoNothing();
 

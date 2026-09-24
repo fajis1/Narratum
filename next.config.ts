@@ -35,6 +35,12 @@ const serverExternalPackages = [
 const nextConfig: NextConfig = {
   allowedDevOrigins: ['127.0.0.1:3000', 'localhost:3000', '127.0.0.1', 'localhost'],
   output: 'standalone',
+  experimental: {
+    middlewareClientMaxBodySize: '256mb',
+    serverActions: {
+      bodySizeLimit: '256mb',
+    },
+  },
   async headers() {
     return [
       {
