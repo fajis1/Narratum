@@ -130,9 +130,10 @@ export function getKokoroPronunciationWordWarnings(word: unknown): string[] {
   if (/[_\\]/u.test(trimmed)) warnings.push('Dictionary word contains a markup or separator character.');
   if (/[ɐ-ʯː]/u.test(trimmed)) warnings.push('Dictionary word looks like bare IPA rather than source text.');
   if (scriptsIn(trimmed) > 1) warnings.push('Dictionary word mixes Latin, Greek, or Hebrew scripts.');
-  if ([...trimmed].some((character) => (
+  if (!/[\p{Script=Latin}\p{Script=Greek}\p{Script=Hebrew}]/u.test(trimmed) || [...trimmed].some((character) => (
     /\p{L}/u.test(character)
     && !/[\p{Script=Latin}\p{Script=Greek}\p{Script=Hebrew}]/u.test(character)
+    && !(/\p{Script=Latin}/u.test(trimmed) && /[ʾʿʼʽʻ]/u.test(character))
   ))) warnings.push('Dictionary word contains an unsupported or mixed writing system.');
   if (/\p{Script=Greek}/u.test(trimmed) && /σ$/u.test(trimmed)) {
     warnings.push('Dictionary word ends with nonfinal Greek sigma and looks OCR-damaged.');

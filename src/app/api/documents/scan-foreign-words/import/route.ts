@@ -7,7 +7,7 @@ import { errorResponse } from '@/lib/server/errors/next-response';
 import { serverLogger } from '@/lib/server/logger';
 import { readBookLexicon, writeBookLexicon } from '@/lib/server/smart-audio/book-lexicon';
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
-import { parseForeignWordScanImport } from '@/lib/shared/foreign-word-scan-transfer';
+import { parseForeignWordScanImportDetailed, type ForeignWordImportChange, type ForeignWordImportSkipped } from '@/lib/shared/foreign-word-scan-transfer';
 import { isKokoroSafePronunciation } from '@/lib/shared/kokoro-pronunciation-policy';
 import type { SmartAudioBookLexiconEntry } from '@/types/document-settings';
 
@@ -38,9 +38,9 @@ export async function POST(req: NextRequest) {
     if (job.status === 'queued' || job.status === 'running') {
       return NextResponse.json({ error: 'Wait for the scan to finish before importing edits.' }, { status: 409 });
     }
-    let changes;
+    let importResult;
     try {
-      changes = parseForeignWordScanImport(
+      importResult = parseForeignWordScanImportDetailed(
         body.scan,
         documentId,
         new Set(job.words.map((row: { word?: unknown }) => row.word).filter((word: unknown): word is string => typeof word === 'string')),
@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
           row.sourceStatus === 'needs_source_repair' || row.sourceOutcome === 'needs_source_repair'
             || row.sourceOutcome === 'insufficient_context' ? 'needs_source_repair' : row.sourceStatus,
         ]).filter((entry: unknown[]): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')),
+        { allowPartial: true },
       );
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid scan JSON.' }, { status: 400 });
@@ -66,21 +67,45 @@ export async function POST(req: NextRequest) {
     };
     const rowsByWord = new Map<string, Record<string, unknown>>(job.words.map((row: Record<string, unknown>) => [String(row.word), row]));
 
-    for (const change of changes) {
+    const validChanges: ForeignWordImportChange[] = [];
+    const skippedList: ForeignWordImportSkipped[] = [...importResult.skipped];
+    let profileOverrideConflictError: string | null = null;
+
+    for (const change of importResult.changes) {
       const row = rowsByWord.get(change.word)!;
       const prior = lexicon.entries[change.word];
       const profileOverride = profile.pronunciations?.[change.word];
       if (change.pronunciation && profileOverride && profileOverride !== change.pronunciation) {
-        return NextResponse.json({ error: `${change.word} has a personal profile pronunciation that would override the imported value. Edit that profile pronunciation first.` }, { status: 409 });
+        const reason = `${change.word} has a personal profile pronunciation that would override the imported value. Edit that profile pronunciation first.`;
+        profileOverrideConflictError ||= reason;
+        skippedList.push({ word: change.word, reason });
+        continue;
       }
       const pronunciation = change.pronunciation || prior?.pronunciation ||
         [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation]
           .find((value): value is string => typeof value === 'string' && isKokoroSafePronunciation(change.word, value));
-      if (!pronunciation) return NextResponse.json({ error: `A valid pronunciation is needed before importing a definition for ${change.word}.` }, { status: 400 });
+      if (!pronunciation) {
+        skippedList.push({
+          word: change.word,
+          reason: `A valid pronunciation is needed before importing a definition for ${change.word}.`,
+        });
+        continue;
+      }
+      validChanges.push(change);
     }
 
-    const changeByWord = new Map(changes.map((change) => [change.word, change]));
-    for (const change of changes) {
+    if (!validChanges.length && body.continueOnError !== true) {
+      if (profileOverrideConflictError) {
+        return NextResponse.json({ error: profileOverrideConflictError }, { status: 409 });
+      }
+      if (skippedList.length > 0) {
+        return NextResponse.json({ error: skippedList[0].reason }, { status: 400 });
+      }
+      return NextResponse.json({ error: 'No proposed edits were found in the scan JSON.' }, { status: 400 });
+    }
+
+    const changeByWord = new Map(validChanges.map((change) => [change.word, change]));
+    for (const change of validChanges) {
       const row = rowsByWord.get(change.word)!;
       const prior = lexicon.entries[change.word];
       const pronunciation = change.pronunciation || prior?.pronunciation ||
@@ -95,11 +120,34 @@ export async function POST(req: NextRequest) {
         needsReview: false, approvedRepair: true,
       };
     }
-    lexicon.scannedAt = Date.now();
-    await writeBookLexicon(userId, documentId, lexicon);
+    for (const skipped of skippedList) {
+      if (lexicon.entries[skipped.word]) {
+        lexicon.entries[skipped.word] = {
+          ...lexicon.entries[skipped.word],
+          needsReview: true,
+        };
+      }
+    }
+    if (validChanges.length > 0) {
+      lexicon.scannedAt = Date.now();
+      await writeBookLexicon(userId, documentId, lexicon);
+    }
 
+    const skippedByWord = new Map(skippedList.map((item) => [item.word, item]));
     const updatedWords = job.words.map((row: Record<string, unknown>) => {
       const word = String(row.word);
+      const skippedItem = skippedByWord.get(word);
+      if (skippedItem) {
+        return {
+          ...row,
+          sourceStatus: row.sourceStatus === 'needs_source_repair' ? 'needs_source_repair' : 'source_review_recommended',
+          definitionNeedsReview: true,
+          importWarning: skippedItem.reason,
+          qualityFlags: Array.isArray(row.qualityFlags)
+            ? Array.from(new Set([...row.qualityFlags, 'import_validation_failed']))
+            : ['import_validation_failed'],
+        };
+      }
       const change = changeByWord.get(word);
       if (!change) return row;
       const entry = lexicon.entries[word];
@@ -113,11 +161,12 @@ export async function POST(req: NextRequest) {
         definition: entry.definition,
         definitionOmitted: entry.definitionOmitted === true,
         definitionNeedsReview: false,
+        importWarning: null,
       };
     });
     const updatedJob = { ...job, words: updatedWords, updatedAt: Date.now() };
     await db.update(adminSettings).set({ valueJson: JSON.stringify(updatedJob) }).where(eq(adminSettings.key, key));
-    return NextResponse.json({ imported: changes.length, words: updatedWords });
+    return NextResponse.json({ imported: validChanges.length, skipped: skippedList, words: updatedWords });
   } catch (error) {
     return errorResponse(error, {
       logger: serverLogger,

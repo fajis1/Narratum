@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { exportForeignWordScan, exportForeignWordScanBatches, parseForeignWordScanImport } from '@/lib/shared/foreign-word-scan-transfer';
+import {
+  exportForeignWordScan,
+  exportForeignWordScanBatches,
+  parseForeignWordScanImport,
+  parseForeignWordScanImportDetailed,
+} from '@/lib/shared/foreign-word-scan-transfer';
 
 const documentId = 'book-1';
 const rows = [
@@ -24,6 +29,18 @@ describe('foreign-word scan JSON transfer', () => {
     ]);
   });
 
+  it('accepts transliterated words with Unicode modifier half-rings like hāʾādām', () => {
+    const transliteratedRows = [
+      { word: 'hāʾādām', count: 5, contexts: ['The hāʾādām walked.'], definition: null },
+    ];
+    const exported = exportForeignWordScan(documentId, transliteratedRows);
+    exported.words[0].proposedPronunciation = '/hɑɑdɑm/';
+    exported.words[0].proposedDefinition = 'the human';
+    expect(parseForeignWordScanImport(exported, documentId, new Set(['hāʾādām']))).toEqual([
+      { word: 'hāʾādām', pronunciation: '/hɑɑdɑm/', definition: 'the human' },
+    ]);
+  });
+
   it('rejects a different book, invented words, duplicates, and invalid pronunciations', () => {
     const exported = exportForeignWordScan(documentId, rows);
     exported.words[0].proposedPronunciation = '/loʊɡos/';
@@ -36,6 +53,28 @@ describe('foreign-word scan JSON transfer', () => {
     exported.words.pop();
     exported.words[0].proposedPronunciation = 'not IPA';
     expect(() => parseForeignWordScanImport(exported, documentId, new Set(rows.map((row) => row.word)))).toThrow(/Invalid Kokoro/);
+  });
+
+  it('skips invalid words and collects review diagnostics when allowPartial is true', () => {
+    const exported = exportForeignWordScan(documentId, [
+      { word: 'λόγος', count: 12, contexts: ['The λόγος was spoken.'], libraryPronunciation: '/loʊɡɒs/', definition: 'word' },
+      { word: 'θεός', count: 4, contexts: ['The θεός appeared.'], definition: null },
+    ]);
+    exported.words[0].proposedPronunciation = '/loʊɡos/';
+    exported.words[0].proposedDefinition = 'divine word';
+    exported.words[1].proposedPronunciation = 'not IPA';
+
+    // Strict mode throws
+    expect(() => parseForeignWordScanImport(exported, documentId, new Set(['λόγος', 'θεός']))).toThrow(/Invalid Kokoro/);
+
+    // Detailed partial mode imports the valid word and returns the skipped invalid word
+    const result = parseForeignWordScanImportDetailed(exported, documentId, new Set(['λόγος', 'θεός']), new Map(), { allowPartial: true });
+    expect(result.changes).toEqual([
+      { word: 'λόγος', pronunciation: '/loʊɡos/', definition: 'divine word' },
+    ]);
+    expect(result.skipped).toEqual([
+      { word: 'θεός', reason: 'Invalid Kokoro pronunciation for θεός.' },
+    ]);
   });
 
   it('requires an explicit omission switch to clear a definition', () => {

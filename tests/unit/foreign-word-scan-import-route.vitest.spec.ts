@@ -101,3 +101,67 @@ test('does not trust a v1 import when Gemini marked the stored source insufficie
   expect(response.status).toBe(400);
   expect(mocks.writeLexicon).not.toHaveBeenCalled();
 });
+
+test('continues on error, imports valid words, and flags skipped words for review', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed',
+    words: [
+      { word: 'λόγος', contexts: ['A word in context.'], pronunciations: [] },
+      { word: 'θεός', contexts: ['God in context.'], pronunciations: [] },
+    ],
+  }) }]);
+  const multiWordScan = {
+    format: 'openreader-foreign-word-scan', version: 2, documentId: 'book',
+    words: [
+      { word: 'λόγος', proposedPronunciation: '/loʊɡos/', proposedDefinition: 'divine word', omitDefinition: false },
+      { word: 'θεός', proposedPronunciation: 'not IPA', proposedDefinition: 'God', omitDefinition: false },
+    ],
+  };
+  const response = await POST(request({ documentId: 'book', jobId: 'job', scan: multiWordScan }) as never);
+  expect(response.status).toBe(200);
+  const data = await response.json();
+  expect(data.imported).toBe(1);
+  expect(data.skipped).toEqual([
+    { word: 'θεός', reason: 'Invalid Kokoro pronunciation for θεός.' },
+  ]);
+  // Lexicon received only the valid word
+  expect(mocks.writeLexicon).toHaveBeenCalledWith('owner', 'book', expect.objectContaining({
+    entries: {
+      'λόγος': expect.objectContaining({ pronunciation: '/loʊɡos/', definition: 'divine word' }),
+    },
+  }));
+  // Job was updated with the skipped word flagged for review
+  expect(data.words.find((w: { word: string }) => w.word === 'θεός')).toMatchObject({
+    word: 'θεός',
+    sourceStatus: 'source_review_recommended',
+    definitionNeedsReview: true,
+    importWarning: 'Invalid Kokoro pronunciation for θεός.',
+    qualityFlags: ['import_validation_failed'],
+  });
+});
+
+test('saves review flags when all edits fail if continueOnError is requested', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed',
+    words: [{ word: 'θεός', contexts: ['God in context.'], pronunciations: [] }],
+  }) }]);
+  const failingScan = {
+    format: 'openreader-foreign-word-scan', version: 2, documentId: 'book',
+    words: [
+      { word: 'θεός', proposedPronunciation: 'not IPA', proposedDefinition: 'God', omitDefinition: false },
+    ],
+  };
+  const response = await POST(request({ documentId: 'book', jobId: 'job', scan: failingScan, continueOnError: true }) as never);
+  expect(response.status).toBe(200);
+  const data = await response.json();
+  expect(data.imported).toBe(0);
+  expect(data.skipped).toHaveLength(1);
+  expect(mocks.writeLexicon).not.toHaveBeenCalled();
+  expect(mocks.update).toHaveBeenCalledOnce();
+  expect(data.words[0]).toMatchObject({
+    word: 'θεός',
+    sourceStatus: 'source_review_recommended',
+    definitionNeedsReview: true,
+    importWarning: 'Invalid Kokoro pronunciation for θεός.',
+  });
+});

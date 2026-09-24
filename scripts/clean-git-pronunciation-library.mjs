@@ -430,9 +430,10 @@ const keyProblems = (word) => {
   const scripts = scriptsIn(trimmed);
   const scriptCount = Number(scripts.latin) + Number(scripts.greek) + Number(scripts.hebrew);
   if (scriptCount > 1) problems.push('mixed-script-key');
-  if ([...trimmed].some((character) => (
+  if (!/[\p{Script=Latin}\p{Script=Greek}\p{Script=Hebrew}]/u.test(trimmed) || [...trimmed].some((character) => (
     /\p{L}/u.test(character)
     && !/[\p{Script=Latin}\p{Script=Greek}\p{Script=Hebrew}]/u.test(character)
+    && !(/\p{Script=Latin}/u.test(trimmed) && /[ʾʿʼʽʻ]/u.test(character))
   ))) problems.push('unsupported-script-key');
   if (scripts.greek && /σ$/u.test(trimmed)) problems.push('nonfinal-greek-sigma-at-end');
   if (scripts.greek && /ς.+/u.test(trimmed)) problems.push('final-greek-sigma-inside-word');

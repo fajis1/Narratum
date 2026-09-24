@@ -166,12 +166,27 @@ export function exportForeignWordScanBatches(
   return batches;
 }
 
-export function parseForeignWordScanImport(
+export interface ForeignWordImportSkipped {
+  word: string;
+  reason: string;
+}
+
+export interface ParseForeignWordScanImportOptions {
+  allowPartial?: boolean;
+}
+
+export interface ForeignWordScanImportResult {
+  changes: ForeignWordImportChange[];
+  skipped: ForeignWordImportSkipped[];
+}
+
+export function parseForeignWordScanImportDetailed(
   value: unknown,
   documentId: string,
   allowedWords: ReadonlySet<string>,
   trustedSourceStatuses: ReadonlyMap<string, string> = new Map(),
-): ForeignWordImportChange[] {
+  options: ParseForeignWordScanImportOptions = {},
+): ForeignWordScanImportResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected an OpenReader scan JSON object.');
   const input = value as Record<string, unknown>;
   if (input.format !== 'openreader-foreign-word-scan' || (input.version !== 1 && input.version !== 2)) throw new Error('Unsupported scan JSON format or version.');
@@ -179,36 +194,85 @@ export function parseForeignWordScanImport(
   if (!Array.isArray(input.words) || input.words.length > 20_000) throw new Error('The scan JSON must contain at most 20,000 words.');
   const seen = new Set<string>();
   const changes: ForeignWordImportChange[] = [];
+  const skipped: ForeignWordImportSkipped[] = [];
+  let foundAnyProposedEdits = false;
+
   for (const raw of input.words) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Each imported word must be an object.');
     const row = raw as Record<string, unknown>;
     const word = typeof row.word === 'string' ? row.word.normalize('NFC').trim() : '';
     if (!word || !allowedWords.has(word) || seen.has(word)) throw new Error(`Unknown or duplicate scan word: ${word || '(blank)'}.`);
     seen.add(word);
+
+    const hasProposedPronunciation = row.proposedPronunciation !== null && row.proposedPronunciation !== undefined;
+    const hasProposedDefinition = row.omitDefinition === true || (row.proposedDefinition !== null && row.proposedDefinition !== undefined);
+    if (!hasProposedPronunciation && !hasProposedDefinition) continue;
+    foundAnyProposedEdits = true;
+
+    if (trustedSourceStatuses.get(word) === 'needs_source_repair') {
+      const reason = `${word} needs PDF source repair and a rescan before pronunciation or definition import.`;
+      if (options.allowPartial) {
+        skipped.push({ word, reason });
+        continue;
+      }
+      throw new Error(reason);
+    }
+
     const change: ForeignWordImportChange = { word };
-    if (row.proposedPronunciation !== null && row.proposedPronunciation !== undefined) {
+    let wordError: string | null = null;
+
+    if (hasProposedPronunciation) {
       if (typeof row.proposedPronunciation !== 'string' || !isKokoroSafePronunciation(word, row.proposedPronunciation)) {
-        throw new Error(`Invalid Kokoro pronunciation for ${word}.`);
+        wordError = `Invalid Kokoro pronunciation for ${word}.`;
+      } else {
+        change.pronunciation = row.proposedPronunciation;
       }
-      change.pronunciation = row.proposedPronunciation;
     }
-    if (row.omitDefinition === true) {
-      if (row.proposedDefinition !== null && row.proposedDefinition !== undefined) throw new Error(`Conflicting definition edits for ${word}.`);
-      change.definition = null;
-    } else if (row.proposedDefinition !== null && row.proposedDefinition !== undefined) {
+
+    if (!wordError && row.omitDefinition === true) {
+      if (row.proposedDefinition !== null && row.proposedDefinition !== undefined) {
+        wordError = `Conflicting definition edits for ${word}.`;
+      } else {
+        change.definition = null;
+      }
+    } else if (!wordError && row.proposedDefinition !== null && row.proposedDefinition !== undefined) {
       if (typeof row.proposedDefinition !== 'string' || shouldOmitDictionaryDefinition(row.proposedDefinition)) {
-        throw new Error(`Invalid contextual definition for ${word}.`);
+        wordError = `Invalid contextual definition for ${word}.`;
+      } else {
+        const definition = normalizeDictionaryDefinition(row.proposedDefinition);
+        if (!definition) {
+          wordError = `Invalid contextual definition for ${word}.`;
+        } else {
+          change.definition = definition;
+        }
       }
-      const definition = normalizeDictionaryDefinition(row.proposedDefinition);
-      if (!definition) throw new Error(`Invalid contextual definition for ${word}.`);
-      change.definition = definition;
     }
-    if (change.pronunciation !== undefined || change.definition !== undefined) changes.push(change);
-    if (trustedSourceStatuses.get(word) === 'needs_source_repair'
-        && (change.pronunciation !== undefined || change.definition !== undefined)) {
-      throw new Error(`${word} needs PDF source repair and a rescan before pronunciation or definition import.`);
+
+    if (wordError) {
+      if (options.allowPartial) {
+        skipped.push({ word, reason: wordError });
+        continue;
+      }
+      throw new Error(wordError);
+    }
+
+    if (change.pronunciation !== undefined || change.definition !== undefined) {
+      changes.push(change);
     }
   }
-  if (!changes.length) throw new Error('No proposed edits were found in the scan JSON.');
-  return changes;
+
+  if (!foundAnyProposedEdits) throw new Error('No proposed edits were found in the scan JSON.');
+  if (!options.allowPartial && !changes.length) throw new Error('No proposed edits were found in the scan JSON.');
+
+  return { changes, skipped };
+}
+
+export function parseForeignWordScanImport(
+  value: unknown,
+  documentId: string,
+  allowedWords: ReadonlySet<string>,
+  trustedSourceStatuses: ReadonlyMap<string, string> = new Map(),
+  options: ParseForeignWordScanImportOptions = {},
+): ForeignWordImportChange[] {
+  return parseForeignWordScanImportDetailed(value, documentId, allowedWords, trustedSourceStatuses, options).changes;
 }

@@ -605,12 +605,26 @@ export function ScanForeignWordsModal({
       const response = await fetch('/api/documents/scan-foreign-words/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: activeDocId, jobId: scanJobId, scan: mergedScan }),
+        body: JSON.stringify({ documentId: activeDocId, jobId: scanJobId, scan: mergedScan, continueOnError: true }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Import failed.');
       setWords(data.words);
-      toast.success(`Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'} into this book.`);
+      if (Array.isArray(data.skipped) && data.skipped.length > 0) {
+        if (data.imported > 0) {
+          toast(
+            `Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'}; ${data.skipped.length} word${data.skipped.length === 1 ? '' : 's'} skipped and flagged for review.`,
+            { icon: '⚠️', duration: 6000 }
+          );
+        } else {
+          toast.error(
+            `No edits imported: ${data.skipped.length} word${data.skipped.length === 1 ? '' : 's'} had validation errors and ${data.skipped.length === 1 ? 'was' : 'were'} flagged for review.`,
+            { duration: 8000 }
+          );
+        }
+      } else {
+        toast.success(`Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'} into this book.`);
+      }
     } catch (error) {
       toast.error(error instanceof SyntaxError ? 'One or more files is not valid JSON.' : error instanceof Error ? error.message : 'Import failed.');
     } finally {
@@ -1350,6 +1364,14 @@ export function ScanForeignWordsModal({
                         {(needsSourceRepair || sourceReviewRecommended) && (
                           <span className="inline-block w-fit rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:text-amber-200">
                             {needsSourceRepair ? 'Source extraction needs repair' : 'Check source context'}
+                          </span>
+                        )}
+                        {w.importWarning && (
+                          <span
+                            className="inline-block w-fit rounded border border-amber-500/50 bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:text-amber-200"
+                            title={String(w.importWarning)}
+                          >
+                            ⚠️ Skipped: {String(w.importWarning)}
                           </span>
                         )}
                         {Array.isArray(w.occurrences) && w.occurrences.length > 0 && (

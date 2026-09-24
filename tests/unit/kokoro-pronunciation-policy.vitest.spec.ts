@@ -127,7 +127,28 @@ describe('Kokoro pronunciation policy', () => {
       'πáντων': '/pɑntoʊn/',
       'ωνδ': '/O, N, D/',
       'πνεῦμα': '/pnjumɑ/',
-    })).toEqual({ 'λόγος': '/loʊɡɒs/' });
+      'hāʾādām': '/hɑɑdɑm/',
+      'ʾ': '/hɑɑdɑm/',
+      'привет': '/privet/',
+    })).toEqual({ 'λόγος': '/loʊɡɒs/', 'hāʾādām': '/hɑɑdɑm/' });
+  });
+
+  test('permits Hebrew and Arabic transliteration modifier characters in Latin tokens', () => {
+    expect(getKokoroPronunciationWordWarnings('hāʾādām')).toEqual([]);
+    expect(getKokoroPronunciationWordWarnings('baʿal')).toEqual([]);
+    expect(getKokoroPronunciationWordWarnings('hā’ādām')).toEqual([]);
+    expect(getKokoroPronunciationWordWarnings("hā'ādām")).toEqual([]);
+    expect(isKokoroSafePronunciation('hāʾādām', '/hɑɑdɑm/')).toBe(true);
+    expect(isKokoroSafePronunciation('baʿal', '/bɑɑl/')).toBe(true);
+    expect(getKokoroPronunciationWordWarnings('ʾ')).toContain(
+      'Dictionary word contains an unsupported or mixed writing system.',
+    );
+    expect(getKokoroPronunciationWordWarnings('привет')).toContain(
+      'Dictionary word contains an unsupported or mixed writing system.',
+    );
+    expect(getKokoroPronunciationWordWarnings('שלוםʾ')).toContain(
+      'Dictionary word contains an unsupported or mixed writing system.',
+    );
   });
 
   test('all Gemini pronunciation paths consume the centralized instructions', () => {

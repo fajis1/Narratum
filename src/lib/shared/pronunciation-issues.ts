@@ -174,7 +174,7 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
 
 function visibleEnglish(text: string): string {
   // Even a malformed/unclosed IPA payload is pronunciation data, not prose.
-  return normalizeRepairMarkup(text).replace(TAG, '$1').replace(/\[([^\]\r\n]+)\]\(\/[^\r\n)]*(?:\)|$)/gu, '$1').replace(/<[^>]*>/gu, '').match(/\p{Script=Latin}[\p{Script=Latin}\p{Mark}'’-]*|\p{Number}+/gu)?.join(' ') || '';
+  return normalizeRepairMarkup(text).replace(TAG, '$1').replace(/\[([^\]\r\n]+)\]\(\/[^\r\n)]*(?:\)|$)/gu, '$1').replace(/<[^>]*>/gu, '').match(/\p{Script=Latin}[\p{Script=Latin}\p{Mark}'’ʾʿʼʽʻ-]*|\p{Number}+/gu)?.join(' ') || '';
 }
 
 export type RepairValidationOptions = { sourceText?: string; allowRemaining?: boolean; allowSourceEvidenceOverride?: boolean | ((issue: PronunciationIssue) => boolean) };
