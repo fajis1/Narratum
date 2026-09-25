@@ -66,7 +66,7 @@ describe('Stage 12 — Cloud cast review persistence', () => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeMap(entries: Record<string, { voiceId?: string | null; aliasFor?: string | null; description?: string }>) {
+function makeMap(entries: Record<string, { voiceId?: string | null; aliasFor?: string | null; description?: string; importance?: 'main' | 'minor' }>) {
   return {
     schemaVersion: 1,
     status: 'complete',
@@ -74,7 +74,7 @@ function makeMap(entries: Record<string, { voiceId?: string | null; aliasFor?: s
     entries: Object.fromEntries(
       Object.entries(entries).map(([name, e]) => [
         name,
-        { name, voiceId: e.voiceId ?? null, aliasFor: e.aliasFor ?? null, description: e.description ?? '' },
+        { name, voiceId: e.voiceId ?? null, aliasFor: e.aliasFor ?? null, description: e.description ?? '', importance: e.importance },
       ]),
     ),
   };
@@ -253,6 +253,19 @@ describe('Stage 4 — getCloudTtsCharacterMapReadiness', () => {
     expect(getCloudTtsCharacterMapReadiness(null).ready).toBe(false);
     expect(getCloudTtsCharacterMapReadiness(undefined).ready).toBe(false);
   });
+
+  it('separates unassignedMain and unassignedMinor', () => {
+    const raw = makeMap({
+      Narrator: { voiceId: null, importance: 'main' },
+      Hero: { voiceId: null, importance: 'main' },
+      Guard: { voiceId: null, importance: 'minor' },
+    });
+    const readiness = getCloudTtsCharacterMapReadiness(raw);
+    expect(readiness.ready).toBe(false);
+    expect(readiness.unassignedMain).toEqual(['Narrator', 'Hero']);
+    expect(readiness.unassignedMinor).toEqual(['Guard']);
+    expect(readiness.errors).toContain('Main characters need assigned voices: Narrator, Hero.');
+  });
 });
 
 // ── 5. autoAssignCloudTtsMinorVoices ──────────────────────────────────────────
@@ -315,6 +328,32 @@ describe('Stage 4 — autoAssignCloudTtsMinorVoices', () => {
       const v = result.updatedMap.entries[name].voiceId;
       if (v) expect(isValidCloudTtsVoice(v)).toBe(true);
     }
+  });
+
+  it('does not auto-assign voices to main characters', () => {
+    const raw = makeMap({
+      Narrator: { voiceId: 'Kore', importance: 'main' },
+      Hero: { voiceId: null, importance: 'main', description: 'The main hero of the adventure.' },
+      MinorA: { voiceId: null, importance: 'minor', description: 'A minor tavern patron.' },
+    });
+    const map = normalizeCloudTtsCharacterMap(raw)!;
+    const result = autoAssignCloudTtsMinorVoices({ characterMap: map });
+    expect(result.updatedMap.entries['Hero'].voiceId).toBeNull();
+    expect(result.updatedMap.entries['MinorA'].voiceId).not.toBeNull();
+  });
+
+  it('assigns gender-appropriate Cloud TTS voices based on description', () => {
+    const raw = makeMap({
+      Narrator: { voiceId: 'Kore', importance: 'main' },
+      Priestess: { voiceId: null, importance: 'minor', description: 'A wise woman and high priestess.' },
+      Knight: { voiceId: null, importance: 'minor', description: 'A brave man and loyal brother in arms.' },
+    });
+    const map = normalizeCloudTtsCharacterMap(raw)!;
+    const result = autoAssignCloudTtsMinorVoices({ characterMap: map });
+    const priestessVoice = result.updatedMap.entries['Priestess'].voiceId!;
+    const knightVoice = result.updatedMap.entries['Knight'].voiceId!;
+    expect(isCloudTtsFemaleVoice(priestessVoice)).toBe(true);
+    expect(isCloudTtsMaleVoice(knightVoice)).toBe(true);
   });
 });
 

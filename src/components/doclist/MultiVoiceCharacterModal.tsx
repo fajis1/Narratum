@@ -3,11 +3,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  autoAssignMinorCharacterVoices,
   getDuplicateVoiceAssignments,
   KOKORO_CHARACTER_VOICES,
   normalizeSmartAudioCharacterMap,
 } from '@/lib/shared/multi-voice';
-import { CLOUD_TTS_ALL_VOICES, CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
+import {
+  CLOUD_TTS_ALL_VOICES,
+  CLOUD_TTS_CHARACTER_VOICE_SET,
+  CLOUD_TTS_RECYCLABLE_VOICES,
+} from '@/lib/shared/google-cloud-tts-voices';
+import toast from 'react-hot-toast';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 
 interface MultiVoiceCharacterModalProps {
@@ -143,6 +149,12 @@ export function MultiVoiceCharacterModal({
   const entries = useMemo(() => Object.values(characterMap?.entries || {}), [characterMap]);
   const primaryCharacters = entries.filter((entry) => !entry.aliasFor);
   const unassigned = primaryCharacters.filter((entry) => !entry.voiceId);
+  const unassignedMain = primaryCharacters.filter(
+    (entry) => (entry.name.toLocaleLowerCase() === 'narrator' || entry.importance === 'main') && !entry.voiceId,
+  );
+  const unassignedMinor = primaryCharacters.filter(
+    (entry) => entry.name.toLocaleLowerCase() !== 'narrator' && entry.importance !== 'main' && !entry.voiceId,
+  );
   const hasNarrator = primaryCharacters.some((entry) => entry.name.toLocaleLowerCase() === 'narrator');
   const duplicateVoiceAssignments = useMemo(
     () => getDuplicateVoiceAssignments(characterMap, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {}),
@@ -177,6 +189,30 @@ export function MultiVoiceCharacterModal({
     });
   };
 
+  const toggleImportance = (name: string, nextImportance: 'main' | 'minor') => {
+    if (name.toLocaleLowerCase() === 'narrator') return;
+    updateEntry(name, (entry) => {
+      entry.importance = nextImportance;
+    });
+  };
+
+  const handleAutoAssignMinor = () => {
+    if (!characterMap) return;
+    const result = autoAssignMinorCharacterVoices({
+      characterMap,
+      ...(isCloudDrama ? {
+        voicePool: CLOUD_TTS_RECYCLABLE_VOICES,
+        validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET,
+      } : {}),
+    });
+    if (result.assigned.length === 0) {
+      toast('No unassigned minor characters to assign.');
+      return;
+    }
+    setCharacterMap(result.updatedMap);
+    toast.success(`Auto-assigned voices to ${result.assigned.length} minor character${result.assigned.length === 1 ? '' : 's'}.`);
+  };
+
   const handleAliasChange = (name: string, aliasFor: string) => {
     updateEntry(name, (entry) => {
       entry.aliasFor = aliasFor === 'none' ? null : aliasFor;
@@ -194,21 +230,33 @@ export function MultiVoiceCharacterModal({
     });
   };
 
-  const handlePreview = async (name: string, requestedMode?: 'voice-only' | 'character' | 'scene') => {
+  const handlePreview = async (name: string, requestedMode?: 'voice-only' | 'character' | 'scene', voiceOverride?: string) => {
     const entry = characterMap?.entries[name];
-    if (!entry?.voiceId) return;
+    const voiceId = voiceOverride || entry?.voiceId;
+    if (!voiceId) return;
     const previewMode = requestedMode || previewModeByCharacter[name] || 'character';
     setPreviewModeByCharacter((current) => ({ ...current, [name]: previewMode }));
     setIsPlaying(name);
     setError(null);
     try {
-      const previewText = previewTextByCharacter[name] || entry.sampleText || `${entry.name} is ready for the adventure.`;
+      const previewText = previewTextByCharacter[name] || entry?.sampleText || `${name} is ready for the adventure.`;
       const response = await fetch(isCloudDrama ? '/api/audiobook/characters/preview' : '/api/tts/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(isCloudDrama
-          ? { documentId, profileId, characterName: name, previewMode, sceneContext: previewContextByCharacter[name], text: previewText, voiceName: entry.voiceId, audioProfile: previewMode === 'voice-only' ? '' : entry.cloudDirection?.audioProfile }
-          : { text: previewText, voice: entry.voiceId }),
+          ? {
+              documentId,
+              profileId,
+              characterName: name,
+              description: entry?.description || '',
+              previewMode,
+              sceneContext: previewContextByCharacter[name],
+              text: previewText,
+              voiceName: voiceId,
+              cloudDirection: entry?.cloudDirection,
+              audioProfile: previewMode === 'voice-only' ? '' : entry?.cloudDirection?.audioProfile,
+            }
+          : { text: previewText, voice: voiceId }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({})) as { error?: string };
@@ -242,6 +290,7 @@ export function MultiVoiceCharacterModal({
           sampleText: '',
           voiceId: null,
           aliasFor: null,
+          importance: 'minor',
         },
       },
     });
@@ -373,6 +422,29 @@ export function MultiVoiceCharacterModal({
                       </>
                     )}
                     {character.aliasFor && <span className="rounded-full bg-surface-raised px-2 py-0.5 text-xs text-text-soft">Alias for {character.aliasFor}</span>}
+                    {!character.aliasFor && (
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                        character.name.toLocaleLowerCase() === 'narrator' || character.importance === 'main'
+                          ? 'border border-amber-500/30 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                          : 'border border-line bg-surface-raised text-text-soft'
+                      }`}>
+                        {character.name.toLocaleLowerCase() === 'narrator'
+                          ? '⭐ Narrator (Main)'
+                          : character.importance === 'main'
+                            ? '⭐ Main Character'
+                            : '👤 Minor Character'}
+                      </span>
+                    )}
+                    {!character.aliasFor && character.name.toLocaleLowerCase() !== 'narrator' && (
+                      <button
+                        type="button"
+                        onClick={() => toggleImportance(character.name, character.importance === 'main' ? 'minor' : 'main')}
+                        className="text-[11px] text-accent hover:underline"
+                        title={character.importance === 'main' ? 'Demote to minor character' : 'Promote to main character'}
+                      >
+                        {character.importance === 'main' ? 'Make Minor' : 'Make Main'}
+                      </button>
+                    )}
                   </div>
                   <p className="mt-1 text-sm text-text-soft">{character.description || 'No description supplied.'}</p>
                   <p className="mt-2 rounded-lg bg-surface-sunken p-3 text-sm italic text-text-soft">“{character.sampleText || 'No sample quote was found.'}”</p>
@@ -393,7 +465,13 @@ export function MultiVoiceCharacterModal({
                       <div className="flex gap-2">
                         <select
                           value={character.voiceId || ''}
-                          onChange={(event) => updateEntry(character.name, (entry) => { entry.voiceId = event.target.value; })}
+                          onChange={(event) => {
+                            const chosenVoice = event.target.value;
+                            updateEntry(character.name, (entry) => { entry.voiceId = chosenVoice; });
+                            if (chosenVoice) {
+                              void handlePreview(character.name, isCloudDrama ? 'voice-only' : undefined, chosenVoice);
+                            }
+                          }}
                           className="min-w-0 flex-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground"
                         >
                           <option value="">Select a {isCloudDrama ? 'Cloud' : 'Kokoro'} voice</option>
@@ -559,14 +637,50 @@ export function MultiVoiceCharacterModal({
         </div>
 
         <div className="flex flex-col gap-3 border-t border-line p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm text-text-soft">
-            {!hasNarrator ? (characterMap ? 'A Narrator entry is required.' : 'Start the character scanner to create a drama cast.') : unassigned.length > 0 ? `${unassigned.length} primary character${unassigned.length === 1 ? '' : 's'} still need a voice.` : entries.length > 0 ? 'Cast is ready to save.' : 'Start the character scanner to create a drama cast.'}
+          <div className="text-sm">
+            {!hasNarrator ? (
+              <span className="font-medium text-danger">A Narrator entry is required.</span>
+            ) : unassignedMain.length > 0 ? (
+              <span className="font-medium text-amber-500">
+                ⚠️ Choose a voice for {unassignedMain.length} main character{unassignedMain.length === 1 ? '' : 's'} ({unassignedMain.join(', ')}).
+              </span>
+            ) : unassignedMinor.length > 0 ? (
+              <span className="text-text-soft">
+                {unassignedMinor.length} minor character{unassignedMinor.length === 1 ? '' : 's'} unassigned.{' '}
+                <button
+                  type="button"
+                  onClick={handleAutoAssignMinor}
+                  className="font-semibold text-accent underline hover:text-accent-hover"
+                >
+                  Auto-assign them now
+                </button>
+              </span>
+            ) : entries.length > 0 ? (
+              <span className="font-medium text-emerald-500">✓ All characters have voices assigned. Ready to save.</span>
+            ) : (
+              <span className="text-text-soft">Start the character scanner to create a drama cast.</span>
+            )}
           </div>
           <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleAutoAssignMinor}
+              disabled={!characterMap || unassignedMinor.length === 0 || isScanning}
+              className="rounded-lg border border-accent bg-accent/10 px-3.5 py-2 text-sm font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
+              title={unassignedMinor.length === 0 ? 'All minor characters have voices' : `Auto-assign voices to ${unassignedMinor.length} minor character(s)`}
+            >
+              ✨ Auto-Assign Minor Voices{unassignedMinor.length > 0 ? ` (${unassignedMinor.length})` : ''}
+            </button>
             <button type="button" onClick={addCharacter} disabled={!characterMap || isScanning} className="rounded-lg border border-line px-4 py-2 text-sm text-foreground disabled:opacity-50">Add Character</button>
             <button type="button" onClick={() => void scanCharacters()} disabled={isScanning || isSaving || isLoading} className="rounded-lg border border-line px-4 py-2 text-sm text-foreground disabled:opacity-50">{characterMap ? 'Rescan Drama Cast' : 'Start Character Scan'}</button>
             <button type="button" onClick={onClose} className="rounded-lg border border-line px-4 py-2 text-sm text-text-soft">Cancel</button>
-            <button type="button" onClick={() => void handleSave()} disabled={!characterMap || !hasNarrator || unassigned.length > 0 || isSaving || isScanning} className="rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-background disabled:opacity-50">
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={!characterMap || !hasNarrator || unassignedMain.length > 0 || unassignedMinor.length > 0 || isSaving || isScanning}
+              className="rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-background disabled:opacity-50"
+              title={unassignedMain.length > 0 ? `Assign voices to main characters: ${unassignedMain.join(', ')}` : unassignedMinor.length > 0 ? `Assign voices to ${unassignedMinor.length} minor character(s) or click Auto-Assign` : undefined}
+            >
               {isSaving ? 'Saving…' : jobId ? 'Save Cast & Resume' : standalone ? 'Save Cast' : 'Save Cast & Continue'}
             </button>
           </div>

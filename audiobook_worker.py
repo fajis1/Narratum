@@ -207,6 +207,10 @@ class Character(BaseModel):
     name: str = Field(description="Exact character name, or Narrator")
     description: str = Field(description="Brief age, personality, and speaking-style description")
     sample_text: str = Field(description="A short direct quote spoken by this character")
+    importance: str = Field(
+        default="minor",
+        description="'main' if this character is a primary protagonist, central antagonist, or frequent core speaker (Narrator is always main); 'minor' if they are secondary, incidental, or background speakers"
+    )
 
 
 class CharacterExtractionResult(BaseModel):
@@ -293,7 +297,9 @@ async def process_multivoice_extract(msg):
             "chapter excerpts. Always include one character named Narrator. Merge obvious spelling variants only when "
             "they clearly identify the same person; otherwise keep them separate so the user can review aliases. "
             "Do not treat chapter headings, stat names, classes, skills, monsters without dialogue, footnotes, authors, "
-            "or publishers as speakers. Preserve exact character-name spelling and provide one real short quote when available.\n\n"
+            "or publishers as speakers. Preserve exact character-name spelling and provide one real short quote when available. "
+            "Classify each character's importance as 'main' (for central protagonists, major antagonists, Narrator, or frequent core speakers) "
+            "or 'minor' (for secondary, incidental, single-scene, or background speakers).\n\n"
             f"BOOK EXCERPTS:\n{raw_text}"
         )
         generated = await generate_multivoice_content(

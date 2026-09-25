@@ -67,7 +67,10 @@ import { normalizeGeminiTokenUsage } from '@/lib/server/smart-audio/gemini-usage
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
-import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import {
+  autoAssignCloudTtsMinorVoices,
+  getCloudTtsCharacterMapReadiness,
+} from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
 import { mergeGlobalDefinitions, readGlobalDefinitions } from '@/lib/server/smart-audio/global-definition-library';
 import { preparePdfAudiobookBlocks } from '@/lib/shared/pdf-audiobook-blocks';
@@ -411,18 +414,26 @@ export async function resumeWaitingAudioDramaJobs(): Promise<number> {
           ? jobSettings.testNamespace
           : null;
 
-        const readiness = getCharacterMapReadiness(charMap);
+        const profiles = await readSmartAudioProfilesDocument(job.userId);
+        const profile = findSmartAudioProfileById(profiles, jobSettings.smartAudioProfileId || profiles.selectedProfileId);
+        const isCloudDrama = profile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
+
+        const readiness = isCloudDrama
+          ? getCloudTtsCharacterMapReadiness(charMap)
+          : getCharacterMapReadiness(charMap);
         if (readiness.unassigned.length > 0 && readiness.map) {
-          const metrics = await getDocumentCharacterUsageMetrics(
+          const metrics = isCloudDrama ? {} : await getDocumentCharacterUsageMetrics(
             job.bookId,
             job.userId,
             testNamespace,
             readiness.map,
           );
-          const autoResult = autoAssignMinorCharacterVoices({
-            characterMap: readiness.map,
-            characterUsageMetrics: metrics,
-          });
+          const autoResult = isCloudDrama
+            ? autoAssignCloudTtsMinorVoices({ characterMap: readiness.map })
+            : autoAssignMinorCharacterVoices({
+                characterMap: readiness.map,
+                characterUsageMetrics: metrics,
+              });
 
           if (autoResult.assigned.length > 0) {
             currentSettings.smartAudioCharacters = autoResult.updatedMap;
@@ -438,7 +449,9 @@ export async function resumeWaitingAudioDramaJobs(): Promise<number> {
             }, 'Startup hook: auto-assigned recyclable voices to waiting characters.');
           }
 
-          const newReadiness = getCharacterMapReadiness(autoResult.updatedMap);
+          const newReadiness = isCloudDrama
+            ? getCloudTtsCharacterMapReadiness(autoResult.updatedMap)
+            : getCharacterMapReadiness(autoResult.updatedMap);
           if (newReadiness.ready) {
             await db.update(audiobookJobs)
               .set({ status: 'queued', error: null, progress: 0, updatedAt: Date.now() })
@@ -1130,7 +1143,35 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       const storedCast = rawDocumentSettings && typeof rawDocumentSettings === 'object' && !Array.isArray(rawDocumentSettings)
         ? (rawDocumentSettings as Record<string, unknown>).smartAudioCharacters
         : null;
-      const readiness = getCloudTtsCharacterMapReadiness(storedCast);
+      let readiness = getCloudTtsCharacterMapReadiness(storedCast);
+      if (!readiness.ready && readiness.unassigned.length > 0 && readiness.map) {
+        const autoResult = autoAssignCloudTtsMinorVoices({
+          characterMap: readiness.map,
+        });
+        if (autoResult.assigned.length > 0) {
+          serverLogger.info({
+            event: 'audiobook.queue.multivoice.auto_assigned_cloud_voices',
+            bookId,
+            assigned: autoResult.assigned,
+          }, 'Auto-assigned recyclable Cloud voices to unassigned minor characters before chapter loop.');
+
+          const [currentDoc] = await db
+            .select({ dataJson: documentSettings.dataJson })
+            .from(documentSettings)
+            .where(and(eq(documentSettings.documentId, job.documentId), eq(documentSettings.userId, userId)))
+            .limit(1);
+          const currentSettings = currentDoc?.dataJson
+            ? (typeof currentDoc.dataJson === 'string' ? JSON.parse(currentDoc.dataJson) : currentDoc.dataJson)
+            : {};
+          currentSettings.smartAudioCharacters = autoResult.updatedMap;
+          await db.update(documentSettings)
+            .set({ dataJson: JSON.stringify(currentSettings) })
+            .where(and(eq(documentSettings.documentId, job.documentId), eq(documentSettings.userId, userId)));
+          resolvedDocumentSettings.smartAudioCharacters = autoResult.updatedMap;
+          readiness = getCloudTtsCharacterMapReadiness(autoResult.updatedMap);
+        }
+      }
+
       if (!readiness.ready || readiness.map?.profileId !== selectedProfile.id) {
         await updateClaimedAudiobookJob(job.id, 'running', {
           status: WAITING_FOR_VOICES_STATUS,

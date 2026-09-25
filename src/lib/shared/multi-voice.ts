@@ -9,6 +9,10 @@ import type {
   SmartAudioCharacterMap,
   DramaCharacterDirection,
 } from '@/types/document-settings';
+import {
+  CLOUD_TTS_FEMALE_VOICE_SET,
+  CLOUD_TTS_MALE_VOICE_SET,
+} from '@/lib/shared/google-cloud-tts-voices';
 
 export const MULTI_VOICE_WORKER_MODE = 'multi-voice' as const;
 export const DRAMA_GEMINI_TTS_WORKER_MODE = 'drama-gemini-tts' as const;
@@ -130,12 +134,16 @@ function characterEntry(
     : null;
   const aliasFor = normalizedName(source.aliasFor) || null;
   const cloudDirection = normalizeCloudDirection(source.cloudDirection);
+  const importance: 'main' | 'minor' = (source.importance === 'main' || source.importance === 'minor')
+    ? source.importance
+    : (name.toLocaleLowerCase() === 'narrator' ? 'main' : 'minor');
   return {
     name,
     description: normalizedDescription(source.description),
     sampleText: normalizedSample(source.sampleText),
     voiceId,
     aliasFor,
+    importance,
     // Only include cloudDirection when present; keeps Kokoro entries clean
     ...(cloudDirection !== null ? { cloudDirection } : {}),
   };
@@ -256,26 +264,37 @@ export function getCharacterMapReadiness(value: unknown, options: CharacterMapRe
   ready: boolean;
   map: SmartAudioCharacterMap | null;
   unassigned: string[];
+  unassignedMain: string[];
+  unassignedMinor: string[];
   errors: string[];
 } {
   const voiceSet = options.validVoiceSet ?? KOKORO_CHARACTER_VOICE_SET;
   const map = normalizeSmartAudioCharacterMap(value, { validVoiceSet: voiceSet });
-  if (!map) return { ready: false, map: null, unassigned: [], errors: ['No character scan is available.'] };
+  if (!map) return { ready: false, map: null, unassigned: [], unassignedMain: [], unassignedMinor: [], errors: ['No character scan is available.'] };
   const primary = Object.values(map.entries).filter((entry) => !entry.aliasFor);
   const unassigned = primary
     .filter((entry) => !entry.voiceId || !voiceSet.has(entry.voiceId))
+    .map((entry) => entry.name);
+  const unassignedMain = primary
+    .filter((entry) => (entry.name.toLocaleLowerCase() === 'narrator' || entry.importance === 'main') && (!entry.voiceId || !voiceSet.has(entry.voiceId)))
+    .map((entry) => entry.name);
+  const unassignedMinor = primary
+    .filter((entry) => entry.name.toLocaleLowerCase() !== 'narrator' && entry.importance !== 'main' && (!entry.voiceId || !voiceSet.has(entry.voiceId)))
     .map((entry) => entry.name);
   const errors: string[] = [];
   if (!primary.some((entry) => entry.name.toLocaleLowerCase() === 'narrator')) {
     errors.push('The cast must include a Narrator.');
   }
   if (primary.length === 0) errors.push('The cast has no primary characters.');
-  if (unassigned.length > 0) errors.push('Every primary character needs a voice.');
+  if (unassignedMain.length > 0) errors.push(`Main characters need assigned voices: ${unassignedMain.join(', ')}.`);
+  if (unassignedMinor.length > 0 && unassignedMain.length === 0) errors.push('Every primary character needs a voice.');
   if (map.needsRescan) errors.push('The document narration filters changed; rescan the cast.');
   return {
     ready: map.status === 'complete' && errors.length === 0,
     map,
     unassigned,
+    unassignedMain,
+    unassignedMinor,
     errors,
   };
 }
@@ -330,11 +349,16 @@ export function mergeExtractedCharacters(input: {
     if (!name || extractedNames.has(canonicalName)) continue;
     extractedNames.add(canonicalName);
     const existing = previousByName.get(canonicalName);
+    const rawImportance = typeof source.importance === 'string' ? source.importance.toLowerCase() : '';
+    const importance: 'main' | 'minor' = (rawImportance === 'main' || rawImportance === 'minor')
+      ? rawImportance
+      : (existing?.importance || (canonicalName === 'narrator' ? 'main' : 'minor'));
     entries[name] = {
       name,
       description: normalizedDescription(source.description) || existing?.description || '',
       sampleText: normalizedSample(source.sample_text ?? source.sampleText) || existing?.sampleText || '',
       voiceId: existing?.voiceId || null,
+      importance,
       ...(existing?.cloudDirection ? { cloudDirection: existing.cloudDirection } : {}),
       aliasFor: existing?.aliasFor && previous?.entries[existing.aliasFor]
         ? existing.aliasFor
@@ -350,9 +374,12 @@ export function mergeExtractedCharacters(input: {
       description: existingNarrator?.description || 'Primary audiobook narrator.',
       sampleText: existingNarrator?.sampleText || '',
       voiceId: existingNarrator?.voiceId || null,
+      importance: 'main',
       ...(existingNarrator?.cloudDirection ? { cloudDirection: existingNarrator.cloudDirection } : {}),
       aliasFor: null,
     };
+  } else {
+    entries[narratorKey].importance = 'main';
   }
 
   if (Object.keys(entries).length === 0) {
@@ -596,6 +623,11 @@ export function autoAssignMinorCharacterVoices(
     if (entry.aliasFor || !entry.voiceId) continue;
     if (entry.name.toLowerCase() === 'narrator') continue;
 
+    if (entry.importance === 'main') {
+      protectedVoices.add(entry.voiceId);
+      continue;
+    }
+
     if (entry.sampleText && entry.voiceId) {
       protectedVoices.add(entry.voiceId);
       continue;
@@ -626,10 +658,12 @@ export function autoAssignMinorCharacterVoices(
   const femaleVoices = recyclableVoices.filter((v) => (
     (KOKORO_AMERICAN_FEMALE_VOICES as readonly string[]).includes(v)
     || (KOKORO_BRITISH_FEMALE_VOICES as readonly string[]).includes(v)
+    || CLOUD_TTS_FEMALE_VOICE_SET.has(v)
   ));
   const maleVoices = recyclableVoices.filter((v) => (
     (KOKORO_AMERICAN_MALE_VOICES as readonly string[]).includes(v)
     || (KOKORO_BRITISH_MALE_VOICES as readonly string[]).includes(v)
+    || CLOUD_TTS_MALE_VOICE_SET.has(v)
   ));
 
   const voiceUsageCount = new Map<string, number>();
@@ -647,6 +681,7 @@ export function autoAssignMinorCharacterVoices(
   for (const entry of Object.values(entriesCopy)) {
     if (entry.aliasFor) continue;
     if (entry.name.toLowerCase() === 'narrator') continue;
+    if (entry.importance === 'main') continue;
     // Skip if already assigned to a valid voice in the current provider's voice set
     if (entry.voiceId && validVoiceSet.has(entry.voiceId)) continue;
 

@@ -9,6 +9,8 @@ import { synthesizeWithCloudTts } from '@/lib/server/smart-audio/google-cloud-tt
 import { normalizeCloudTtsCharacterMap } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { buildDramaDirectorsBrief } from '@/lib/server/smart-audio/drama-cloud-request';
 import { buildDramaDirectorPolicy, normalizeDramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
+import { errorToLog, serverLogger } from '@/lib/server/logger';
+import type { DramaCharacterDirection } from '@/types/document-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,7 +78,17 @@ export async function POST(request: NextRequest) {
     return new NextResponse(new Uint8Array(result.audioBuffer), {
       headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' },
     });
-  } catch {
-    return NextResponse.json({ error: 'Google Cloud voice preview failed. Check the profile credential and Cloud permissions.' }, { status: 502 });
+  } catch (error) {
+    serverLogger.error({
+      event: 'audiobook.cloud_drama.preview.failed',
+      error: errorToLog(error),
+      documentId,
+      profileId,
+      voiceName,
+    }, 'Google Cloud voice preview failed.');
+    const message = error instanceof Error ? error.message : 'Google Cloud voice preview failed.';
+    return NextResponse.json({
+      error: `Google Cloud voice preview failed: ${message}. Check the profile credential and Cloud permissions.`,
+    }, { status: 502 });
   }
 }

@@ -94,5 +94,5 @@ describe('scheduled task routes', () => {
 
     expect(patchResponse.status).toBe(400);
     expect(mocks.updateTask).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 });

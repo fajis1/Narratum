@@ -91,6 +91,11 @@ export interface SmartAudioCharacterEntry {
   voiceId?: string | null;
   aliasFor?: string | null;
   /**
+   * Character importance: 'main' characters and Narrator must be explicitly assigned by the user.
+   * 'minor' characters can be auto-assigned recyclable voices on demand or during worker execution.
+   */
+  importance?: 'main' | 'minor';
+  /**
    * Optional per-character direction for the `drama-gemini-tts` mode.
    * Not present on Kokoro Drama cast entries — the Kokoro path ignores this field.
    */
