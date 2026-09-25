@@ -15,12 +15,13 @@ This document records the Stage 14 test matrix and deployment notes for the
 | Chunk retries, failed line retention, and MP3 placeholders | `drama-cloud-synthesis.vitest.spec.ts`, `segmented-audiobook-tts.vitest.spec.ts` | Pass |
 | End-to-end chapter orchestration and persisted review flags | `cloud-drama-orchestration.vitest.spec.ts`, `document-settings.vitest.spec.ts` | Pass |
 | Cast direction UI, previews, and listening-page recovery wiring | `drama-character-direction.vitest.spec.ts`, `multi-voice.vitest.spec.ts` | Pass |
-| Full repository unit suite | `pnpm exec vitest run --testTimeout=15000 --reporter=dot` | 175 files, 1,303 tests passed |
+| Audiobook generation UI & modal integration | `google-cloud-cast.vitest.spec.ts`, `AudiobookExportModal`, `BatchAudiobookSidebar`, `MultiVoiceCharacterModal`, `DocumentList` | Pass |
+| Full repository unit suite | `pnpm exec vitest run --testTimeout=15000` | 178 files, 1,345 tests passed |
 
-Additional release gates passed on the staging branch:
+Additional release gates passed on `main`:
 
-- `pnpm tsc --noEmit`
-- `git diff --check`
+- `pnpm tsc --noEmit` (clean, 0 errors)
+- `git diff --check` (clean, no whitespace violations)
 
 Live Google Cloud synthesis, real credentials, browser interaction, and
 production storage are not covered by the automated suite. Run those checks in
@@ -53,6 +54,19 @@ JSON is write-only in the UI; profile reads expose only the configured account
 email. If no profile credential is stored, the server may use Application
 Default Credentials. The Cloud TTS API and the `gemini-3.1-flash-tts-preview`
 model must be enabled for that project.
+
+### Audiobook generation UI triggers
+
+The `drama-gemini-tts` pipeline is integrated across all audiobook generation touchpoints:
+- **AudiobookExportModal**: Automatically switches to Google Cloud Drama mode when a Cloud Drama
+  profile is selected, auto-populates narrator voices from the profile, displays the primary button
+  as `Generate Google Cloud Drama Audiobook`, and removes Kokoro voice prerequisites.
+- **BatchAudiobookSidebar**: Displays the Google Cloud Gemini-TTS provider card, exposes Cloud Drama
+  status cards with narrator details, and allows queuing without Kokoro voice dependencies.
+- **MultiVoiceCharacterModal**: Features a `✨ Save & Generate Google Drama` button in standalone cast
+  configuration, allowing immediate queuing of the audiobook upon saving the cast.
+- **DocumentList**: Handles `AUDIOBOOK_REPLACEMENT_REQUIRED` confirmations and automatically starts
+  the drama generation job after cast completion.
 
 ## Rollout checklist
 

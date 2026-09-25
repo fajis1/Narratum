@@ -86,6 +86,57 @@ the entire audiobook:
   its `*__rejected.txt` and `*__pronunciation_failure.json` artifacts are deleted,
   clearing the download gate once all chapters pass.
 
+## Foreign-word pre-scan review area and candidate normalization
+
+In addition to chapter-level review during audiobook generation, the pre-scan stage
+identifies, flags, and repairs lexical pronunciation and definition issues prior to
+synthesis.
+
+### Pre-scan Review Area and filter tabs
+
+When a foreign-word scan completes or an edited scan JSON is imported:
+- An **amber Review Area banner** appears at the top of the table if any terms require review
+  (due to invalid contextual definitions, invalid pronunciations, missing pronunciations,
+  or profile override conflicts).
+- The banner provides a one-click toggle to filter the table directly to flagged words, as well as an
+  **Export Flagged Words JSON** button that exports only the items requiring resolution.
+- Filter tabs above the table allow immediate switching between:
+  - **All Words**: The full vocabulary list.
+  - **⚠️ Flagged for Review**: Terms requiring manual correction or omission.
+  - **Missing Pronunciation**: Terms currently lacking any valid Kokoro IPA.
+  - **Has Definition**: Terms with assigned English glosses.
+- Inline row action **🚫 Omit definition**: Allows reviewers to instantly clear definition review
+  issues on grammatical stop-words (e.g. Hebrew/Greek pronouns or prepositions) with a single click.
+
+### Companion AI instructions (`AI-INSTRUCTIONS.md`)
+
+When exporting scan data for external review or AI agent processing:
+- A companion `AI-INSTRUCTIONS.md` guide is automatically downloaded alongside the JSON file
+  (or bundled inside the root of batch ZIP archives).
+- The guide instructs agents on strict field boundaries (immutable `word` keys and extraction
+  evidence), Kokoro IPA formatting rules, 1–4 word definition limits, and mandatory omission
+  of grammatical stop-words (`omitDefinition: true`, `proposedDefinition: null`).
+
+### Deterministic pronunciation candidate normalization
+
+The pronunciation normalization rules originally implemented in the Smart Audio worker
+(`scanPronunciationIssues` and `buildPronunciationLookup`) have been centralized in
+`normalizeKokoroPronunciationCandidate` (`src/lib/shared/kokoro-pronunciation-policy.ts`)
+and backported across all pre-scan, import, and repair pipelines:
+- **Delimiter wrapping and typo repair**: Bare phonemes are wrapped with `/.../` forward slashes,
+  and typos like `/]` or `/)` are corrected to `/`.
+- **Markdown tag unwrapping**: Formats like `[word](/ipa/)` or `[/ipa/]` are unwrapped to bare `/ipa/`.
+- **Ghost syllable prevention**: Unsupported primary and secondary stress markers (`[ˈˌ']`) are
+  stripped to prevent Kokoro model hallucination and stuttering.
+- **Single-word whitespace compaction**: Spaces between syllables or phonemes (e.g., `/hɑː dɑːm/` $\to$
+  `/hɑːdɑːm/`, `/siːk lənd/` $\to$ `/siːklənd/`) are compacted for single words while preserving
+  comma-delimited initialisms like `/K, T, L/`.
+- **OCR artifact stripping**: Leading and trailing OCR digit fragments (e.g. `118Lamaštu` $\to$
+  `lɑːmɑʃtuː`) are safely stripped.
+- **Stop-word gloss auto-omission**: On JSON import, dictionary definitions for function words
+  and stop-words are automatically converted to `definition: null` with `omitDefinition: true`
+  instead of failing with an `Invalid contextual definition` warning.
+
 ## Operational notes
 
 - Wait for background generation and repair jobs to finish or pause before

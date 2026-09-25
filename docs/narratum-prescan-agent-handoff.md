@@ -1,6 +1,6 @@
 # Narratum prescan work: handoff for the next agent
 
-Updated 2026-09-23. Worktree branch: `fix/prescan-source-quality`.
+Updated 2026-09-25. Worktree branch: `main`.
 
 ## What is implemented
 
@@ -11,6 +11,28 @@ Updated 2026-09-23. Worktree branch: `fix/prescan-source-quality`.
 - Scan export is version 2 and includes occurrence/source evidence. Imports remain compatible with version 1; source-sensitive import decisions use the stored scan job, not client-edited status fields.
 - A read-only old/new scan comparison is available as `scripts/prescan_cleanup_dry_run.py`. It does not delete or rewrite dictionary records.
 - Page-179 visual/manual check and the maqqef context fix are documented in `docs/narratum-prescan-source-quality-report.md` and `/tmp/narratum-prescan-inputs/page-179-review.md`.
+- **Pre-Scan Review Area & Filter Controls**:
+  - Embedded amber **Review Area Banner** in `src/components/doclist/ScanForeignWordsModal.tsx` showing the number of flagged words, a breakdown of stop-word/definition vs pronunciation issues, a toggle between `Filter to Flagged Words` and `Show All Words`, and a one-click `Export Flagged Words JSON` button.
+  - Filter tabs above the table (`All Words`, `⚠️ Flagged for Review`, `Missing Pronunciation`, `Has Definition`).
+  - Auto-switches `reviewFilter` to `'flagged'` upon importing scan files that have skipped/flagged words so users are immediately brought to the review view without hunting through thousands of rows.
+  - Dedicated `downloadFlaggedScanJson` that exports only the flagged terms, automatically pre-populating `omitDefinition: true` and `proposedDefinition: null` on Hebrew/Greek stop-words with invalid contextual definitions so they can be re-imported without manual JSON editing.
+  - Added inline `🚫 Omit definition` button on table rows for words flagged with definition review issues.
+- **Companion AI Agent Instructions Guide (`AI-INSTRUCTIONS.md`)**:
+  - Automatically generated companion Markdown guide (`generateForeignWordAiInstructions` in `src/lib/shared/foreign-word-scan-transfer.ts`) bundled with all JSON exports (full export, flagged export, and batch ZIP archives).
+  - Dedicated `📄 AI Agent Guide (.md)` button in the scan modal header for on-demand downloading of the guide.
+  - Defines strict editing rules: immutability of `word` key and read-only evidence, Kokoro TTS IPA formatting rules, 1–4 word single-meaning definition constraints, stop-word omission mandates, and before/after JSON examples.
+- **Deterministic Pronunciation Normalization**:
+  - Added centralized `normalizeKokoroPronunciationCandidate(word, raw)` to `src/lib/shared/kokoro-pronunciation-policy.ts`:
+    - Wraps bare phonemes with `/.../` forward slashes.
+    - Fixes malformed delimiter endings (e.g. `/]` or `/)` -> `/`).
+    - Strips markdown link wrappers (e.g. `[word](/ipa/)` or `[/ipa/]`).
+    - Strips unsupported primary and secondary stress markers (`[ˈˌ']`) to prevent Kokoro ghost syllable artifacts.
+    - Compacts inner whitespace between phonemes or syllables for single words (e.g. `/hɑː dɑːm/` -> `/hɑːdɑːm/`) while preserving comma-separated initialisms (e.g. `/K, T, L/`).
+    - Strips leading and trailing OCR digits (e.g. `118Lamaštu` -> `lɑːmɑʃtuː`).
+    - Enforces safety policy when a word term is provided (`isKokoroSafePronunciation`).
+  - Integrated across pre-scan route, JSON import route, global pronunciation rescan route, and Gemini repair requests.
+- **Stop-Word Auto-Omission on JSON Import**:
+  - `parseForeignWordScanImportDetailed` in `src/lib/shared/foreign-word-scan-transfer.ts` automatically converts stop-word/function-word glosses (`shouldOmitDictionaryDefinition(row.proposedDefinition)`) to `definition: null` with `omitDefinition: true` rather than rejecting them with `Invalid contextual definition`.
 
 ## Page 179 check already performed
 
@@ -36,14 +58,13 @@ The PDFs and original 2,055-entry v1 JSON are in `/tmp/narratum-prescan-inputs/`
 
 ## Current commits and checks
 
-Commits on this branch:
+Recent commits on `main`:
 
-- `6bd5dfc` complete-word tokenization and target-centered context.
-- `4f6816d` source-quality evidence and cache version 12.
-- `572c727` explicit Gemini source outcomes and one-pronunciation policy.
-- `e005b78` evidence-rich v2 transfer and trusted import guards.
-- `b3ab563` read-only cleanup comparison and report.
-- `99591d5` source-aware scan choice typing.
+- `745d234` feat(prescan): backport pronunciation normalization and stop-word handling across prescan and import
+- `d7a01eb` feat(prescan): companion markdown instructions for AI agent scan processing
+- `52cde3f` feat(prescan): add dedicated Review Area view, filter tabs, and flagged JSON export
+- `cbce1c8` feat(drama): wire Google Cloud Audio Drama pipeline into generation buttons
+- `d01a89f` feat(drama): support character importance, auto-assign minor voices, and voice previews
 - `a215b16` context punctuation preservation around Hebrew maqqef.
 
-Last verified: full unit suite 177 files / 1,321 tests; scanner Python tests 19; TypeScript; focused Gemini/Groq and transfer/import tests. Full route ESLint still reports numerous violations in the large pre-existing scan route; record the exact current result if lint is rerun. No live Gemini/Groq request, Kokoro synthesis, dictionary cleanup, deployment, or push was performed.
+Last verified: full unit suite 178 files / 1,345 tests passing; TypeScript: `tsc --noEmit` clean; `git diff --check` clean.
