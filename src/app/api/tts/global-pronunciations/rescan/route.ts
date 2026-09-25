@@ -12,7 +12,9 @@ import {
   buildKokoroPronunciationInstructions,
   getKokoroPronunciationQualityWarnings,
   isKokoroCompatiblePronunciation,
+  normalizeKokoroPronunciationCandidate,
 } from '@/lib/shared/kokoro-pronunciation-policy';
+
 import { resolvePronunciationAiModel } from '@/lib/shared/smart-audio-models';
 import { errorResponse } from '@/lib/server/errors/next-response';
 import { serverLogger } from '@/lib/server/logger';
@@ -50,8 +52,10 @@ function normalizeGeneratedPronunciation(value: unknown): string | null {
   const wrapped = trimmed.startsWith('/') && trimmed.endsWith('/')
     ? trimmed
     : `/${trimmed.replace(/^\/|\/$/g, '')}/`;
-  return isKokoroCompatiblePronunciation(wrapped) ? wrapped : null;
+  return normalizeKokoroPronunciationCandidate('', wrapped);
 }
+
+
 
 type SuspectPronunciation = {
   word: string;

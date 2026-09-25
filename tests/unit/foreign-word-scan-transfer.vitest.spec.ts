@@ -190,4 +190,81 @@ describe('foreign-word scan JSON transfer', () => {
     expect(flaggedGuide).toContain('Invalid contextual definition');
     expect(flaggedGuide).toContain('Invalid Kokoro pronunciation');
   });
+
+  it('normalizes malformed pronunciations on import (spaced phonemes, missing slashes, markdown links)', () => {
+    const documentId = 'doc-1';
+    const words = [
+      {
+        word: 'hāʾādām',
+        proposedPronunciation: '/hɑː dɑːm/', // Spaced phonemes
+        proposedDefinition: null,
+      },
+      {
+        word: 'בהמה',
+        proposedPronunciation: 'bəheɪmɑː', // Missing slashes
+        proposedDefinition: null,
+      },
+      {
+        word: 'λόγος',
+        proposedPronunciation: '[λόγος](/loʊɡɒs/])', // Markdown tag and typo
+        proposedDefinition: null,
+      },
+    ];
+    const allowed = new Set(['hāʾādām', 'בהמה', 'λόγος']);
+    const result = parseForeignWordScanImportDetailed({
+      format: 'openreader-foreign-word-scan',
+      version: 2,
+      documentId,
+      words,
+    }, documentId, allowed);
+
+    expect(result.skipped).toEqual([]);
+    expect(result.changes).toEqual([
+      { word: 'hāʾādām', pronunciation: '/hɑːdɑːm/' },
+      { word: 'בהמה', pronunciation: '/bəheɪmɑː/' },
+      { word: 'λόγος', pronunciation: '/loʊɡɒs/' },
+    ]);
+  });
+
+  it('automatically omits stop-words and function-word-only glosses on import without failing', () => {
+    const documentId = 'doc-1';
+    const words = [
+      {
+        word: 'הוּא',
+        proposedPronunciation: '/hu/',
+        proposedDefinition: 'he', // Function word / stop word
+      },
+      {
+        word: 'בָּהֶם',
+        proposedPronunciation: '/bɑhɛm/',
+        proposedDefinition: 'in them', // Function words
+      },
+      {
+        word: 'מִן',
+        proposedPronunciation: '/mɪn/',
+        proposedDefinition: 'from', // Preposition stop word
+      },
+      {
+        word: 'שלום',
+        proposedPronunciation: '/ʃəloʊm/',
+        proposedDefinition: 'peace', // Valid content word definition
+      },
+    ];
+    const allowed = new Set(['הוּא', 'בָּהֶם', 'מִן', 'שלום']);
+    const result = parseForeignWordScanImportDetailed({
+      format: 'openreader-foreign-word-scan',
+      version: 2,
+      documentId,
+      words,
+    }, documentId, allowed);
+
+
+    expect(result.skipped).toEqual([]);
+    expect(result.changes).toEqual([
+      { word: 'הוּא', pronunciation: '/hu/', definition: null },
+      { word: 'בָּהֶם', pronunciation: '/bɑhɛm/', definition: null },
+      { word: 'מִן', pronunciation: '/mɪn/', definition: null },
+      { word: 'שלום', pronunciation: '/ʃəloʊm/', definition: 'peace' },
+    ]);
+  });
 });

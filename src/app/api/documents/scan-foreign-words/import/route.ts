@@ -8,7 +8,11 @@ import { serverLogger } from '@/lib/server/logger';
 import { readBookLexicon, writeBookLexicon } from '@/lib/server/smart-audio/book-lexicon';
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
 import { parseForeignWordScanImportDetailed, type ForeignWordImportChange, type ForeignWordImportSkipped } from '@/lib/shared/foreign-word-scan-transfer';
-import { isKokoroSafePronunciation } from '@/lib/shared/kokoro-pronunciation-policy';
+import {
+  isKokoroSafePronunciation,
+  normalizeKokoroPronunciationCandidate,
+} from '@/lib/shared/kokoro-pronunciation-policy';
+
 import type { SmartAudioBookLexiconEntry } from '@/types/document-settings';
 
 const GREEK = /\p{Script=Greek}/u;
@@ -83,7 +87,8 @@ export async function POST(req: NextRequest) {
       }
       const pronunciation = change.pronunciation || prior?.pronunciation ||
         [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation]
-          .find((value): value is string => typeof value === 'string' && isKokoroSafePronunciation(change.word, value));
+          .map((value) => normalizeKokoroPronunciationCandidate(change.word, value))
+          .find((value): value is string => typeof value === 'string');
       if (!pronunciation) {
         skippedList.push({
           word: change.word,
@@ -110,7 +115,9 @@ export async function POST(req: NextRequest) {
       const prior = lexicon.entries[change.word];
       const pronunciation = change.pronunciation || prior?.pronunciation ||
         [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation]
-          .find((value): value is string => typeof value === 'string' && isKokoroSafePronunciation(change.word, value))!;
+          .map((value) => normalizeKokoroPronunciationCandidate(change.word, value))
+          .find((value): value is string => typeof value === 'string')!;
+
       const definition = change.definition !== undefined ? change.definition : prior?.definition || (typeof row.definition === 'string' ? row.definition : null);
       lexicon.entries[change.word] = {
         ...prior, term: change.word, pronunciation, definition,

@@ -1,8 +1,12 @@
-import { isKokoroSafePronunciation } from './kokoro-pronunciation-policy';
+import {
+  isKokoroSafePronunciation,
+  normalizeKokoroPronunciationCandidate,
+} from './kokoro-pronunciation-policy';
 import {
   normalizeDictionaryDefinition,
   shouldOmitDictionaryDefinition,
 } from './dictionary-definition-policy';
+
 
 export interface ForeignWordImportChange {
   word: string;
@@ -229,31 +233,28 @@ export function parseForeignWordScanImportDetailed(
     let wordError: string | null = null;
 
     if (hasProposedPronunciation) {
-      if (typeof row.proposedPronunciation !== 'string' || !isKokoroSafePronunciation(word, row.proposedPronunciation)) {
+      const normalizedPronunciation = normalizeKokoroPronunciationCandidate(word, row.proposedPronunciation);
+      if (!normalizedPronunciation) {
         wordError = `Invalid Kokoro pronunciation for ${word}.`;
       } else {
-        change.pronunciation = row.proposedPronunciation;
+        change.pronunciation = normalizedPronunciation;
       }
     }
 
     if (!wordError && row.omitDefinition === true) {
-      if (row.proposedDefinition !== null && row.proposedDefinition !== undefined) {
-        wordError = `Conflicting definition edits for ${word}.`;
-      } else {
-        change.definition = null;
-      }
+      change.definition = null;
     } else if (!wordError && row.proposedDefinition !== null && row.proposedDefinition !== undefined) {
-      if (typeof row.proposedDefinition !== 'string' || shouldOmitDictionaryDefinition(row.proposedDefinition)) {
+      if (typeof row.proposedDefinition !== 'string') {
         wordError = `Invalid contextual definition for ${word}.`;
+      } else if (shouldOmitDictionaryDefinition(row.proposedDefinition)) {
+        // Deterministic recovery: auto-omit stop-words and function-word-only glosses (e.g. "he", "in them", "from")
+        change.definition = null;
       } else {
         const definition = normalizeDictionaryDefinition(row.proposedDefinition);
-        if (!definition) {
-          wordError = `Invalid contextual definition for ${word}.`;
-        } else {
-          change.definition = definition;
-        }
+        change.definition = definition;
       }
     }
+
 
     if (wordError) {
       if (options.allowPartial) {

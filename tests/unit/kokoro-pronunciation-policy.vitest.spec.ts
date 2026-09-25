@@ -10,8 +10,10 @@ import {
   getKokoroPronunciationWordWarnings,
   KOKORO_COMPATIBILITY_POLICY,
   isKokoroSafePronunciation,
+  normalizeKokoroPronunciationCandidate,
   resolvePronunciationGuidance,
 } from '../../src/lib/shared/kokoro-pronunciation-policy';
+
 
 describe('Kokoro pronunciation policy', () => {
   test('uses the universal guidance unless a profile explicitly customizes it', () => {
@@ -202,5 +204,32 @@ describe('Kokoro pronunciation policy', () => {
     expect(source).not.toContain('KOKORO PRONUNCIATION COMPATIBILITY POLICY');
     expect(source).toContain('1. FIX OCR AND HYPHENATION');
     expect(source).toContain('12. SECTION HEADING PACING');
+  });
+
+  test('normalizes candidate pronunciations with delimiters, whitespace compacting, and stress stripping', () => {
+    // Delimiter wrapping
+    expect(normalizeKokoroPronunciationCandidate('λόγος', 'loʊɡɒs')).toBe('/loʊɡɒs/');
+    expect(normalizeKokoroPronunciationCandidate('λόγος', ' /loʊɡɒs/ ')).toBe('/loʊɡɒs/');
+    // Fixing closing delimiter typo
+    expect(normalizeKokoroPronunciationCandidate('λόγος', '/loʊɡɒs/]')).toBe('/loʊɡɒs/');
+    // Markdown link unwrapping
+    expect(normalizeKokoroPronunciationCandidate('λόγος', '[λόγος](/loʊɡɒs/)')).toBe('/loʊɡɒs/');
+    expect(normalizeKokoroPronunciationCandidate('λόγος', '[loʊɡɒs]')).toBe('/loʊɡɒs/');
+    // Stress mark stripping (Kokoro forbids primary stress ˈ)
+    expect(normalizeKokoroPronunciationCandidate('λόγος', '/loʊˈɡɒs/')).toBe('/loʊɡɒs/');
+    expect(normalizeKokoroPronunciationCandidate('בהמה', '/ˈbəheɪmɑː/')).toBe('/bəheɪmɑː/');
+    // Whitespace compacting for single words
+    expect(normalizeKokoroPronunciationCandidate('hāʾādām', '/hɑː dɑːm/')).toBe('/hɑːdɑːm/');
+    expect(normalizeKokoroPronunciationCandidate('בהמה', '/bə heɪ mɑː/')).toBe('/bəheɪmɑː/');
+    expect(normalizeKokoroPronunciationCandidate('Seekland', '/siːk lənd/')).toBe('/siːklənd/');
+    // Initialisms preserve comma separation
+    expect(normalizeKokoroPronunciationCandidate('κτλ', '/K, T, L/')).toBe('/K, T, L/');
+    expect(normalizeKokoroPronunciationCandidate('κτλ', '/K,T,L/')).toBe('/K, T, L/');
+    // Stripping OCR prefix digits
+    expect(normalizeKokoroPronunciationCandidate('118Lamaštu', '/118lɑːmɑʃtuː/')).toBe('/lɑːmɑʃtuː/');
+    // Invalid / unrecoverable candidates
+    expect(normalizeKokoroPronunciationCandidate('word', null)).toBeNull();
+    expect(normalizeKokoroPronunciationCandidate('word', '')).toBeNull();
+    expect(normalizeKokoroPronunciationCandidate('word', 'unsupported-xyz-!@#$')).toBeNull();
   });
 });

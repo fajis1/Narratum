@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import {
   getKokoroPronunciationQualityWarnings,
   isKokoroSafePronunciation,
+  normalizeKokoroPronunciationCandidate,
 } from '@/lib/shared/kokoro-pronunciation-policy';
+
 
 export const GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA = {
   type: 'array',
@@ -166,13 +168,17 @@ export function collectGeminiPronunciationRepairRequests(
     const result = resultsByTerm.get(term.term);
     if (result?.ocrFragment === true || isUnresolvedForeignWordOutcome(result)) return [];
     if (isRejectedLatinTransliteration(term, result)) return [];
-    const pronunciations = Array.isArray(result?.pronunciations) ? result.pronunciations : [];
-    const acceptedPronunciations = pronunciations
-      .filter((pronunciation): pronunciation is string => (
-        isKokoroSafePronunciation(term.term, pronunciation)
-      ))
-      .filter((pronunciation, index, all) => all.indexOf(pronunciation) === index);
-    const rejectedPronunciations = pronunciations.flatMap((pronunciation) => {
+    const rawPronunciations = Array.isArray(result?.pronunciations) ? result.pronunciations : [];
+    const normalizedMap = new Map<string, string>();
+    for (const raw of rawPronunciations) {
+      if (typeof raw === 'string') {
+        const normalized = normalizeKokoroPronunciationCandidate(term.term, raw);
+        if (normalized) normalizedMap.set(raw, normalized);
+      }
+    }
+    const acceptedPronunciations = [...new Set(normalizedMap.values())];
+    const rejectedPronunciations = rawPronunciations.flatMap((pronunciation) => {
+      if (typeof pronunciation === 'string' && normalizedMap.has(pronunciation)) return [];
       const violations = getKokoroPronunciationQualityWarnings(term.term, pronunciation);
       return violations.length > 0 ? [{ pronunciation, violations }] : [];
     });
@@ -181,7 +187,7 @@ export function collectGeminiPronunciationRepairRequests(
         pronunciation: null,
         violations: ['Gemini omitted this requested term.'],
       });
-    } else if (pronunciations.length === 0) {
+    } else if (rawPronunciations.length === 0) {
       rejectedPronunciations.push({
         pronunciation: null,
         violations: ['Gemini returned no pronunciation choices for this term.'],
@@ -209,9 +215,10 @@ export function mergeGeminiPronunciationRepairResults(
     const pronunciations = isUnresolvedForeignWordOutcome(repair) ? [] : [
       ...(Array.isArray(initial?.pronunciations) ? initial.pronunciations : []),
       ...(Array.isArray(repair.pronunciations) ? repair.pronunciations : []),
-    ].filter((pronunciation): pronunciation is string => (
-      isKokoroSafePronunciation(repair.term, pronunciation)
-    )).filter((pronunciation, index, all) => all.indexOf(pronunciation) === index).slice(0, 5);
+    ]
+      .map((pronunciation) => normalizeKokoroPronunciationCandidate(repair.term, pronunciation))
+      .filter((pronunciation): pronunciation is string => Boolean(pronunciation))
+      .filter((pronunciation, index, all) => all.indexOf(pronunciation) === index).slice(0, 5);
     merged.set(repair.term, {
       ...initial,
       ...repair,
@@ -220,6 +227,7 @@ export function mergeGeminiPronunciationRepairResults(
   }
   return [...merged.values()];
 }
+
 
 export interface ForeignWordScanJob extends Record<string, unknown> {
   id: string;

@@ -5,8 +5,15 @@ import { serverLogger } from '@/lib/server/logger';
 import { getDocumentBlob } from '@/lib/server/documents/blobstore';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
-import { buildKokoroPronunciationInstructions, isKokoroSafePronunciation } from '@/lib/shared/kokoro-pronunciation-policy';
+
+import {
+  buildKokoroPronunciationInstructions,
+  isKokoroSafePronunciation,
+  normalizeKokoroPronunciationCandidate,
+} from '@/lib/shared/kokoro-pronunciation-policy';
 import { resolvePronunciationAiModel, resolvePronunciationAiModels } from '@/lib/shared/smart-audio-models';
+
+
 import {
   isCompleteScholarScanScope,
   readBookLexicon,
@@ -260,9 +267,10 @@ export async function POST(req: NextRequest) {
         
         const overrides = activeProfile?.pronunciations || {};
         const compatibleOverrides = Object.fromEntries(
-          Object.entries(overrides).filter(([word, pronunciation]) => (
-            isKokoroSafePronunciation(word, pronunciation)
-          )),
+          Object.entries(overrides).flatMap(([word, pronunciation]) => {
+            const normalized = normalizeKokoroPronunciationCandidate(word, pronunciation);
+            return normalized ? [[word, normalized]] : [];
+          }),
         );
         const preExistingGlobalWords = new Set(Object.keys(globalDict));
         const preExistingCompatibleGlobalPhonetics = new Map(
@@ -270,13 +278,12 @@ export async function POST(req: NextRequest) {
             word,
             new Set(
               choices
-                .map((choice) => choice?.phonetic)
-                .filter((pronunciation): pronunciation is string => (
-                  isKokoroSafePronunciation(word, pronunciation)
-                )),
+                .map((choice) => normalizeKokoroPronunciationCandidate(word, choice?.phonetic))
+                .filter((pronunciation): pronunciation is string => Boolean(pronunciation)),
             ),
           ]),
         );
+
         const preExistingCompatibleGlobalWords = new Set(
           [...preExistingCompatibleGlobalPhonetics.entries()]
             .filter(([, pronunciations]) => pronunciations.size > 0)
@@ -285,8 +292,9 @@ export async function POST(req: NextRequest) {
         const geminiRecommendations: Record<string, string> = {};
         const existingLexicon = await readBookLexicon(userId, documentId);
         const lexiconEntries: Record<string, SmartAudioBookLexiconEntry> = {
-          ...(activeProfile && existingLexicon?.profileId === activeProfile.id ? existingLexicon.entries : {}),
+          ...(activeProfile && existingLexicon && existingLexicon.profileId === activeProfile.id ? existingLexicon.entries : {}),
         };
+
         for (const [term, entry] of Object.entries(lexiconEntries)) {
           const normalizedDefinition = normalizeDictionaryDefinition(entry.definition);
           if (entry.definition && normalizedDefinition !== entry.definition) {
@@ -313,11 +321,11 @@ export async function POST(req: NextRequest) {
         ]);
         const aliasLibraryRecords = Object.fromEntries([...aliasLibraryTerms].map((term) => {
           const globalPronunciation = (globalDict[term] || [])
-            .map((choice) => choice?.phonetic)
-            .find((pronunciation) => isKokoroSafePronunciation(term, pronunciation));
+            .map((choice) => normalizeKokoroPronunciationCandidate(term, choice?.phonetic))
+            .find((pronunciation): pronunciation is string => Boolean(pronunciation));
           return [term, {
             pronunciation: compatibleOverrides[term]
-              || lexiconEntries[term]?.pronunciation
+              || (lexiconEntries[term]?.pronunciation && normalizeKokoroPronunciationCandidate(term, lexiconEntries[term].pronunciation))
               || globalPronunciation
               || null,
             definition: lexiconEntries[term]?.definition || globalDefinitions[term] || null,
@@ -336,15 +344,15 @@ export async function POST(req: NextRequest) {
           const transliterationMatch = transliterationMatches.get(term);
           const userPron = compatibleOverrides[term] || null;
           const globalPron = preExistingCompatibleGlobalWords.has(term)
-            ? globalDict[term]
-              ?.map((choice) => choice?.phonetic)
-              .find((pronunciation) => isKokoroSafePronunciation(term, pronunciation)) || null
+            ? (globalDict[term] || [])
+              .map((choice) => normalizeKokoroPronunciationCandidate(term, choice?.phonetic))
+              .find((pronunciation): pronunciation is string => Boolean(pronunciation)) || null
             : null;
-          const aliasPronunciation = transliterationMatch?.pronunciation
-            && isKokoroSafePronunciation(term, transliterationMatch.pronunciation)
-            ? transliterationMatch.pronunciation
-            : null;
+          const aliasPronunciation = (transliterationMatch?.pronunciation
+            && normalizeKokoroPronunciationCandidate(term, transliterationMatch.pronunciation))
+            || null;
           const libraryPron = userPron || globalPron || aliasPronunciation;
+
           const libraryDefinition = globalDefinitions[term]
             || transliterationMatch?.definition
             || null;
@@ -384,14 +392,14 @@ export async function POST(req: NextRequest) {
             if (automaticOcrFragments.has(w.word)) return false;
             if (w.sourceStatus === 'needs_source_repair' && !compatibleOverrides[w.word]) return false;
             const transliterationPronunciation = transliterationMatches.get(w.word)?.pronunciation;
-            const compatibleGlobalChoices = (globalDict[w.word] || []).filter((choice) => (
-              isKokoroSafePronunciation(w.word, choice?.phonetic)
-            ));
+            const normalizedTransliteration = transliterationPronunciation
+              ? normalizeKokoroPronunciationCandidate(w.word, transliterationPronunciation)
+              : null;
+            const compatibleGlobalChoices = (globalDict[w.word] || [])
+              .map((choice) => normalizeKokoroPronunciationCandidate(w.word, choice?.phonetic))
+              .filter((phonetic): phonetic is string => Boolean(phonetic));
             const needsPronunciations = !compatibleOverrides[w.word]
-              && !(
-                transliterationPronunciation
-                && isKokoroSafePronunciation(w.word, transliterationPronunciation)
-              )
+              && !normalizedTransliteration
               && compatibleGlobalChoices.length === 0;
             const language = languageForTerm(w.word);
             const lexiconEntry = lexiconEntries[w.word];
@@ -428,15 +436,15 @@ export async function POST(req: NextRequest) {
             || sourceOutcomes.get(w.word) === 'needs_source_repair'
             || sourceOutcomes.get(w.word) === 'insufficient_context') && !userPronunciation;
           const globalPronunciation = !sourceBlocked && preExistingCompatibleGlobalWords.has(w.word)
-            ? globalDict[w.word]
-              ?.map((choice) => choice?.phonetic)
-              .find((pronunciation) => isKokoroSafePronunciation(w.word, pronunciation)) || null
+            ? (globalDict[w.word] || [])
+              .map((choice) => normalizeKokoroPronunciationCandidate(w.word, choice?.phonetic))
+              .find((pronunciation): pronunciation is string => Boolean(pronunciation)) || null
             : null;
           const transliterationPronunciation = !sourceBlocked && transliterationMatch?.pronunciation
-            && isKokoroSafePronunciation(w.word, transliterationMatch.pronunciation)
-            ? transliterationMatch.pronunciation
+            ? normalizeKokoroPronunciationCandidate(w.word, transliterationMatch.pronunciation)
             : null;
           const libraryPronunciation = userPronunciation || globalPronunciation || transliterationPronunciation;
+
           const globalChoices: Array<{ phonetic?: string; isInGlobalLibrary: boolean; isTransliterationMatch?: boolean }> =
             (sourceBlocked ? [] : globalDict[w.word] || []).map((item: { phonetic?: string } | string) => ({
             ...(typeof item === 'string' ? { phonetic: item } : item),
@@ -512,11 +520,12 @@ export async function POST(req: NextRequest) {
           const scanned = words.find((item: any) => item.word === word);
           const transliterationPronunciation = transliterationMatches.get(word)?.pronunciation;
           const existingSuggestion = (globalDict[word] || [])
-              .map((choice) => choice?.phonetic)
-              .find((choice) => isKokoroSafePronunciation(word, choice))
-            || (transliterationPronunciation && isKokoroSafePronunciation(word, transliterationPronunciation)
-              ? transliterationPronunciation
+              .map((choice) => normalizeKokoroPronunciationCandidate(word, choice?.phonetic))
+              .find((choice): choice is string => Boolean(choice))
+            || (transliterationPronunciation
+              ? normalizeKokoroPronunciationCandidate(word, transliterationPronunciation)
               : null);
+
           const wordLexicon = lexiconEnrichments.get(word) ?? null;
           return {
             term: word,
@@ -573,8 +582,9 @@ ${JSON.stringify(terms)}`;
           const baseOrder = forceUseBackupKey
             ? (['gemini_backup', 'gemini_primary', 'groq'] as ScanProvider[])
             : (activeProfile?.providerOrder ?? DEFAULT_PROVIDER_ORDER);
-          const orderedProviders = baseOrder
-            .filter((provider) => {
+          const orderedProviders = (baseOrder as ScanProvider[])
+            .filter((provider: ScanProvider) => {
+
               if (provider === 'gemini_primary') return Boolean(activeProfile?.geminiApiKey);
               if (provider === 'gemini_backup') return Boolean(activeProfile?.backupGeminiApiKey);
               if (provider === 'groq') return Boolean(activeProfile?.groqApiKey);
@@ -783,17 +793,19 @@ ${JSON.stringify(repairRequests)}`;
                 acceptedWords.add(w);
                 continue;
               }
-              const prons = Array.isArray(result.pronunciations) ? result.pronunciations : [];
-              const current = (globalDict[w] || []).filter((choice) => (
-                isKokoroSafePronunciation(w, choice?.phonetic)
-              ));
+              const prons = (Array.isArray(result.pronunciations) ? result.pronunciations : [])
+                .map((candidate) => normalizeKokoroPronunciationCandidate(w, candidate))
+                .filter((p): p is string => Boolean(p));
+              const current = (globalDict[w] || []).map((choice) => {
+                const normalized = normalizeKokoroPronunciationCandidate(w, choice?.phonetic);
+                return normalized ? { ...choice, phonetic: normalized } : null;
+              }).filter((choice): choice is { phonetic: string; usageCount: number; isUserCustom?: boolean; timestamp?: number } => Boolean(choice));
               const existingPhonetics = new Set(current.map(c => c.phonetic));
 
               for (const p of prons) {
                 if (
                   !compatibleOverrides[w]
                   && scanned?.sourceStatus !== 'source_review_recommended'
-                  && isKokoroSafePronunciation(w, p)
                   && !existingPhonetics.has(p)
                   && current.length < 5
                 ) {
@@ -811,10 +823,12 @@ ${JSON.stringify(repairRequests)}`;
               const pronunciation = compatibleOverrides[w]
                 || current[0]?.phonetic
                 || (transliterationMatches.get(w)?.pronunciation
-                  && isKokoroSafePronunciation(w, transliterationMatches.get(w)?.pronunciation)
-                  ? transliterationMatches.get(w)?.pronunciation
+                  && normalizeKokoroPronunciationCandidate(w, transliterationMatches.get(w)?.pronunciation)
+                  ? normalizeKokoroPronunciationCandidate(w, transliterationMatches.get(w)?.pronunciation)
                   : null)
-                || prons.find((candidate: string) => isKokoroSafePronunciation(w, candidate));
+                || prons[0]
+                || null;
+
               if (pronunciation) {
                 if (!geminiRecommendations[w] && !compatibleOverrides[w] && !preExistingCompatibleGlobalWords.has(w)) {
                   geminiRecommendations[w] = pronunciation;

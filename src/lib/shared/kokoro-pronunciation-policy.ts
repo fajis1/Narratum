@@ -250,3 +250,102 @@ export function filterKokoroCompatiblePronunciationRecord(value: unknown): Recor
   }
   return result;
 }
+
+/**
+ * Normalizes a candidate pronunciation string (e.g. from Gemini or imported JSON),
+ * repairing predictable formatting issues such as:
+ * - Unwrapping markdown markup: `[word](/ipa/)` or `[/ipa/]` or `[ipa]`
+ * - Fixing malformed delimiter endings: `/]` or `/)` -> `/`
+ * - Ensuring leading/trailing forward slash delimiters: `ipa` -> `/ipa/`
+ * - Stripping unsupported primary/secondary stress markers `[ˈˌ']` (which cause ghost syllables in Kokoro)
+ * - Removing vowel syllable boundary periods (e.g. `a.i` -> `ai`)
+ * - Compacting inner whitespace between phonemes/syllables for single words (e.g. `/hɑː dɑːm/` -> `/hɑːdɑːm/`)
+ * - Stripping leading/trailing digits or stray punctuation from phonemes
+ *
+ * Returns the normalized, safe slash-wrapped IPA string if valid, or null if unrecoverable.
+ */
+export function normalizeKokoroPronunciationCandidate(
+  word: string,
+  raw: unknown,
+): string | null {
+  if (typeof raw !== 'string') return null;
+  let text = raw.trim();
+  if (!text) return null;
+
+  // If the raw input has no slashes, no brackets, and no non-ASCII IPA characters,
+  // it is plain text (e.g. "not IPA", "plain text"), not an IPA candidate.
+  const hasDelimitersOrIpa = /[/[\]]/.test(text)
+    || /[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}ɑɒɔəɛɜɪʊæʌɨɐøœɯɤɵɚɝːˈˌθðʃʒŋʔʾʿ]/u.test(text);
+  if (!hasDelimitersOrIpa) {
+    return null;
+  }
+
+  // 1. Unwrap markdown tag if formatted as [word](/ipa/) or [/ipa/] or [word](!/ipa/)
+  const tagMatch = /\[[^\]]*\]\(!?\/([^/\r\n]+)\/?\)?/u.exec(text);
+  if (tagMatch) {
+    text = `/${tagMatch[1]}/`;
+  } else if (text.startsWith('[') && text.endsWith(']')) {
+    text = text.slice(1, -1).trim();
+  }
+
+  // 2. Strip surrounding quotes if present
+  text = text.replace(/^["'`]|["'`]$/gu, '').trim();
+
+  // 3. Fix malformed closing delimiter typos like /] or /)
+  text = text.replace(/\/[\)\]]+$/u, '/');
+
+  // 4. Ensure wrapping slashes
+  if (!text.startsWith('/')) text = `/${text}`;
+  if (!text.endsWith('/')) text = `${text}/`;
+
+  let inner = text.slice(1, -1).trim();
+  if (!inner) return null;
+
+  // 5. Strip stress markers (Kokoro bans primary stress ˈ because it causes ghost syllables)
+  inner = inner.replace(/[ˈˌ']/gu, '');
+
+  // 6. Strip leading/trailing digits if attached by OCR (e.g. 118 from 118Lamaštu)
+  inner = inner.replace(/^\d+|\d+$/gu, '');
+
+  // 7. Remove syllable-boundary periods between vowels (e.g. a.i -> ai)
+  inner = inner.replace(/([aeiouɑɒɔəɛɪʊ])\.([aeiouɑɒɔəɛɪʊ])/giu, '$1$2');
+
+  // 8. Strip trailing non-phoneme punctuation (e.g. stray commas, semicolons)
+  inner = inner.replace(/[,;]+$/gu, '').trim();
+
+  // Disallow non-phoneme symbols (e.g. !@#$%^&*+=<>~?)
+  if (/[^\p{L}\p{M}ː, \t'-]/u.test(inner)) {
+    return null;
+  }
+
+  // 9. For initialisms (e.g. /K, T, L/), normalize comma spacing.
+  // For single words (no whitespace in dictionary word), compact any whitespace
+  // between phonemes or syllables, e.g. "/hɑː dɑːm/" -> "/hɑːdɑːm/"
+  // (matches smart-audio-cleanup buildPronunciationLookup and scanPronunciationIssues)
+  const trimmedWord = typeof word === 'string' ? word.trim() : '';
+  const isInitialism = /^[A-Z](?:,\s*[A-Z])*$/u.test(inner);
+  if (isInitialism) {
+    inner = inner.replace(/,\s*/gu, ', ');
+  } else if (!trimmedWord || !/\s/u.test(trimmedWord)) {
+    inner = inner.replace(/\s+/gu, '');
+  }
+
+  if (!inner) return null;
+
+
+  const candidate = `/${inner}/`;
+
+
+  const strippedWord = trimmedWord.replace(/^\d+|\d+$/gu, '');
+  if (trimmedWord && isKokoroSafePronunciation(trimmedWord, candidate)) {
+    return candidate;
+  }
+  if (strippedWord && isKokoroSafePronunciation(strippedWord, candidate)) {
+    return candidate;
+  }
+  if (!trimmedWord && isKokoroCompatiblePronunciation(candidate)) {
+    return candidate;
+  }
+
+  return null;
+}
