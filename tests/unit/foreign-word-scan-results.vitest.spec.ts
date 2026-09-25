@@ -2,7 +2,9 @@ import { describe, expect, test } from 'vitest';
 import {
   getAutomaticForeignWordIgnoreReason,
   isAutomaticallyIgnoredForeignWord,
+  isFlaggedForReview,
   isLowValueForeignFunctionTerm,
+  isMissingPronunciation,
   prepareForeignWordScanRows,
   sortForeignWordScanRows,
 } from '@/lib/shared/foreign-word-scan-results';
@@ -74,5 +76,23 @@ describe('foreign-word scan result preparation', () => {
     expect(sortForeignWordScanRows(prepared)[0].word).toBe('λόγος');
     expect(sortForeignWordScanRows(prepared, { pinMissingFirst: true })[0].word)
       .toBe('Θεσμοφόρος');
+  });
+
+  test('correctly identifies rows flagged for review', () => {
+    expect(isFlaggedForReview({ word: 'test', importWarning: 'Invalid Kokoro pronunciation for test.' })).toBe(true);
+    expect(isFlaggedForReview({ word: 'test', definitionNeedsReview: true })).toBe(true);
+    expect(isFlaggedForReview({ word: 'test', sourceStatus: 'needs_source_repair' })).toBe(true);
+    expect(isFlaggedForReview({ word: 'test', sourceOutcome: 'needs_source_repair' })).toBe(true);
+    expect(isFlaggedForReview({ word: 'test', sourceStatus: 'source_review_recommended' })).toBe(true);
+    expect(isFlaggedForReview({ word: 'test', sourceOutcome: 'insufficient_context' })).toBe(true);
+    expect(isFlaggedForReview({ word: 'test', qualityFlags: ['import_validation_failed'] })).toBe(true);
+    expect(isFlaggedForReview({ word: 'test', pronunciations: ['/test/'] })).toBe(false);
+  });
+
+  test('correctly identifies missing pronunciations', () => {
+    expect(isMissingPronunciation({ word: 'test' })).toBe(true);
+    expect(isMissingPronunciation({ word: 'test', pronunciations: [] })).toBe(true);
+    expect(isMissingPronunciation({ word: 'test', pronunciations: ['/test/'] })).toBe(false);
+    expect(isMissingPronunciation({ word: 'test', pronunciations: [], userOverride: '/override/' })).toBe(false);
   });
 });

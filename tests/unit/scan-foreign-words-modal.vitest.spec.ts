@@ -128,4 +128,13 @@ describe('foreign-word scan modal', () => {
     expect(source).toContain('Global library');
     expect(source).toContain('Personal library —');
   });
+
+  test('offers a dedicated Review Area with filters and flagged JSON export', () => {
+    expect(source).toContain('Review Area · {flaggedWordsCount} word');
+    expect(source).toContain('Flagged for Review ({flaggedWordsCount})');
+    expect(source).toContain('Export Flagged Words JSON ({flaggedWordsCount})');
+    expect(source).toContain('downloadFlaggedScanJson');
+    expect(source).toContain("setReviewFilter('flagged')");
+    expect(source).toContain('🚫 Omit definition');
+  });
 });

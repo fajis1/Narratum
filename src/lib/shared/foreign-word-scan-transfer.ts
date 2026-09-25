@@ -34,6 +34,7 @@ export interface ForeignWordScanTransfer {
     proposedPronunciation: string | null;
     proposedDefinition: string | null;
     omitDefinition: boolean;
+    importWarning?: string | null;
   }>;
 }
 
@@ -41,6 +42,7 @@ export interface ExportForeignWordScanOptions {
   compactForAi?: boolean;
   partIndex?: number;
   totalParts?: number;
+  sanitizeStopWords?: boolean;
 }
 
 export interface ForeignWordScanBatch {
@@ -116,7 +118,12 @@ export function exportForeignWordScan(
       currentDefinition: typeof row.definition === 'string' ? row.definition : null,
       proposedPronunciation: null,
       proposedDefinition: null,
-      omitDefinition: false,
+      omitDefinition: Boolean(
+        options?.sanitizeStopWords
+        && (shouldOmitDictionaryDefinition(row.definition)
+          || (typeof row.importWarning === 'string' && row.importWarning.includes('Invalid contextual definition'))),
+      ),
+      importWarning: typeof row.importWarning === 'string' ? row.importWarning : null,
     })),
   };
 }

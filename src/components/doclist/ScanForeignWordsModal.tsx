@@ -7,6 +7,8 @@ import { BookPronunciationInspectorModal } from './BookPronunciationInspectorMod
 import { matchesTransliteratedTerm } from '@/lib/shared/transliteration-search';
 import {
   isAutomaticallyIgnoredForeignWord,
+  isFlaggedForReview,
+  isMissingPronunciation,
   prepareForeignWordScanRows,
   sortForeignWordScanRows,
 } from '@/lib/shared/foreign-word-scan-results';
@@ -108,15 +110,62 @@ export function ScanForeignWordsModal({
   const previewAbortController = useRef<AbortController | null>(null);
   const activePreviewAudio = useRef<HTMLAudioElement | null>(null);
   const activePreviewUrl = useRef<string | null>(null);
+  const [reviewFilter, setReviewFilter] = useState<'all' | 'flagged' | 'missing' | 'has_definition'>('all');
   const preparedWords = useMemo(() => prepareForeignWordScanRows(words), [words]);
   const ignoredWordCount = useMemo(
     () => preparedWords.filter(isAutomaticallyIgnoredForeignWord).length,
     [preparedWords],
   );
+  const reviewableWords = useMemo(
+    () => preparedWords.filter((word) => !isAutomaticallyIgnoredForeignWord(word)),
+    [preparedWords],
+  );
+  const totalReviewableCount = reviewableWords.length;
+  const flaggedWordsCount = useMemo(
+    () => reviewableWords.filter(isFlaggedForReview).length,
+    [reviewableWords],
+  );
+  const missingWordsCount = useMemo(
+    () => reviewableWords.filter(isMissingPronunciation).length,
+    [reviewableWords],
+  );
+  const definedWordsCount = useMemo(
+    () => reviewableWords.filter((w) => typeof w.definition === 'string' && w.definition.length > 0).length,
+    [reviewableWords],
+  );
+  const skippedDefinitionsCount = useMemo(
+    () => reviewableWords.filter((w) => {
+      const warning = typeof w.importWarning === 'string' ? w.importWarning : '';
+      return warning.includes('Invalid contextual definition') || warning.includes('definition');
+    }).length,
+    [reviewableWords],
+  );
+  const skippedPronunciationsCount = useMemo(
+    () => reviewableWords.filter((w) => {
+      const warning = typeof w.importWarning === 'string' ? w.importWarning : '';
+      return warning.includes('Invalid Kokoro pronunciation') || warning.includes('pronunciation');
+    }).length,
+    [reviewableWords],
+  );
   const sortedReviewableWords = useMemo(() => sortForeignWordScanRows(
-    preparedWords.filter((word) => !isAutomaticallyIgnoredForeignWord(word)),
+    reviewableWords,
     { pinMissingFirst: sortMissingFirst },
-  ), [preparedWords, sortMissingFirst]);
+  ), [reviewableWords, sortMissingFirst]);
+
+  const displayedWords = useMemo(() => {
+    let list = sortedReviewableWords;
+    if (reviewFilter === 'flagged') {
+      list = list.filter(isFlaggedForReview);
+    } else if (reviewFilter === 'missing') {
+      list = list.filter(isMissingPronunciation);
+    } else if (reviewFilter === 'has_definition') {
+      list = list.filter((w) => typeof w.definition === 'string' && w.definition.length > 0);
+    }
+    if (searchQuery) {
+      list = list.filter((w) => matchesTransliteratedTerm(w.word, searchQuery));
+    }
+    return list;
+  }, [sortedReviewableWords, reviewFilter, searchQuery]);
 
   useEffect(() => {
     modalSession.current += 1;
@@ -129,6 +178,7 @@ export function ScanForeignWordsModal({
       setOnlyNewPronunciations(false);
       setGenerateOnlyForNewWords(true);
       setSearchQuery('');
+      setReviewFilter('all');
       setPanelWidth(null);
       setScanJobStatus('idle');
       setScanJobStage('idle');
@@ -506,6 +556,25 @@ export function ScanForeignWordsModal({
     setTimeout(() => URL.revokeObjectURL(url), 1_000);
   };
 
+  const downloadFlaggedScanJson = () => {
+    if (!activeDocId || words.length === 0) return;
+    const flaggedList = words.filter(isFlaggedForReview);
+    if (flaggedList.length === 0) {
+      toast('No words are currently flagged for review.', { icon: 'ℹ️' });
+      return;
+    }
+    const payload = exportForeignWordScan(activeDocId, flaggedList, { sanitizeStopWords: true });
+    payload.instructions = `Flagged for review export (${flaggedList.length} words). Correct proposedPronunciation or proposedDefinition for verified terms. Stop-words that should not be defined in audio have been set to omitDefinition: true so they can be safely re-imported. Import back into OpenReader once edits are complete.`;
+
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `foreign-words-${activeDocId}-flagged-for-review.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    toast.success(`Exported ${flaggedList.length} flagged words for review.`);
+  };
+
   const downloadScanBatchesZip = async () => {
     if (!activeDocId || words.length === 0) return;
     setExportingBatches(true);
@@ -611,14 +680,15 @@ export function ScanForeignWordsModal({
       if (!response.ok) throw new Error(data.error || 'Import failed.');
       setWords(data.words);
       if (Array.isArray(data.skipped) && data.skipped.length > 0) {
+        setReviewFilter('flagged');
         if (data.imported > 0) {
           toast(
-            `Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'}; ${data.skipped.length} word${data.skipped.length === 1 ? '' : 's'} skipped and flagged for review.`,
-            { icon: '⚠️', duration: 6000 }
+            `Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'}; ${data.skipped.length} word${data.skipped.length === 1 ? '' : 's'} skipped and flagged for review in Review Area.`,
+            { icon: '⚠️', duration: 7000 }
           );
         } else {
           toast.error(
-            `No edits imported: ${data.skipped.length} word${data.skipped.length === 1 ? '' : 's'} had validation errors and ${data.skipped.length === 1 ? 'was' : 'were'} flagged for review.`,
+            `No edits imported: ${data.skipped.length} word${data.skipped.length === 1 ? '' : 's'} had validation errors and ${data.skipped.length === 1 ? 'was' : 'were'} flagged for review in Review Area.`,
             { duration: 8000 }
           );
         }
@@ -1265,19 +1335,118 @@ export function ScanForeignWordsModal({
         </div>
         <div className="p-4 overflow-y-auto flex-1">
           {hasScanned && (
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <input
-                type="text"
-                placeholder="Search words..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full max-w-sm px-3 py-1.5 text-sm border rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-1 focus:ring-accent"
-              />
-              <button type="button" onClick={downloadScanJson} disabled={!activeDocId || words.length === 0} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Export all words JSON</button>
-              <button type="button" onClick={downloadScanBatchesZip} disabled={!activeDocId || words.length === 0 || exportingBatches} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50" title="Split into compact ~100-word batch files in a ZIP archive for LLMs like Gemini Flash 3.1 Pro">{exportingBatches ? 'Packaging ZIP…' : 'Export Batches (100 / ZIP)'}</button>
-              <button type="button" onClick={() => importFileRef.current?.click()} disabled={!scanJobId || scanActive || importingWords} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">{importingWords ? 'Importing…' : 'Import edited JSON'}</button>
-              <input ref={importFileRef} type="file" accept="application/json,.json,.zip,application/zip" multiple className="hidden" aria-label="Import edited foreign-word scan JSON or ZIP" onChange={(event) => { const files = event.target.files; if (files && files.length > 0) void importScanJson(files); }} />
-              <p className="w-full text-xs text-soft">The export includes source pages and quality evidence. Use <strong>Export Batches</strong> to split large scans into ~100-word chunks for AI processing (e.g. Gemini Flash/Pro). Fill proposedPronunciation or proposedDefinition for verified words, then import edited JSON or ZIP files back into this document.</p>
+            <div className="mb-4 flex flex-col gap-3">
+              {flaggedWordsCount > 0 && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-50/80 p-3.5 dark:border-amber-500/30 dark:bg-amber-950/30">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">⚠️</span>
+                        <h4 className="text-sm font-bold text-amber-900 dark:text-amber-200">
+                          Review Area · {flaggedWordsCount} word{flaggedWordsCount === 1 ? '' : 's'} flagged for review
+                        </h4>
+                      </div>
+                      <p className="text-xs text-amber-800 dark:text-amber-300">
+                        These terms were skipped during import or flagged for manual review due to invalid phonetics, disallowed stop-word definitions, or source issues.
+                      </p>
+                      <div className="flex flex-wrap gap-2 text-[11px] text-amber-800 dark:text-amber-300">
+                        {skippedDefinitionsCount > 0 && (
+                          <span className="rounded bg-amber-200/70 px-1.5 py-0.5 font-medium dark:bg-amber-900/60">
+                            {skippedDefinitionsCount} stop-word / definition issue{skippedDefinitionsCount === 1 ? '' : 's'}
+                          </span>
+                        )}
+                        {skippedPronunciationsCount > 0 && (
+                          <span className="rounded bg-amber-200/70 px-1.5 py-0.5 font-medium dark:bg-amber-900/60">
+                            {skippedPronunciationsCount} invalid Kokoro phonetics
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={downloadFlaggedScanJson}
+                        className="rounded bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-amber-700"
+                        title="Download a dedicated JSON patch containing only these flagged words ready to repair or pass to an AI"
+                      >
+                        Export Flagged Words JSON ({flaggedWordsCount}) 📥
+                      </button>
+                      {reviewFilter === 'flagged' ? (
+                        <button
+                          type="button"
+                          onClick={() => setReviewFilter('all')}
+                          className="rounded border border-amber-600/40 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100/50 dark:bg-gray-800 dark:text-amber-200"
+                        >
+                          Show All Words ({totalReviewableCount})
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setReviewFilter('flagged')}
+                          className="rounded border border-amber-600/40 bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-500/30 dark:text-amber-200"
+                        >
+                          Filter to Flagged Words ({flaggedWordsCount})
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Filter Tabs Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 dark:border-gray-700 pb-2">
+                <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                  <span className="font-semibold text-gray-500 dark:text-gray-400 mr-1">Filter:</span>
+                  <button
+                    type="button"
+                    onClick={() => setReviewFilter('all')}
+                    className={`px-2.5 py-1 rounded-full font-medium transition-colors ${reviewFilter === 'all' ? 'bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-900' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300'}`}
+                  >
+                    All Words ({totalReviewableCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReviewFilter('flagged')}
+                    className={`px-2.5 py-1 rounded-full font-medium transition-colors ${reviewFilter === 'flagged' ? 'bg-amber-600 text-white font-semibold' : flaggedWordsCount > 0 ? 'bg-amber-100 text-amber-900 hover:bg-amber-200 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-400/40 font-semibold' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300'}`}
+                  >
+                    ⚠️ Flagged for Review ({flaggedWordsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReviewFilter('missing')}
+                    className={`px-2.5 py-1 rounded-full font-medium transition-colors ${reviewFilter === 'missing' ? 'bg-red-600 text-white font-semibold' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300'}`}
+                  >
+                    Missing Pronunciation ({missingWordsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReviewFilter('has_definition')}
+                    className={`px-2.5 py-1 rounded-full font-medium transition-colors ${reviewFilter === 'has_definition' ? 'bg-blue-600 text-white font-semibold' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300'}`}
+                  >
+                    Has Definition ({definedWordsCount})
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Search words..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full max-w-sm px-3 py-1.5 text-sm border rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-1 focus:ring-accent"
+                />
+                <button type="button" onClick={downloadScanJson} disabled={!activeDocId || words.length === 0} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Export all words JSON</button>
+                <button type="button" onClick={downloadScanBatchesZip} disabled={!activeDocId || words.length === 0 || exportingBatches} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50" title="Split into compact ~100-word batch files in a ZIP archive for LLMs like Gemini Flash 3.1 Pro">{exportingBatches ? 'Packaging ZIP…' : 'Export Batches (100 / ZIP)'}</button>
+                {flaggedWordsCount > 0 && (
+                  <button type="button" onClick={downloadFlaggedScanJson} className="rounded border border-amber-500/50 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-900 dark:text-amber-200 hover:bg-amber-500/25">
+                    Export Flagged Words JSON ({flaggedWordsCount})
+                  </button>
+                )}
+                <button type="button" onClick={() => importFileRef.current?.click()} disabled={!scanJobId || scanActive || importingWords} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">{importingWords ? 'Importing…' : 'Import edited JSON'}</button>
+                <input ref={importFileRef} type="file" accept="application/json,.json,.zip,application/zip" multiple className="hidden" aria-label="Import edited foreign-word scan JSON or ZIP" onChange={(event) => { const files = event.target.files; if (files && files.length > 0) void importScanJson(files); }} />
+                <p className="w-full text-xs text-soft">The export includes source pages and quality evidence. Use <strong>Export Batches</strong> to split large scans into ~100-word chunks for AI processing (e.g. Gemini Flash/Pro). Fill proposedPronunciation or proposedDefinition for verified words, then import edited JSON or ZIP files back into this document.</p>
+              </div>
             </div>
           )}
           {!activeDocId ? (
@@ -1325,6 +1494,24 @@ export function ScanForeignWordsModal({
             <div className="p-4 text-gray-500">
               No reviewable foreign words found. Automatically ignored {ignoredWordCount} extraction artifact{ignoredWordCount === 1 ? '' : 's'}, low-value function term{ignoredWordCount === 1 ? '' : 's'}, or rejected Latin transliteration candidate{ignoredWordCount === 1 ? '' : 's'}.
             </div>
+          ) : displayedWords.length === 0 ? (
+            <div className="rounded-lg border border-line bg-surface p-8 text-center text-gray-500">
+              {reviewFilter === 'flagged' ? (
+                <div className="space-y-2">
+                  <p className="font-semibold text-accent">🎉 No words are currently flagged for review!</p>
+                  <p className="text-xs text-soft">All words in this scan have passed validation or have already been reviewed.</p>
+                  <button
+                    type="button"
+                    onClick={() => setReviewFilter('all')}
+                    className="mt-2 rounded bg-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200"
+                  >
+                    Show All Words ({totalReviewableCount})
+                  </button>
+                </div>
+              ) : (
+                <p>No words match the selected filter or search query.</p>
+              )}
+            </div>
           ) : (
             <>
             {ignoredWordCount > 0 && (
@@ -1350,14 +1537,13 @@ export function ScanForeignWordsModal({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {sortedReviewableWords
-                  .filter((w) => !searchQuery || matchesTransliteratedTerm(w.word, searchQuery))
-                  .map((w, i) => {
-                  const isMissing = (!w.pronunciations || w.pronunciations.length === 0) && !w.userOverride;
+                {displayedWords.map((w, i) => {
+                  const isMissing = isMissingPronunciation(w);
+                  const isFlagged = isFlaggedForReview(w);
                   const needsSourceRepair = w.sourceStatus === 'needs_source_repair' || w.sourceOutcome === 'needs_source_repair';
                   const sourceReviewRecommended = !needsSourceRepair && (w.sourceStatus === 'source_review_recommended' || w.sourceOutcome === 'insufficient_context');
                   return (
-                  <tr key={i} className={`transition-colors ${isMissing ? 'bg-amber-50/60 dark:bg-amber-950/20 hover:bg-amber-100/60 dark:hover:bg-amber-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'}`}>
+                  <tr key={i} className={`transition-colors ${w.importWarning ? 'bg-amber-100/50 dark:bg-amber-950/40 hover:bg-amber-100/70 dark:hover:bg-amber-900/40' : isMissing ? 'bg-amber-50/60 dark:bg-amber-950/20 hover:bg-amber-100/60 dark:hover:bg-amber-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'}`}>
                     <td className="px-4 py-3 font-medium text-lg text-gray-900 dark:text-gray-100 align-top [overflow-wrap:anywhere]">
                       <div className="flex flex-col gap-1">
                         <span>{w.word}</span>
@@ -1606,16 +1792,28 @@ export function ScanForeignWordsModal({
                               Double-check this definition
                             </p>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingDefinition(w.word);
-                              setDefinitionEditValue(w.definition || '');
-                            }}
-                            className="mt-1 block text-[10px] font-semibold text-blue-600 hover:underline dark:text-blue-400"
-                          >
-                            Edit definition
-                          </button>
+                          <div className="mt-1 flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingDefinition(w.word);
+                                setDefinitionEditValue(w.definition || '');
+                              }}
+                              className="text-[10px] font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                            >
+                              Edit definition
+                            </button>
+                            {(w.definitionNeedsReview || (typeof w.importWarning === 'string' && w.importWarning.includes('definition'))) && (
+                              <button
+                                type="button"
+                                onClick={() => void saveDefinition(w.word, '')}
+                                className="text-[10px] font-semibold text-amber-700 hover:underline dark:text-amber-300"
+                                title="Omit this definition from audiobook narration"
+                              >
+                                🚫 Omit definition
+                              </button>
+                            )}
+                          </div>
                         </div>
                       ) : (
                         <div>

@@ -167,9 +167,18 @@ export function prepareForeignWordScanRows<T extends ForeignWordScanResultRow>(
   return rows;
 }
 
-function isMissingPronunciation(row: ForeignWordScanResultRow): boolean {
+export function isMissingPronunciation(row: ForeignWordScanResultRow): boolean {
   return (!Array.isArray(row.pronunciations) || row.pronunciations.length === 0)
     && !row.userOverride;
+}
+
+export function isFlaggedForReview(row: ForeignWordScanResultRow): boolean {
+  if (Boolean(row.importWarning)) return true;
+  if (row.definitionNeedsReview === true) return true;
+  if (row.sourceStatus === 'needs_source_repair' || row.sourceOutcome === 'needs_source_repair') return true;
+  if (row.sourceStatus === 'source_review_recommended' || row.sourceOutcome === 'insufficient_context') return true;
+  if (Array.isArray(row.qualityFlags) && row.qualityFlags.includes('import_validation_failed')) return true;
+  return false;
 }
 
 export function sortForeignWordScanRows<T extends ForeignWordScanResultRow>(
