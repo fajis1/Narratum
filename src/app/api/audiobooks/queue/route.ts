@@ -399,10 +399,48 @@ export async function DELETE(req: NextRequest) {
     
     const url = new URL(req.url);
     const id = url.searchParams.get('id');
-    if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 });
+    const idsParam = url.searchParams.get('ids');
+    const clear = url.searchParams.get('clear');
 
-    await db.delete(audiobookJobs).where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId)));
-    return NextResponse.json({ success: true });
+    if (!id && !idsParam && !clear) {
+      return NextResponse.json({ error: 'Missing id, ids, or clear action' }, { status: 400 });
+    }
+
+    if (id) {
+      await db.delete(audiobookJobs).where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId)));
+      return NextResponse.json({ success: true });
+    }
+
+    if (idsParam) {
+      const ids = idsParam.split(',').map((s) => s.trim()).filter(Boolean);
+      if (ids.length > 0) {
+        await db.delete(audiobookJobs).where(and(inArray(audiobookJobs.id, ids), eq(audiobookJobs.userId, ctxOrRes.userId)));
+      }
+      return NextResponse.json({ success: true, count: ids.length });
+    }
+
+    if (clear === 'completed') {
+      await db.delete(audiobookJobs)
+        .where(and(eq(audiobookJobs.userId, ctxOrRes.userId), eq(audiobookJobs.status, 'completed')));
+      return NextResponse.json({ success: true, cleared: 'completed' });
+    }
+
+    if (clear === 'error' || clear === 'failed') {
+      await db.delete(audiobookJobs)
+        .where(and(eq(audiobookJobs.userId, ctxOrRes.userId), eq(audiobookJobs.status, 'error')));
+      return NextResponse.json({ success: true, cleared: 'failed' });
+    }
+
+    if (clear === 'finished' || clear === 'all_inactive' || clear === 'inactive') {
+      await db.delete(audiobookJobs)
+        .where(and(
+          eq(audiobookJobs.userId, ctxOrRes.userId),
+          inArray(audiobookJobs.status, ['completed', 'error'])
+        ));
+      return NextResponse.json({ success: true, cleared: 'finished' });
+    }
+
+    return NextResponse.json({ error: 'Invalid clear parameter' }, { status: 400 });
   } catch (error) {
     serverLogger.error({ event: 'audiobook.queue.delete.error', error: errorToLog(error) }, 'Failed to delete audiobook job');
     return errorResponse(error, { apiErrorMessage: 'Failed to delete audiobook job' });
@@ -416,8 +454,17 @@ export async function PUT(req: NextRequest) {
     if (!ctxOrRes.userId) return new NextResponse('Unauthorized', { status: 401 });
     
     const body = await req.json();
-    const { id } = body;
-    if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 });
+    const { id, requeueAllFailed } = body;
+    if (!id && !requeueAllFailed) return NextResponse.json({ error: 'Missing id or requeueAllFailed' }, { status: 400 });
+
+    if (requeueAllFailed === true) {
+      await db.update(audiobookJobs)
+        .set({ status: 'queued', error: null, progress: 0, startedAt: null, updatedAt: Date.now() })
+        .where(and(eq(audiobookJobs.status, 'error'), eq(audiobookJobs.userId, ctxOrRes.userId)));
+      runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
+      wakeAudiobookQueue();
+      return NextResponse.json({ success: true });
+    }
 
     await db.update(audiobookJobs)
       .set({ status: 'queued', error: null, progress: 0, startedAt: null, updatedAt: Date.now() })
