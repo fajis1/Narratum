@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   exportForeignWordScan,
   exportForeignWordScanBatches,
+  generateForeignWordAiInstructions,
   parseForeignWordScanImport,
   parseForeignWordScanImportDetailed,
 } from '@/lib/shared/foreign-word-scan-transfer';
@@ -170,5 +171,23 @@ describe('foreign-word scan JSON transfer', () => {
     const allowed = new Set(manyRows.map((r) => r.word));
     const changes = parseForeignWordScanImport(batches[0].payload, documentId, allowed);
     expect(changes).toEqual([{ word: 'worda', pronunciation: '/wɜːrd/' }]);
+  });
+
+  it('generates comprehensive markdown AI instructions covering Kokoro phonetics and stop-words', () => {
+    const guide = generateForeignWordAiInstructions({ documentId: 'book-1', totalWords: 150 });
+    expect(guide).toContain('# OpenReader AI Agent Guide: Processing Foreign Word Scans');
+    expect(guide).toContain('book-1');
+    expect(guide).toContain('150 words');
+    expect(guide).toContain('proposedPronunciation');
+    expect(guide).toContain('proposedDefinition');
+    expect(guide).toContain('omitDefinition');
+    expect(guide).toContain('Kokoro Pronunciation Guidelines');
+    expect(guide).toContain('NO Grammatical Stop-Words');
+    expect(guide).toContain('הוּא');
+
+    const flaggedGuide = generateForeignWordAiInstructions({ documentId: 'book-1', totalWords: 25, isFlaggedExport: true });
+    expect(flaggedGuide).toContain('Handling Flagged Words');
+    expect(flaggedGuide).toContain('Invalid contextual definition');
+    expect(flaggedGuide).toContain('Invalid Kokoro pronunciation');
   });
 });

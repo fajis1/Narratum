@@ -12,7 +12,11 @@ import {
   prepareForeignWordScanRows,
   sortForeignWordScanRows,
 } from '@/lib/shared/foreign-word-scan-results';
-import { exportForeignWordScan, exportForeignWordScanBatches } from '@/lib/shared/foreign-word-scan-transfer';
+import {
+  exportForeignWordScan,
+  exportForeignWordScanBatches,
+  generateForeignWordAiInstructions,
+} from '@/lib/shared/foreign-word-scan-transfer';
 
 type SuspectPronunciation = {
   word: string;
@@ -545,15 +549,39 @@ export function ScanForeignWordsModal({
     }
   };
 
+  const triggerDownload = (filename: string, content: string, mimeType: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type: mimeType }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1_500);
+  };
+
+  const downloadAiInstructions = (isFlagged = false) => {
+    if (!activeDocId) return;
+    const count = isFlagged ? flaggedWordsCount : words.length;
+    const instructions = generateForeignWordAiInstructions({
+      documentId: activeDocId,
+      totalWords: count,
+      isFlaggedExport: isFlagged,
+    });
+    const filename = isFlagged
+      ? `foreign-words-${activeDocId}-flagged-AI-INSTRUCTIONS.md`
+      : `foreign-words-${activeDocId}-AI-INSTRUCTIONS.md`;
+    triggerDownload(filename, instructions, 'text/markdown;charset=utf-8');
+    toast.success('Downloaded AI agent instructions (.md).');
+  };
+
   const downloadScanJson = () => {
     if (!activeDocId || words.length === 0) return;
     const payload = exportForeignWordScan(activeDocId, words);
-    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `foreign-words-${activeDocId}.json`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    triggerDownload(`foreign-words-${activeDocId}.json`, JSON.stringify(payload, null, 2), 'application/json');
+    const instructions = generateForeignWordAiInstructions({ documentId: activeDocId, totalWords: words.length });
+    setTimeout(() => {
+      triggerDownload(`foreign-words-${activeDocId}-AI-INSTRUCTIONS.md`, instructions, 'text/markdown;charset=utf-8');
+    }, 400);
+    toast.success('Exported all words JSON and companion AI-INSTRUCTIONS.md.');
   };
 
   const downloadFlaggedScanJson = () => {
@@ -564,15 +592,18 @@ export function ScanForeignWordsModal({
       return;
     }
     const payload = exportForeignWordScan(activeDocId, flaggedList, { sanitizeStopWords: true });
-    payload.instructions = `Flagged for review export (${flaggedList.length} words). Correct proposedPronunciation or proposedDefinition for verified terms. Stop-words that should not be defined in audio have been set to omitDefinition: true so they can be safely re-imported. Import back into OpenReader once edits are complete.`;
+    payload.instructions = `Flagged for review export (${flaggedList.length} words). Correct proposedPronunciation or proposedDefinition for verified terms. Stop-words that should not be defined in audio have been set to omitDefinition: true so they can be safely re-imported. See the accompanying AI-INSTRUCTIONS.md for Kokoro phonetic and definition formatting rules. Import back into OpenReader once edits are complete.`;
 
-    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `foreign-words-${activeDocId}-flagged-for-review.json`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1_000);
-    toast.success(`Exported ${flaggedList.length} flagged words for review.`);
+    triggerDownload(`foreign-words-${activeDocId}-flagged-for-review.json`, JSON.stringify(payload, null, 2), 'application/json');
+    const instructions = generateForeignWordAiInstructions({
+      documentId: activeDocId,
+      totalWords: flaggedList.length,
+      isFlaggedExport: true,
+    });
+    setTimeout(() => {
+      triggerDownload(`foreign-words-${activeDocId}-flagged-AI-INSTRUCTIONS.md`, instructions, 'text/markdown;charset=utf-8');
+    }, 400);
+    toast.success(`Exported ${flaggedList.length} flagged words and companion AI-INSTRUCTIONS.md.`);
   };
 
   const downloadScanBatchesZip = async () => {
@@ -584,19 +615,12 @@ export function ScanForeignWordsModal({
         compactForAi: true,
       });
 
-      if (batches.length === 1) {
-        const url = URL.createObjectURL(new Blob([JSON.stringify(batches[0].payload, null, 2)], { type: 'application/json' }));
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = batches[0].filename;
-        link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1_000);
-        toast.success(`Exported ${batches[0].wordCount} words (compact AI format).`);
-        return;
-      }
-
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
+
+      // Include AI-INSTRUCTIONS.md at the root of the ZIP
+      const instructions = generateForeignWordAiInstructions({ documentId: activeDocId, totalWords: words.length });
+      zip.file('AI-INSTRUCTIONS.md', instructions);
 
       for (const batch of batches) {
         zip.file(batch.filename, JSON.stringify(batch.payload, null, 2));
@@ -608,8 +632,8 @@ export function ScanForeignWordsModal({
       link.href = url;
       link.download = `foreign-words-${activeDocId}-batches.zip`;
       link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1_000);
-      toast.success(`Exported ${words.length} words in ${batches.length} batch files (100 words/file ZIP).`);
+      setTimeout(() => URL.revokeObjectURL(url), 1_500);
+      toast.success(`Exported ${words.length} words in ${batches.length} batch files with AI-INSTRUCTIONS.md (ZIP).`);
     } catch (err) {
       console.error('Failed to export batches zip', err);
       toast.error('Failed to create batch export zip.');
@@ -1437,15 +1461,24 @@ export function ScanForeignWordsModal({
                   className="w-full max-w-sm px-3 py-1.5 text-sm border rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-1 focus:ring-accent"
                 />
                 <button type="button" onClick={downloadScanJson} disabled={!activeDocId || words.length === 0} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Export all words JSON</button>
-                <button type="button" onClick={downloadScanBatchesZip} disabled={!activeDocId || words.length === 0 || exportingBatches} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50" title="Split into compact ~100-word batch files in a ZIP archive for LLMs like Gemini Flash 3.1 Pro">{exportingBatches ? 'Packaging ZIP…' : 'Export Batches (100 / ZIP)'}</button>
+                <button type="button" onClick={downloadScanBatchesZip} disabled={!activeDocId || words.length === 0 || exportingBatches} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50" title="Split into compact ~100-word batch files in a ZIP archive with AI-INSTRUCTIONS.md for LLMs like Gemini Flash 3.1 Pro">{exportingBatches ? 'Packaging ZIP…' : 'Export Batches (100 / ZIP)'}</button>
                 {flaggedWordsCount > 0 && (
                   <button type="button" onClick={downloadFlaggedScanJson} className="rounded border border-amber-500/50 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-900 dark:text-amber-200 hover:bg-amber-500/25">
                     Export Flagged Words JSON ({flaggedWordsCount})
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => downloadAiInstructions(reviewFilter === 'flagged')}
+                  disabled={!activeDocId || words.length === 0}
+                  className="rounded border border-purple-300 bg-purple-50/70 px-3 py-1.5 text-xs font-semibold text-purple-900 hover:bg-purple-100 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-200 disabled:opacity-50"
+                  title="Download an instruction guide (Markdown) explaining Kokoro phonetics and definition rules for AI agents"
+                >
+                  📄 AI Agent Guide (.md)
+                </button>
                 <button type="button" onClick={() => importFileRef.current?.click()} disabled={!scanJobId || scanActive || importingWords} className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">{importingWords ? 'Importing…' : 'Import edited JSON'}</button>
                 <input ref={importFileRef} type="file" accept="application/json,.json,.zip,application/zip" multiple className="hidden" aria-label="Import edited foreign-word scan JSON or ZIP" onChange={(event) => { const files = event.target.files; if (files && files.length > 0) void importScanJson(files); }} />
-                <p className="w-full text-xs text-soft">The export includes source pages and quality evidence. Use <strong>Export Batches</strong> to split large scans into ~100-word chunks for AI processing (e.g. Gemini Flash/Pro). Fill proposedPronunciation or proposedDefinition for verified words, then import edited JSON or ZIP files back into this document.</p>
+                <p className="w-full text-xs text-soft">The export includes source pages and quality evidence along with a companion <strong>AI-INSTRUCTIONS.md</strong> guide. Use <strong>Export Batches</strong> to split large scans into ~100-word chunks bundled with instructions for AI processing (e.g. Gemini Flash/Pro). Fill proposedPronunciation or proposedDefinition for verified words, then import edited JSON or ZIP files back into this document.</p>
               </div>
             </div>
           )}

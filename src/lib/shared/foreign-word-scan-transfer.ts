@@ -283,3 +283,158 @@ export function parseForeignWordScanImport(
 ): ForeignWordImportChange[] {
   return parseForeignWordScanImportDetailed(value, documentId, allowedWords, trustedSourceStatuses, options).changes;
 }
+
+export interface GenerateForeignWordAiInstructionsOptions {
+  documentId?: string;
+  totalWords?: number;
+  isFlaggedExport?: boolean;
+}
+
+export function generateForeignWordAiInstructions(options?: GenerateForeignWordAiInstructionsOptions): string {
+  const isFlagged = options?.isFlaggedExport === true;
+  const wordCountStr = typeof options?.totalWords === 'number' ? ` (${options.totalWords} words)` : '';
+  const docStr = options?.documentId ? ` for document ID \`${options.documentId}\`` : '';
+
+  return `# OpenReader AI Agent Guide: Processing Foreign Word Scans
+
+## Mission
+You are processing an OpenReader foreign-word scan JSON file${docStr}${wordCountStr}.
+Your goal is to inspect the words and provide:
+1. Valid Kokoro IPA pronunciations (\`proposedPronunciation\`)
+2. Contextual English definitions (\`proposedDefinition\`)
+3. Definition omission flags (\`omitDefinition: true\`) for grammatical stop-words
+
+---
+
+## ⚠️ Core Editing Rules
+
+1. **Which fields to edit**:
+   - \`proposedPronunciation\`: Standard Kokoro IPA string wrapped in slashes \`"/.../"\` (e.g. \`"/hɑːdɑːm/"\`, \`"/bəˈheɪmɑː/"\`). Set to \`null\` if untouched.
+   - \`proposedDefinition\`: Concise contextual definition of 1 to 4 words. Set to \`null\` if untouched or omitted.
+   - \`omitDefinition\`: Set to \`true\` to omit definitions for stop-words (see Stop-Words rule below).
+2. **DO NOT MODIFY**:
+   - The \`word\` property is the immutable database key. Never rename or alter the \`word\` string.
+   - \`count\`, \`contexts\`, \`occurrences\`, \`sourceStatus\`, and \`qualityFlags\` are read-only evidence. Do not alter them.
+3. **Format**:
+   - The output must be valid JSON matching the exact structure of the input scan file.
+
+---
+
+## 🔊 Kokoro Pronunciation Guidelines
+
+OpenReader synthesizes pronunciations using Kokoro TTS, which strictly validates standard IPA phonemes.
+
+### Requirements:
+- **Slash Delimiters**: Must begin and end with forward slashes, e.g. \`"/phonemes/"\`.
+- **Allowed Phonemes**:
+  - Vowels: \`ɑ, æ, ʌ, ɔ, aʊ, aɪ, eɪ, i, ɪ, oʊ, ɔɪ, u, ʊ, ə, ɛ\`
+  - Consonants: \`b, d, f, ɡ, h, j, k, l, m, n, ŋ, p, r, s, ʃ, t, tʃ, θ, ð, v, w, z, ʒ\`
+  - Stress & Length: Primary stress \`ˈ\`, secondary stress \`ˌ\`, vowel elongation \`ː\`.
+  - Transliteration Modifiers: Academic Hebrew/Arabic transliteration modifiers (\`ʾ\` U+02BE, \`ʿ\` U+02BF, \`ʼ\` U+02BC) are permitted in Latin dictionary tokens.
+- **Strictly Disallowed**:
+  - Numbers or OCR digits (e.g., if word has \`118Lamaštu\`, pronounce only the word, e.g. \`"/lɑːmɑʃtuː/"\`; do not include \`118\`).
+  - Raw English orthography without phonemic slashes (e.g. \`"shalom"\` will be rejected; use \`"/ʃəˈloʊm/"\`).
+  - Non-IPA symbols or punctuation inside the slashes.
+
+---
+
+## 📖 Definition Guidelines
+
+OpenReader reads definitions aloud in "Biblical Scholar" audiobook mode.
+
+### Requirements:
+1. **Concise Contextual Meaning**: 1 to 4 words maximum (e.g., \`"the human"\`, \`"covenant"\`, \`"grace"\`).
+2. **Single Meaning Only**: Do NOT provide run-on glosses with commas or conjunctions (e.g., avoid \`"peace, wholeness, prosperity"\`; choose the single best contextual meaning like \`"peace"\`).
+3. **NO Grammatical Stop-Words (Crucial)**:
+   - Grammatical pronouns, prepositions, articles, and conjunctions must NOT have definitions spoken in the audiobook.
+   - For terms like Hebrew pronouns (\`הוּא\`, \`זֹאת\`, \`לוֹ\`, \`בָּהֶם\`, \`לָהֶם\`), prepositions (\`מִן\`, \`ב\`, \`ל\`, \`כ\`, \`על\`, \`אל\`), or conjunctions (\`ו\`, \`כי\`, \`אשר\`):
+     - Set **\`omitDefinition: true\`**
+     - Set **\`proposedDefinition: null\`**
+   - If a definition like \`"he"\` or \`"in them"\` is provided, OpenReader's dictionary validator will reject the word with: \`Invalid contextual definition for <word>\`.
+4. **NO Meta-Descriptions**: Do not use placeholders like \`"inflected form"\`, \`"OCR fragment"\`, or \`"unknown"\`. If a word cannot be defined, set \`omitDefinition: true\`.
+
+---
+
+${isFlagged ? `## 🛠️ Handling Flagged Words (\`importWarning\`)
+
+Each item in this flagged review file includes an \`importWarning\` field stating why it was previously rejected:
+- **\`Invalid contextual definition for <word>\`**: The definition was a stop-word or invalid gloss. Set \`proposedDefinition: null\` and \`omitDefinition: true\`.
+- **\`Invalid Kokoro pronunciation for <word>\`**: The pronunciation had invalid characters, numbers, or missing slashes. Provide valid Kokoro phonemes in \`proposedPronunciation: "/.../"\`.
+- **\`A valid pronunciation is needed before importing a definition\`**: Provide a valid \`proposedPronunciation: "/.../"\` alongside the definition.
+- **\`<word> has a personal profile pronunciation...\`**: Leave \`proposedPronunciation: null\` to keep the user's existing profile override.
+
+---
+` : ''}## Example Before and After
+
+### Example 1: Hebrew Pronoun Stop-Word
+**Before:**
+\`\`\`json
+{
+  "word": "הוּא",
+  "currentPronunciation": "/hu/",
+  "proposedPronunciation": null,
+  "proposedDefinition": "he",
+  "omitDefinition": false
+}
+\`\`\`
+
+**After (Correct):**
+\`\`\`json
+{
+  "word": "הוּא",
+  "currentPronunciation": "/hu/",
+  "proposedPronunciation": null,
+  "proposedDefinition": null,
+  "omitDefinition": true
+}
+\`\`\`
+
+### Example 2: Foreign Term with Pronunciation Fix
+**Before:**
+\`\`\`json
+{
+  "word": "118Lamaštu",
+  "currentPronunciation": null,
+  "proposedPronunciation": "118lamashtu",
+  "proposedDefinition": "Mesopotamian demon",
+  "omitDefinition": false
+}
+\`\`\`
+
+**After (Correct):**
+\`\`\`json
+{
+  "word": "118Lamaštu",
+  "currentPronunciation": null,
+  "proposedPronunciation": "/lɑːmɑʃtuː/",
+  "proposedDefinition": "Mesopotamian demon",
+  "omitDefinition": false
+}
+\`\`\`
+
+### Example 3: Untouched Word (Kept As-Is)
+**Before:**
+\`\`\`json
+{
+  "word": "λόγος",
+  "currentPronunciation": "/loʊɡɒs/",
+  "currentDefinition": "word",
+  "proposedPronunciation": null,
+  "proposedDefinition": null,
+  "omitDefinition": false
+}
+\`\`\`
+
+**After (No Changes Needed):**
+\`\`\`json
+{
+  "word": "λόγος",
+  "currentPronunciation": "/loʊɡɒs/",
+  "currentDefinition": "word",
+  "proposedPronunciation": null,
+  "proposedDefinition": null,
+  "omitDefinition": false
+}
+\`\`\`
+`;
+}

@@ -137,4 +137,12 @@ describe('foreign-word scan modal', () => {
     expect(source).toContain("setReviewFilter('flagged')");
     expect(source).toContain('🚫 Omit definition');
   });
+
+  test('generates companion markdown AI instructions on export and offers an on-demand guide button', () => {
+    expect(source).toContain('generateForeignWordAiInstructions');
+    expect(source).toContain('foreign-words-${activeDocId}-AI-INSTRUCTIONS.md');
+    expect(source).toContain('foreign-words-${activeDocId}-flagged-AI-INSTRUCTIONS.md');
+    expect(source).toContain("zip.file('AI-INSTRUCTIONS.md'");
+    expect(source).toContain('📄 AI Agent Guide (.md)');
+  });
 });
