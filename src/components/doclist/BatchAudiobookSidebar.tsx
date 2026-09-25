@@ -10,7 +10,16 @@ import { MultiVoiceCharacterModal } from '@/components/doclist/MultiVoiceCharact
 import { Button, Select, Card } from '@/components/ui';
 import { getVoices } from '@/lib/client/api/audiobooks';
 import { resolveTtsProviderModelPolicy } from '@/lib/shared/tts-provider-policy';
-import { getNarratorVoiceId, MULTI_VOICE_WORKER_MODE } from '@/lib/shared/multi-voice';
+import {
+  getNarratorVoiceId,
+  MULTI_VOICE_WORKER_MODE,
+  DRAMA_GEMINI_TTS_WORKER_MODE,
+} from '@/lib/shared/multi-voice';
+import {
+  CLOUD_TTS_CHARACTER_VOICE_SET,
+  CLOUD_TTS_FEMALE_VOICES,
+  CLOUD_TTS_MODEL,
+} from '@/lib/shared/google-cloud-tts-voices';
 import {
   AUDIOBOOK_QUOTA_UPDATED_EVENT,
   formatMonthlyAudiobookQuotaMessage,
@@ -113,6 +122,10 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
           : smartAudioProfileId;
         const next = profiles.some((p) => p.id === preferred) ? preferred : profiles[0]?.id || '';
         setSelectedSmartAudioProfileId(next || '');
+        const profile = profiles.find((p) => p.id === next);
+        if (profile?.workerMode === MULTI_VOICE_WORKER_MODE || profile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+          setUseSmartAudio(true);
+        }
       } catch (err) {
         if ((err as Error)?.name === 'AbortError') return;
         console.warn('[BatchAudiobookSidebar] Failed to load smart audio profiles:', err);
@@ -136,8 +149,9 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
   }, []);
 
   const selectedSmartAudioProfile = smartAudioProfiles.find((p) => p.id === selectedSmartAudioProfileId) || smartAudioProfiles[0] || null;
+  const isCloudDrama = selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
   const isDramaProfile = useSmartAudio
-    && selectedSmartAudioProfile?.workerMode === MULTI_VOICE_WORKER_MODE;
+    && (selectedSmartAudioProfile?.workerMode === MULTI_VOICE_WORKER_MODE || isCloudDrama);
   const [dramaNarratorVoices, setDramaNarratorVoices] = useState<Record<string, string | null>>({});
   const [isLoadingDramaNarrators, setIsLoadingDramaNarrators] = useState(false);
 
@@ -156,7 +170,7 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
       });
       if (!response.ok) return [doc.id, null] as const;
       const body = await response.json().catch(() => ({}));
-      return [doc.id, getNarratorVoiceId(body.characterMap)] as const;
+      return [doc.id, getNarratorVoiceId(body.characterMap, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {})] as const;
     })).then((entries) => {
       if (!controller.signal.aborted) setDramaNarratorVoices(Object.fromEntries(entries));
     }).catch((error) => {
@@ -165,7 +179,7 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
       if (!controller.signal.aborted) setIsLoadingDramaNarrators(false);
     });
     return () => controller.abort();
-  }, [isDramaProfile, isOpen, selectedDocs, selectedSmartAudioProfileId]);
+  }, [isCloudDrama, isDramaProfile, isOpen, selectedDocs, selectedSmartAudioProfileId]);
 
   // ── Queueing ─────────────────────────────────────────────────────────────
   const [isQueueing, setIsQueueing] = useState(false);
@@ -188,12 +202,12 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
     try {
       const settingsFor = (documentId: string) => ({
         voice: isDramaProfile
-          ? narratorOverrides[documentId] || dramaNarratorVoices[documentId] || audiobookVoice
+          ? narratorOverrides[documentId] || dramaNarratorVoices[documentId] || (isCloudDrama ? (CLOUD_TTS_FEMALE_VOICES[0] || 'en-US-Journey-F') : audiobookVoice)
           : audiobookVoice,
         format: audiobookFormat,
-        providerRef: providerRef || '',
-        providerType,
-        ttsModel,
+        providerRef: isCloudDrama ? 'google-cloud' : (providerRef || ''),
+        providerType: isCloudDrama ? 'google-cloud' : providerType,
+        ttsModel: isCloudDrama ? CLOUD_TTS_MODEL : ttsModel,
         nativeSpeed: voiceSpeed || 1,
         postSpeed: audioPlayerSpeed || 1,
         useSmartAudio,
@@ -299,9 +313,21 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
         {/* Provider info card */}
         <div className="rounded-lg bg-surface-raised border border-line px-3 py-2.5 space-y-0.5">
           <p className="text-[11px] uppercase tracking-wider font-medium text-soft">TTS Provider</p>
-          <p className="text-sm text-primary truncate">{providerLabel}</p>
-          {ttsModel && <p className="text-xs text-soft">Model: {ttsModel}</p>}
-          <p className="text-[11px] text-soft mt-1">Change provider in Settings to switch.</p>
+          <p className="text-sm text-primary truncate">
+            {isDramaProfile && isCloudDrama
+              ? 'Google Cloud Gemini-TTS'
+              : providerLabel}
+          </p>
+          {(isDramaProfile && isCloudDrama ? CLOUD_TTS_MODEL : ttsModel) && (
+            <p className="text-xs text-soft">
+              Model: {isDramaProfile && isCloudDrama ? CLOUD_TTS_MODEL : ttsModel}
+            </p>
+          )}
+          <p className="text-[11px] text-soft mt-1">
+            {isDramaProfile && isCloudDrama
+              ? 'Multi-character drama managed by Google Cloud & Gemini Director.'
+              : 'Change provider in Settings to switch.'}
+          </p>
         </div>
 
         {/* Voice picker */}
@@ -401,6 +427,9 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
                         setUseSmartAudio(false);
                       }
                       setSelectedSmartAudioProfileId(newProfileId);
+                      if (newProfile?.workerMode === MULTI_VOICE_WORKER_MODE || newProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+                        setUseSmartAudio(true);
+                      }
                     }}
                   >
                     {smartAudioProfiles.map((profile) => (
@@ -424,9 +453,13 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
         {isDramaProfile && (
           <div className="rounded-lg border border-accent bg-accent-wash p-3 space-y-2" role="status">
             <div>
-              <p className="text-sm font-medium text-foreground">Audio Drama · Multiple voices</p>
+              <p className="text-sm font-medium text-foreground">
+                {isCloudDrama ? 'Google Cloud · Audio Drama · Multiple voices' : 'Audio Drama · Multiple voices'}
+              </p>
               <p className="text-xs text-soft">
-                Narration and each character use the voices from that book’s reviewed cast. Books without a completed cast will pause for review before they are queued.
+                {isCloudDrama
+                  ? 'Narration and character dialogue use Google Cloud Gemini-TTS voices from that book’s reviewed cast. Books without a completed cast will prompt for cast assignment before queueing.'
+                  : 'Narration and each character use the voices from that book’s reviewed cast. Books without a completed cast will pause for review before they are queued.'}
               </p>
             </div>
             <div className="space-y-1.5">
@@ -495,11 +528,15 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
             className="w-full"
             variant="primary"
             onClick={() => void handleStartBatch()}
-            disabled={isQueueing || selectedDocs.length === 0 || availableVoices.length === 0}
+            disabled={isQueueing || selectedDocs.length === 0 || (!isCloudDrama && availableVoices.length === 0)}
           >
             {isQueueing
               ? `Queueing ${selectedDocs.length} book${selectedDocs.length !== 1 ? 's' : ''}…`
-              : `Queue ${selectedDocs.length} Audiobook${selectedDocs.length !== 1 ? 's' : ''}`}
+              : isDramaProfile
+                ? isCloudDrama
+                  ? `Generate Google Cloud Drama Audiobook${selectedDocs.length > 1 ? 's' : ''}`
+                  : `Generate Audio Drama Audiobook${selectedDocs.length > 1 ? 's' : ''}`
+                : `Queue ${selectedDocs.length} Audiobook${selectedDocs.length !== 1 ? 's' : ''}`}
           </Button>
           <p className="text-[11px] text-soft text-center">
             Generation runs on the server — safe to close your browser.
@@ -542,11 +579,12 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
         <MultiVoiceCharacterModal
           documentId={pendingCharacterDoc.id}
           profileId={selectedSmartAudioProfileId}
+          workerMode={isCloudDrama ? 'drama-gemini-tts' : 'multi-voice'}
           isOpen={true}
           onClose={() => setPendingCharacterDoc(null)}
           onComplete={async (savedCharacterMap: SmartAudioCharacterMap) => {
             const documentId = pendingCharacterDoc.id;
-            const narratorVoice = getNarratorVoiceId(savedCharacterMap);
+            const narratorVoice = getNarratorVoiceId(savedCharacterMap, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {});
             setDramaNarratorVoices((current) => ({ ...current, [documentId]: narratorVoice }));
             setPendingCharacterDoc(null);
             await handleStartBatch(pendingBatchScholarConfirm, { [documentId]: narratorVoice });

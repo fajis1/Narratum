@@ -30,7 +30,11 @@ import {
   getNarratorVoiceId,
   WAITING_FOR_VOICES_STATUS,
 } from '@/lib/shared/multi-voice';
-import { CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
+import {
+  CLOUD_TTS_CHARACTER_VOICE_SET,
+  CLOUD_TTS_FEMALE_VOICES,
+  CLOUD_TTS_MODEL,
+} from '@/lib/shared/google-cloud-tts-voices';
 import type { TTSAudiobookChapter, TTSAudiobookFormat } from '@/types/tts';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from '@/lib/shared/audiobook-runtime-phase';
@@ -136,7 +140,7 @@ export function AudiobookExportModal({
     const isCloudDrama = selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
     const voiceId = getNarratorVoiceId(value, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {});
     setDramaNarratorVoice(voiceId);
-    if (voiceId && !isCloudDrama && !savedSettings && !hasExistingAudiobook) setAudiobookVoice(voiceId);
+    if (voiceId && !savedSettings && !hasExistingAudiobook) setAudiobookVoice(voiceId);
     return voiceId;
   }, [hasExistingAudiobook, savedSettings, selectedSmartAudioProfile?.workerMode]);
 
@@ -179,6 +183,10 @@ export function AudiobookExportModal({
           ? preferredProfileId
           : profiles[0]?.id || '';
         setSelectedSmartAudioProfileId(nextProfileId);
+        const profile = profiles.find((p: SmartAudioProfile) => p.id === nextProfileId);
+        if (profile?.workerMode === MULTI_VOICE_WORKER_MODE || profile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+          setUseSmartAudio(true);
+        }
       } catch (error) {
         if ((error as Error)?.name === 'AbortError') return;
         console.warn('Failed to load smart audio profiles:', error);
@@ -228,14 +236,16 @@ export function AudiobookExportModal({
     }
   }, [savedSettings, audiobookVoice, availableVoices]);
 
+  const isCloudDrama = selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
   const effectiveSettings: AudiobookGenerationSettings | null = useMemo(() => {
     if (savedSettings) return savedSettings;
-    const nextVoice = audiobookVoice || configVoice || availableVoices[0] || '';
+    const dramaVoice = dramaNarratorVoice || (isCloudDrama ? (CLOUD_TTS_FEMALE_VOICES[0] || 'en-US-Journey-F') : null);
+    const nextVoice = (isDramaProfile ? dramaVoice : null) || audiobookVoice || configVoice || availableVoices[0] || (isCloudDrama ? 'en-US-Journey-F' : '');
     if (!nextVoice) return null;
     return {
-      providerRef,
+      providerRef: isCloudDrama ? 'google-cloud' : providerRef,
       providerType,
-      ttsModel,
+      ttsModel: isCloudDrama ? CLOUD_TTS_MODEL : ttsModel,
       voice: nextVoice,
       nativeSpeed: effectiveNativeSpeed,
       postSpeed,
@@ -244,12 +254,36 @@ export function AudiobookExportModal({
       smartAudioProfileId: selectedSmartAudioProfileId || smartAudioProfileId || undefined,
       scholarIncludeDefinitions: useScholarDefinitions,
       ttsInstructions: providerModelPolicy.supportsInstructions ? ttsInstructions : undefined,
-      language: resolveTtsLanguage({
-        configuredLanguage: documentLanguage,
-        voice: nextVoice,
-      }),
+      language: isCloudDrama && selectedSmartAudioProfile?.dramaGeminiTtsSettings?.languageCode
+        ? selectedSmartAudioProfile.dramaGeminiTtsSettings.languageCode
+        : resolveTtsLanguage({
+            configuredLanguage: documentLanguage,
+            voice: nextVoice,
+          }),
     };
-  }, [savedSettings, audiobookVoice, configVoice, availableVoices, providerRef, providerType, ttsModel, ttsInstructions, effectiveNativeSpeed, postSpeed, format, providerModelPolicy.supportsInstructions, documentLanguage, useSmartAudio, useScholarDefinitions, selectedSmartAudioProfileId, smartAudioProfileId]);
+  }, [
+    savedSettings,
+    isDramaProfile,
+    isCloudDrama,
+    dramaNarratorVoice,
+    audiobookVoice,
+    configVoice,
+    availableVoices,
+    providerRef,
+    providerType,
+    ttsModel,
+    ttsInstructions,
+    effectiveNativeSpeed,
+    postSpeed,
+    format,
+    providerModelPolicy.supportsInstructions,
+    documentLanguage,
+    useSmartAudio,
+    useScholarDefinitions,
+    selectedSmartAudioProfileId,
+    smartAudioProfileId,
+    selectedSmartAudioProfile?.dramaGeminiTtsSettings?.languageCode,
+  ]);
   const languageWarnings = useMemo(() => getTtsLanguageCompatibilityWarnings({
     model: effectiveSettings?.ttsModel,
     voice: effectiveSettings?.voice,
@@ -330,6 +364,9 @@ export function AudiobookExportModal({
           setNativeSpeed(data.settings.nativeSpeed);
           setPostSpeed(data.settings.postSpeed);
           setFormat(data.settings.format);
+          if (data.settings.useSmartAudio !== undefined) {
+            setUseSmartAudio(Boolean(data.settings.useSmartAudio));
+          }
         } else {
           setSavedSettings(null);
         }
@@ -553,7 +590,11 @@ export function AudiobookExportModal({
   const handleSmartAudioProfileChange = useCallback((profileId: string) => {
     setSelectedSmartAudioProfileId(profileId);
     void updateConfigKey('smartAudioProfileId', profileId);
-  }, [updateConfigKey]);
+    const profile = smartAudioProfiles.find(p => p.id === profileId);
+    if (profile?.workerMode === MULTI_VOICE_WORKER_MODE || profile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+      setUseSmartAudio(true);
+    }
+  }, [smartAudioProfiles, updateConfigKey]);
 
   // Cancel in-flight conversion ONLY if the page is literally being closed or refreshed.
   // We DO NOT cancel on unmount, so that generation continues in the background if the user navigates within the SPA.
@@ -1092,7 +1133,11 @@ export function AudiobookExportModal({
 			                                    size="md"
 			                                    className="flex-1"
 			                                  >
-			                                    Start Generation
+			                                    {isDramaProfile
+			                                      ? isCloudDrama
+			                                        ? 'Generate Google Cloud Drama Audiobook'
+			                                        : 'Generate Audio Drama Audiobook'
+			                                      : 'Start Generation'}
 			                                  </Button>
 			                                )}
 			                                {showResumeButton && (

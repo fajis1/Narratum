@@ -50,6 +50,14 @@ import { AudiobookshelfModal } from '@/components/audiobooks/AudiobookshelfModal
 import toast from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
 import type { SmartAudioProfile } from '@/types/client';
+import type { SmartAudioCharacterMap } from '@/types/document-settings';
+import { getNarratorVoiceId } from '@/lib/shared/multi-voice';
+import {
+  CLOUD_TTS_CHARACTER_VOICE_SET,
+  CLOUD_TTS_FEMALE_VOICES,
+  CLOUD_TTS_MODEL,
+} from '@/lib/shared/google-cloud-tts-voices';
+import { AUDIOBOOK_QUOTA_UPDATED_EVENT } from '@/lib/shared/audiobook-quota';
 
 let cachedDocumentListState: DocumentListState | null = null;
 
@@ -579,6 +587,56 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
       setIsOpeningDramaCharacterScan(false);
     }
   }, [isOpeningDramaCharacterScan]);
+
+  const [pendingDramaReplacementDoc, setPendingDramaReplacementDoc] = useState<{
+    doc: DocumentListDocument;
+    profileId: string;
+    isCloud: boolean;
+    savedMap: SmartAudioCharacterMap;
+  } | null>(null);
+
+  const handleStartDramaGeneration = useCallback(async (
+    doc: DocumentListDocument,
+    profileId: string,
+    isCloud: boolean,
+    savedMap: SmartAudioCharacterMap,
+    confirmReplace = false,
+  ) => {
+    const toastId = toast.loading(`Queueing ${isCloud ? 'Google Cloud Drama' : 'Audio Drama'} for ${doc.name}…`);
+    try {
+      const narratorVoice = getNarratorVoiceId(savedMap, isCloud ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {})
+        || (isCloud ? (CLOUD_TTS_FEMALE_VOICES[0] || 'en-US-Journey-F') : 'af_bella');
+      const res = await fetch('/api/audiobooks/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documentId: doc.id,
+          settings: {
+            voice: narratorVoice,
+            format: 'm4b',
+            providerRef: isCloud ? 'google-cloud' : '',
+            providerType: isCloud ? 'google-cloud' : undefined,
+            ttsModel: isCloud ? CLOUD_TTS_MODEL : undefined,
+            useSmartAudio: true,
+            smartAudioProfileId: profileId,
+          },
+          confirmReplaceExisting: confirmReplace,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 409 && body?.code === 'AUDIOBOOK_REPLACEMENT_REQUIRED') {
+        toast.dismiss(toastId);
+        setPendingDramaReplacementDoc({ doc, profileId, isCloud, savedMap });
+        return;
+      }
+      if (!res.ok) throw new Error(body?.error || 'Failed to queue drama generation.');
+      toast.success(`Started generating ${isCloud ? 'Google Cloud Drama' : 'Audio Drama'} for ${doc.name}!`, { id: toastId });
+      window.dispatchEvent(new Event(AUDIOBOOK_QUOTA_UPDATED_EVENT));
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to queue drama generation.', { id: toastId });
+    }
+  }, [router]);
 
   const handleInspectDoc = useCallback((doc: DocumentListDocument) => {
     setDocToInspect(doc);
@@ -1179,12 +1237,41 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
           isOpen={true}
           standalone
           onClose={() => setDramaCharacterScan(null)}
-          onComplete={() => {
-            toast.success(`Saved the Audio Drama cast for ${dramaCharacterScan.document.name}.`);
+          onComplete={async (savedCharacterMap, startGeneration) => {
+            const doc = dramaCharacterScan.document;
+            const profileId = dramaCharacterScan.profileId;
+            const isCloud = dramaCharacterScan.workerMode === 'drama-gemini-tts';
             setDramaCharacterScan(null);
+            if (startGeneration) {
+              await handleStartDramaGeneration(doc, profileId, isCloud, savedCharacterMap);
+            } else {
+              toast.success(`Saved the Audio Drama cast for ${doc.name}.`);
+            }
           }}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={pendingDramaReplacementDoc !== null}
+        onClose={() => setPendingDramaReplacementDoc(null)}
+        onConfirm={async () => {
+          if (!pendingDramaReplacementDoc) return;
+          const { doc, profileId, isCloud, savedMap } = pendingDramaReplacementDoc;
+          setPendingDramaReplacementDoc(null);
+          await handleStartDramaGeneration(
+            doc,
+            profileId,
+            isCloud,
+            savedMap,
+            true,
+          );
+        }}
+        title="Replace Existing Audiobook?"
+        message="This document already has a regular audiobook. Converting to Audio Drama will permanently delete every existing generated chapter and combined audiobook file for this book, then regenerate them with the reviewed narrator and character voices."
+        confirmText="Replace & Regenerate"
+        cancelText="Keep Existing Audiobook"
+        isDangerous={true}
+      />
 
       {docToInspect && (
         <BookPronunciationInspectorModal

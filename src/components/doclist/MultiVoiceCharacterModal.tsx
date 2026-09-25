@@ -24,7 +24,7 @@ interface MultiVoiceCharacterModalProps {
   standalone?: boolean;
   workerMode?: 'multi-voice' | 'drama-gemini-tts';
   onClose: () => void;
-  onComplete: (characterMap: SmartAudioCharacterMap) => void | Promise<void>;
+  onComplete: (characterMap: SmartAudioCharacterMap, startGeneration?: boolean) => void | Promise<void>;
 }
 
 type CastResponse = {
@@ -339,7 +339,7 @@ export function MultiVoiceCharacterModal({
     });
   };
 
-  const handleSave = async () => {
+  const handleSave = async (startGeneration = false) => {
     if (!characterMap || unassigned.length > 0 || !hasNarrator) return;
     setIsSaving(true);
     setError(null);
@@ -352,7 +352,7 @@ export function MultiVoiceCharacterModal({
       const body = await response.json().catch(() => ({})) as CastResponse;
       if (!response.ok) throw new Error(body.error || 'Failed to save the reviewed cast.');
       const savedCharacterMap = normalizeCast(body.characterMap) || characterMap;
-      await onComplete(savedCharacterMap);
+      await onComplete(savedCharacterMap, startGeneration);
       onClose();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to save the reviewed cast.');
@@ -674,9 +674,20 @@ export function MultiVoiceCharacterModal({
             <button type="button" onClick={addCharacter} disabled={!characterMap || isScanning} className="rounded-lg border border-line px-4 py-2 text-sm text-foreground disabled:opacity-50">Add Character</button>
             <button type="button" onClick={() => void scanCharacters()} disabled={isScanning || isSaving || isLoading} className="rounded-lg border border-line px-4 py-2 text-sm text-foreground disabled:opacity-50">{characterMap ? 'Rescan Drama Cast' : 'Start Character Scan'}</button>
             <button type="button" onClick={onClose} className="rounded-lg border border-line px-4 py-2 text-sm text-text-soft">Cancel</button>
+            {standalone && (
+              <button
+                type="button"
+                onClick={() => void handleSave(true)}
+                disabled={!characterMap || !hasNarrator || unassignedMain.length > 0 || unassignedMinor.length > 0 || isSaving || isScanning}
+                className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-5 py-2 text-sm font-semibold text-white disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+                title={unassignedMain.length > 0 ? `Assign voices to main characters: ${unassignedMain.join(', ')}` : unassignedMinor.length > 0 ? `Assign voices to ${unassignedMinor.length} minor character(s) or click Auto-Assign` : undefined}
+              >
+                {isSaving ? 'Saving…' : isCloudDrama ? '✨ Save & Generate Google Drama' : '✨ Save & Generate Audio Drama'}
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => void handleSave()}
+              onClick={() => void handleSave(false)}
               disabled={!characterMap || !hasNarrator || unassignedMain.length > 0 || unassignedMinor.length > 0 || isSaving || isScanning}
               className="rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-background disabled:opacity-50"
               title={unassignedMain.length > 0 ? `Assign voices to main characters: ${unassignedMain.join(', ')}` : unassignedMinor.length > 0 ? `Assign voices to ${unassignedMinor.length} minor character(s) or click Auto-Assign` : undefined}

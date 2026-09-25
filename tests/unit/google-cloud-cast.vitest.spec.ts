@@ -10,6 +10,8 @@
  *  6. Kokoro backward-compatibility (normalizer defaults unchanged)
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -398,5 +400,43 @@ describe('Stage 4 — buildCloudTtsVoicePool', () => {
     const exclude = new Set(['Orus']); // male voice
     const pool = buildCloudTtsVoicePool('female', exclude);
     expect(pool.length).toBe(14); // No female voice excluded
+  });
+});
+
+// ── 7. Google Cloud Drama Generation Pipeline in Generation UI ────────────────
+
+describe('Google Cloud Drama Generation Pipeline in Generation UI', () => {
+  it('wires Google Cloud Drama pipeline into BatchAudiobookSidebar', () => {
+    const batchContent = fs.readFileSync(path.join(process.cwd(), 'src/components/doclist/BatchAudiobookSidebar.tsx'), 'utf8');
+    expect(batchContent).toContain('DRAMA_GEMINI_TTS_WORKER_MODE');
+    expect(batchContent).toContain('Generate Google Cloud Drama Audiobook');
+    expect(batchContent).toContain("workerMode={isCloudDrama ? 'drama-gemini-tts' : 'multi-voice'}");
+    expect(batchContent).toContain("CLOUD_TTS_CHARACTER_VOICE_SET");
+    expect(batchContent).toContain("CLOUD_TTS_MODEL");
+    expect(batchContent).toContain("disabled={isQueueing || selectedDocs.length === 0 || (!isCloudDrama && availableVoices.length === 0)}");
+  });
+
+  it('wires Google Cloud Drama pipeline into AudiobookExportModal', () => {
+    const exportContent = fs.readFileSync(path.join(process.cwd(), 'src/components/AudiobookExportModal.tsx'), 'utf8');
+    expect(exportContent).toContain('Generate Google Cloud Drama Audiobook');
+    expect(exportContent).toContain("providerRef: isCloudDrama ? 'google-cloud' : providerRef");
+    expect(exportContent).toContain("ttsModel: isCloudDrama ? CLOUD_TTS_MODEL : ttsModel");
+    expect(exportContent).toContain("selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? 'drama-gemini-tts' : 'multi-voice'");
+  });
+
+  it('wires Save & Generate Google Drama into MultiVoiceCharacterModal', () => {
+    const modalContent = fs.readFileSync(path.join(process.cwd(), 'src/components/doclist/MultiVoiceCharacterModal.tsx'), 'utf8');
+    expect(modalContent).toContain('✨ Save & Generate Google Drama');
+    expect(modalContent).toContain('handleSave(true)');
+    expect(modalContent).toContain('handleSave(false)');
+    expect(modalContent).toContain('onComplete: (characterMap: SmartAudioCharacterMap, startGeneration?: boolean) => void | Promise<void>');
+  });
+
+  it('wires direct drama generation and replacement dialog into DocumentList', () => {
+    const docListContent = fs.readFileSync(path.join(process.cwd(), 'src/components/doclist/DocumentList.tsx'), 'utf8');
+    expect(docListContent).toContain('handleStartDramaGeneration');
+    expect(docListContent).toContain("providerRef: isCloud ? 'google-cloud' : ''");
+    expect(docListContent).toContain("ttsModel: isCloud ? CLOUD_TTS_MODEL : undefined");
+    expect(docListContent).toContain('pendingDramaReplacementDoc');
   });
 });
