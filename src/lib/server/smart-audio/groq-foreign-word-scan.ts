@@ -348,7 +348,7 @@ export function isGeminiBillingExhausted(
   status: number,
   bodyText: string,
 ): boolean {
-  if (status !== 429) return false;
+  if (![429, 402, 403].includes(status)) return false;
   const lower = bodyText.toLowerCase();
   return (
     lower.includes('quota')

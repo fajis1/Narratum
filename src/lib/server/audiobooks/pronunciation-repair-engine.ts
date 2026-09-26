@@ -74,7 +74,7 @@ export async function repairPronunciationText(input: {
     diagnostics.usedModel = usedModel;
     diagnostics.usedBackup = usedBackup;
     if (!response.ok) {
-      if ([429, 500, 502, 503, 504].includes(response.status)) {
+      if ([429, 402, 403, 500, 502, 503, 504].includes(response.status)) {
         diagnostics.apiBlocked = true;
         const retryAfterMs = Math.max(300000, ...diagnostics.attempts!.filter(attempt => attempt.round === round + 1).map(attempt => attempt.errorDetails?.retryAfterMs || 0));
         diagnostics.nextAttemptAt = Date.now() + Math.min(retryAfterMs, Number.MAX_SAFE_INTEGER - Date.now());

@@ -1795,8 +1795,8 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
 
         // ── Smart HTTP Errorcode / Quota Handling for Cloud Drama & TTS ───────
         const isCloudTtsQuota = isCloudTtsQuotaExhaustedError(error);
-        const isGeminiQuota = /\bHTTP (429|503)\b/.test(message) ||
-          /resource_exhausted|quota exceeded|rate limit|too many requests/i.test(message);
+        const isGeminiQuota = /\bHTTP (429|402|403|503)\b/.test(message) ||
+          /resource_exhausted|quota exceeded|rate limit|too many requests|payment required|billing/i.test(message);
 
         if (isCloudTtsQuota || isGeminiQuota) {
           if (nc) await nc.close();

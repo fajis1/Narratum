@@ -2,7 +2,7 @@ import { serverLogger } from '@/lib/server/logger';
 import { setTimeout as delay } from 'node:timers/promises';
 import { geminiErrorDetails } from './gemini-error-details';
 
-const BACKUP_ELIGIBLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const BACKUP_ELIGIBLE_STATUSES = new Set([429, 402, 403, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 8;
 const INITIAL_DELAY_MS = 4000;
 const MAX_DELAY_MS = 300000; // 5 minutes
@@ -83,7 +83,7 @@ async function fetchWithExponentialBackoff(
       if ((details.retryAfterMs || 0) > MAX_DELAY_MS) return response;
       delayMs = Math.max(delayMs, details.retryAfterMs || 0);
 
-      if (response.status === 429) {
+      if ([429, 402, 403].includes(response.status)) {
         try {
           const bodyStr = await response.clone().text();
           const lowerBody = bodyStr.toLowerCase();
@@ -95,7 +95,7 @@ async function fetchWithExponentialBackoff(
         }
       }
 
-      const statusText = response.status === 429 ? 'rate-limited (HTTP 429)' : `temporarily unavailable (HTTP ${response.status})`;
+      const statusText = [429, 402, 403].includes(response.status) ? `rate-limited (HTTP ${response.status})` : `temporarily unavailable (HTTP ${response.status})`;
       const delaySeconds = Math.round(delayMs / 1000);
       const effectiveAttempts = (response.status === 503 && maxOverloadAttempts !== undefined)
         ? maxOverloadAttempts
@@ -295,9 +295,9 @@ export async function fetchGeminiWithRateLimitFallback(
     // A rate-limited backup must not erase evidence that the primary model
     // exhausted its overload retries. Try the next configured model on the
     // primary, without retrying that blocked backup again in this call.
-    if (result.usedBackup && result.response.status === 429 && input.primaryApiKey.trim()) backupBlocked = true;
-    const fallbackReason = input.retryRateLimitedModels && result.response.status === 429
-      ? 'rate-limited' : result.primaryStatus === 503 && result.response.status === 429
+    if (result.usedBackup && [429, 402, 403].includes(result.response.status) && input.primaryApiKey.trim()) backupBlocked = true;
+    const fallbackReason = input.retryRateLimitedModels && [429, 402, 403].includes(result.response.status)
+      ? 'rate-limited' : result.primaryStatus === 503 && [429, 402, 403].includes(result.response.status)
       ? 'overloaded' : await getGeminiModelFallbackReason(result.response);
     if (!fallbackReason) {
       return {
