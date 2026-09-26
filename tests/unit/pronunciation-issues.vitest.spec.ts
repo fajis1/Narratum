@@ -224,4 +224,39 @@ describe('targeted pronunciation scan and patches', () => {
     expect(() => assertPronunciationRepair(text, text)).toThrow('remain');
     expect(canonicalRepairTextFile('0107__rejected.txt')).toBe('0107__text.txt');
   });
+
+  test('multi-word English phrase tags are flagged as unsafe and can be split into individual-word tags', () => {
+    // Scenario from real repair report: [I live](/laɪv/) is a phrase tag that
+    // the validator correctly rejects because "I live" is not one dictionary word.
+    const text = '[I live](/laɪv/) by faith in the Son of God.';
+    const issues = scanPronunciationIssues(text);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('unsafe_pronunciation');
+    expect(issues[0].text).toBe('[I live](/laɪv/)');
+
+    // The repair AI should split this into individual words.
+    // "I" needs no special pronunciation; "live" (verb) gets the soft-i heteronym tag.
+    const repairPatch = { id: issues[0].id, replacement: 'I [live](!/lɪv/)' };
+    const proposed = applyPronunciationPatches(text, issues, [repairPatch]);
+    expect(proposed).toBe('I [live](!/lɪv/) by faith in the Son of God.');
+
+    // The repaired text must pass without any remaining issues.
+    expect(scanPronunciationIssues(proposed)).toEqual([]);
+    expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
+  });
+
+  test('multi-word English phrase split preserves visible English through applyPronunciationPatches', () => {
+    // Verify the English-preservation check accepts the split because
+    // visibleEnglish("[I live](/laɪv/)") === visibleEnglish("I [live](!/lɪv/)")
+    const text = 'As Paul wrote: [I live](/laɪv/) by faith.';
+    const issues = scanPronunciationIssues(text);
+    expect(issues[0].kind).toBe('unsafe_pronunciation');
+    // Split repair: remove the phrase tag, tag only the heteronym word.
+    const patch = { id: issues[0].id, replacement: 'I [live](!/lɪv/)' };
+    expect(() => applyPronunciationPatches(text, issues, [patch])).not.toThrow();
+    // A repair that changes the visible English words must be rejected.
+    const badPatch = { id: issues[0].id, replacement: 'He [lives](!/lɪvz/)' };
+    expect(() => applyPronunciationPatches(text, issues, [badPatch])).toThrow('English');
+  });
 });
+
