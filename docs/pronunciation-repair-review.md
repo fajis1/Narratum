@@ -144,6 +144,39 @@ and backported across all pre-scan, import, and repair pipelines:
   and stop-words are automatically converted to `definition: null` with `omitDefinition: true`
   instead of failing with an `Invalid contextual definition` warning.
 
+## Multi-word English phrase tag splitting (prompt v6)
+
+When the pronunciation scanner flags a multi-word English phrase wrapped
+in a single pronunciation tag — for example `[I live](/laɪv/)` — the
+issue kind is `unsafe_pronunciation` with reason:
+> "Dictionary word must be one reusable term, not a phrase."
+
+The repair AI (prompt v6) is now explicitly instructed to **split** the
+phrase tag into individual word tags rather than omitting the patch. For
+the `[I live](/laɪv/)` example from Galatians 2:20, the correct split is:
+
+```
+I [live](!/lɪv/)
+```
+
+- `I` needs no special pronunciation and is left as plain text.
+- `live` (the verb, soft-i) receives its own single-word tag with the
+  **heteronym prefix `!`** (`[live](!/lɪv/)`). The `!` marks the IPA
+  as context-specific, preventing it from being added to the global
+  dictionary where it would affect every other occurrence of "live"
+  regardless of meaning.
+- Every resulting tag must contain exactly one word with no internal
+  whitespace in its label.
+
+The validation layer (`applyPronunciationPatches`) confirms that the
+split is English-preserving: `visibleEnglish("[I live](/laɪv/)")` equals
+`visibleEnglish("I [live](!/lɪv/)")`, and the repaired text passes
+`scanPronunciationIssues` with zero findings.
+
+If the repair AI cannot safely split a phrase (e.g. the phrase contains
+foreign script words), it will omit the patch so a human reviewer can
+decide the correct split.
+
 ## Operational notes
 
 - Wait for background generation and repair jobs to finish or pause before
