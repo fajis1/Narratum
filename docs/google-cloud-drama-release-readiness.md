@@ -16,7 +16,8 @@ This document records the Stage 14 test matrix and deployment notes for the
 | End-to-end chapter orchestration and persisted review flags | `cloud-drama-orchestration.vitest.spec.ts`, `document-settings.vitest.spec.ts` | Pass |
 | Cast direction UI, previews, and listening-page recovery wiring | `drama-character-direction.vitest.spec.ts`, `multi-voice.vitest.spec.ts` | Pass |
 | Audiobook generation UI & modal integration | `google-cloud-cast.vitest.spec.ts`, `AudiobookExportModal`, `BatchAudiobookSidebar`, `MultiVoiceCharacterModal`, `DocumentList` | Pass |
-| Full repository unit suite | `pnpm exec vitest run --testTimeout=15000` | 178 files, 1,345 tests passed |
+| Chapter error logs, diagnostics modal & failure pipeline | `tests/unit/audiobook-chapter-review.vitest.spec.ts`, `ChapterErrorLogModal`, `failure-log` route | Pass |
+| Full repository unit suite | `pnpm exec vitest run --testTimeout=15000` | 180 files, 1,363 tests passed |
 
 Additional release gates passed on `main`:
 
@@ -67,6 +68,17 @@ The `drama-gemini-tts` pipeline is integrated across all audiobook generation to
   configuration, allowing immediate queuing of the audiobook upon saving the cast.
 - **DocumentList**: Handles `AUDIOBOOK_REPLACEMENT_REQUIRED` confirmations and automatically starts
   the drama generation job after cast completion.
+
+### Chapter failure diagnostics and error inspection
+
+When a chapter fails validation (such as `DramaDirectorValidationError` caused by secondary emotion limits or text drift) or TTS synthesis:
+- **Failure Artifact Retention**: Detailed validator issues are persisted directly into `${prefix}__pronunciation_failure.json` and mirrored into `documentSettings.smartAudioReviewFlags`.
+- **Diagnostic Endpoint**: `GET /api/audiobook/failure-log?bookId=...(&chapterIndex=...)` extracts the structured error logs, background job messages, and segment flags.
+- **ChapterErrorLogModal**: Surfaces line-by-line validation errors in a dark monospace log view, categorized with diagnostic badges (🎭 Drama Director Validation, 🛑 Safety Filter Block, ⏱️ Rate Limit, 🔊 FFmpeg / Audio Synthesis) and actionable recommendations.
+- **Queue and Review Triggers**:
+  - In `JobsInlineView`: Failed jobs expose a `📋 View Error Log & Diagnostics` button and an action bar `📋 Error Log` button.
+  - In `/listen/[bookId]`: Failed chapters display an inline `📋 Log` button on list items, a `📋 View Error Log` button in the Chunk Actions toolbar, and a `📋 View All Error Logs` button in the review flags banner.
+  - One-click `📋 Copy Diagnostic Log` copies the complete structured diagnostic payload for debugging or agent handoff.
 
 ## Rollout checklist
 

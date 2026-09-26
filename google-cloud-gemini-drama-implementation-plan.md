@@ -107,6 +107,7 @@ If a stage is blocked, the agent must state the exact blocker and stop instead o
 | 13 | Review/recovery UI | ✅ Complete with notes | Listening-page flags, chapter retry, and resolve controls are implemented; segment-level retry remains deferred. |
 | 14 | Test matrix, documentation, migration, release readiness | ✅ Complete with notes | `docs/google-cloud-drama-release-readiness.md` records automated coverage; live Cloud synthesis, listening, and browser smoke checks remain. |
 | 15 | Audiobook generation UI pipeline integration | ✅ Complete | Wired `drama-gemini-tts` into `AudiobookExportModal`, `BatchAudiobookSidebar`, `MultiVoiceCharacterModal` (Save & Generate), and `DocumentList` replacement flow |
+| 16 | Chapter failure diagnostics & error inspection modal | ✅ Complete | Interactive `ChapterErrorLogModal`, `failure-log` API route, queue & listening review buttons, categorization for Drama Director validation failures |
 
 *Legend: ⬜ Not started · 🟨 In progress · ✅ Complete · ⛔ Blocked*
 

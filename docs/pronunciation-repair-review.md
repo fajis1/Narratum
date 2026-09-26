@@ -85,6 +85,13 @@ the entire audiobook:
 - Once a rejected chapter is successfully approved and re-recorded via Batch Refine,
   its `*__rejected.txt` and `*__pronunciation_failure.json` artifacts are deleted,
   clearing the download gate once all chapters pass.
+- **Diagnostic Error Logs & Inspection Modal**: Rather than having to inspect raw storage
+  artifacts on disk, reviewers can click `📋 View Error Log & Diagnostics` in the queue,
+  `📋 View Error Log` in the listening toolbar, or `📋 Log` on any flagged chapter row.
+  The interactive `ChapterErrorLogModal` fetches from `/api/audiobook/failure-log` to display
+  line-by-line validation errors (e.g. Drama Director schema mismatches, secondary emotion limits,
+  or text drift), classifies the error kind (Drama Director, Safety, Quota, Audio/FFmpeg),
+  provides targeted troubleshooting tips, and allows copying complete diagnostics or requeueing.
 
 ## Foreign-word pre-scan review area and candidate normalization
 
