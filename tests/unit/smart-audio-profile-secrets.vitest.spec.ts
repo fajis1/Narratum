@@ -44,8 +44,9 @@ describe('Smart Audio profile secret boundary', () => {
     expect(restored.document.profiles.slice(0, 2)).toEqual([litrpg, biblical]);
     expect(restored.restoredProfiles).toEqual([
       { id: 'profile-biblical-scholar-defs', name: 'Biblical Scholarship with English Definitions' },
-      { id: 'profile-litrpg-audio-drama', name: 'LitRPG Audio Drama' },
       { id: 'profile-bibliography-catcher', name: 'Bibliography Catcher (Test)' },
+      { id: 'profile-google-cloud-drama', name: 'Google Cloud TTS Audio Drama' },
+      { id: 'profile-litrpg-audio-drama', name: 'LitRPG Audio Drama' },
     ]);
     expect(restored.document.profiles).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'profile-biblical-scholar-defs', workerMode: 'scholar' }),
