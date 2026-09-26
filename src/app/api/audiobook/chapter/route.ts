@@ -63,6 +63,7 @@ import {
 import {
   resolveCleanupAiModel,
   resolveCleanupAiModels,
+  resolveDramaDirectorModel,
   resolveSmartAudioValidationRepairModel,
 } from '@/lib/shared/smart-audio-models';
 import {
@@ -1102,7 +1103,7 @@ export async function POST(request: NextRequest) {
             characterMap: cloudDramaCast,
             geminiApiKey: selectedProfile.geminiApiKey || '',
             backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
-            directorModel: resolveCleanupAiModel(selectedProfile),
+            directorModel: resolveDramaDirectorModel(selectedProfile),
             serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
             dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
             signal: request.signal,

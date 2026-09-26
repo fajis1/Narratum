@@ -1,6 +1,7 @@
 export const DEFAULT_CLEANUP_AI_MODEL = 'gemini-3.1-flash-lite';
 export const DEFAULT_PRONUNCIATION_AI_MODEL = 'gemini-3.8-flash';
 export const SMART_AUDIO_VALIDATION_REPAIR_MODEL = 'gemini-3.8-flash';
+export const DEFAULT_DRAMA_DIRECTOR_MODEL = 'gemini-3.8-flash';
 
 const SMART_AUDIO_REPAIR_ESCALATION_MODELS = new Set([
   'gemini-3.7-flash',
@@ -30,6 +31,24 @@ export function resolveCleanupAiModel(profile: SmartAudioModelProfile | null | u
 
 export function resolveCleanupAiModels(profile: SmartAudioModelProfile | null | undefined): string[] {
   const primary = resolveCleanupAiModel(profile);
+  const seen = new Set([primary]);
+  const fallbacks: string[] = [];
+  for (const value of profile?.aiModelFallbacks || []) {
+    const model = normalizedModel(value);
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    fallbacks.push(model);
+    if (fallbacks.length === 2) break;
+  }
+  return [primary, ...fallbacks];
+}
+
+export function resolveDramaDirectorModel(profile: SmartAudioModelProfile | null | undefined): string {
+  return normalizedModel(profile?.aiModel) || DEFAULT_DRAMA_DIRECTOR_MODEL;
+}
+
+export function resolveDramaDirectorModels(profile: SmartAudioModelProfile | null | undefined): string[] {
+  const primary = resolveDramaDirectorModel(profile);
   const seen = new Set([primary]);
   const fallbacks: string[] = [];
   for (const value of profile?.aiModelFallbacks || []) {

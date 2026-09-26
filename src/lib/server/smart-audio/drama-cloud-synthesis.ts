@@ -5,9 +5,11 @@ import { buildDramaCloudTtsRequest } from './drama-cloud-request';
 import type { DramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
 import {
   CLOUD_TTS_SAFE_TEXT_BYTES, CloudTtsApiError, CloudTtsTransportError, measureUtf8Bytes,
-  stripDisallowedTags, synthesizeWithCloudTts,
+  stripDisallowedTags, synthesizeWithCloudTts, resolveCloudTtsModelFallbacks,
+  CloudTtsQuotaExhaustedError, isCloudTtsQuotaExhaustedError,
 } from './google-cloud-tts-client';
 import type { CloudTtsSynthesisOptions, CloudTtsSynthesisResult } from './google-cloud-tts-client';
+import { serverLogger } from '@/lib/server/logger';
 
 const oneShot = new Set<string>(DRAMA_ONE_SHOT_TAGS);
 const style = new Set<string>(DRAMA_STYLE_TAGS);
@@ -109,6 +111,9 @@ export async function synthesizeDramaSegment(input: {
   languageCode?: string;
   policy?: DramaDirectorPolicy;
   maxAttempts?: number;
+  modelName?: string;
+  fallbackModels?: readonly string[];
+  onModelFallback?: (fromModel: string, toModel: string, reason: string) => void;
   synthesize?: (options: CloudTtsSynthesisOptions) => Promise<CloudTtsSynthesisResult>;
   wait?: (milliseconds: number) => Promise<void>;
 }): Promise<DramaSynthesisResult> {
@@ -121,6 +126,7 @@ export async function synthesizeDramaSegment(input: {
   const attemptsLimit = Math.min(Math.max(input.maxAttempts ?? 3, 1), 5);
   const synthesize = input.synthesize ?? synthesizeWithCloudTts;
   const wait = input.wait ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const candidateModels = resolveCloudTtsModelFallbacks(input.modelName, input.fallbackModels);
 
   let sourceChunks: string[];
   let requestTexts: string[];
@@ -134,6 +140,7 @@ export async function synthesizeDramaSegment(input: {
       characterMap: input.characterMap,
       languageCode: input.languageCode,
       policy: input.policy,
+      modelName: candidateModels[0],
     });
     baseOptions = built.synthesisOptions;
     if (built.promptCompacted) reviewFlags.push({
@@ -159,29 +166,89 @@ export async function synthesizeDramaSegment(input: {
     const requestText = requestTexts[index];
     let lastError: unknown;
     let usedAttempts = 0;
-    for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
-      usedAttempts = attempt;
-      try {
-        const result = await synthesize({
-          ...baseOptions,
-          text: requestText,
-          serviceAccountJson: input.serviceAccountJson,
-          credentialCacheKey: input.credentialCacheKey,
-        });
-        if (result.audioBuffer.length === 0) throw new Error('Empty Cloud TTS audio');
-        chunks.push({ sourceText, requestText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
-        if (attempt > 1) reviewFlags.push({
-          kind: 'tts-retry-used', speaker: segment.speaker, sourceText,
-          chunkIndex: index, attempts: attempt, reason: 'Cloud TTS succeeded after a transient retry.',
-        });
-        lastError = null;
+    let chunkSucceeded = false;
+
+    for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx += 1) {
+      const currentModel = candidateModels[modelIdx];
+      let modelSucceeded = false;
+
+      for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
+        usedAttempts += 1;
+        try {
+          const result = await synthesize({
+            ...baseOptions,
+            modelName: currentModel,
+            text: requestText,
+            serviceAccountJson: input.serviceAccountJson,
+            credentialCacheKey: input.credentialCacheKey,
+          });
+          if (result.audioBuffer.length === 0) throw new Error('Empty Cloud TTS audio');
+          chunks.push({ sourceText, requestText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
+          if (modelIdx > 0) {
+            reviewFlags.push({
+              kind: 'tts-fallback-used',
+              speaker: segment.speaker,
+              sourceText,
+              chunkIndex: index,
+              attempts: usedAttempts,
+              reason: `Cloud TTS fell back to model ${currentModel}.`,
+            });
+          } else if (attempt > 1) {
+            reviewFlags.push({
+              kind: 'tts-retry-used',
+              speaker: segment.speaker,
+              sourceText,
+              chunkIndex: index,
+              attempts: attempt,
+              reason: 'Cloud TTS succeeded after a transient retry.',
+            });
+          }
+          lastError = null;
+          modelSucceeded = true;
+          chunkSucceeded = true;
+          break;
+        } catch (error) {
+          lastError = error;
+          const isModelUnavailable = error instanceof CloudTtsApiError &&
+            (error.statusCode === 404 || (error.statusCode === 400 && /not found|unsupported/i.test(error.detail)));
+          if (isModelUnavailable) {
+            break;
+          }
+          if (!retryable(error) || attempt === attemptsLimit) break;
+          await wait(250 * 2 ** (attempt - 1));
+        }
+      }
+
+      if (modelSucceeded) {
         break;
-      } catch (error) {
-        lastError = error;
-        if (!retryable(error) || attempt === attemptsLimit) break;
-        await wait(250 * 2 ** (attempt - 1));
+      }
+
+      if (modelIdx + 1 < candidateModels.length) {
+        const nextModel = candidateModels[modelIdx + 1];
+        serverLogger.warn({
+          event: 'cloud_tts.model_fallback',
+          speaker: segment.speaker,
+          fromModel: currentModel,
+          toModel: nextModel,
+          reason: failureReason(lastError),
+        }, `Cloud TTS model ${currentModel} failed; falling back to ${nextModel}`);
+        input.onModelFallback?.(currentModel, nextModel, failureReason(lastError));
       }
     }
+
+    if (chunkSucceeded) {
+      continue;
+    }
+
+    // If quota or credits were exhausted across all models, throw to trigger queue pause:
+    if (lastError && isCloudTtsQuotaExhaustedError(lastError)) {
+      throw new CloudTtsQuotaExhaustedError(
+        `Google Cloud TTS quota or daily credits exhausted on all models (last error: ${failureReason(lastError)}).`,
+        lastError instanceof CloudTtsApiError ? lastError.statusCode : 429,
+        true,
+      );
+    }
+
     if (lastError && canSimplifyAfterFailure(lastError)) {
       const fallbackPrompts = [
         `Keep ${segment.speaker}'s established voice. Perform with ${segment.performance.primaryEmotion} emotion and ${segment.performance.socialIntent} intent. Speak the exact supplied text naturally.`,
@@ -191,18 +258,25 @@ export async function synthesizeDramaSegment(input: {
         usedAttempts += 1;
         try {
           const result = await synthesize({
-            ...baseOptions, text: sourceText, stylePrompt,
+            ...baseOptions,
+            text: sourceText,
+            stylePrompt,
+            modelName: candidateModels[0],
             serviceAccountJson: input.serviceAccountJson,
             credentialCacheKey: input.credentialCacheKey,
           });
           if (result.audioBuffer.length === 0) throw new Error('Empty Cloud TTS audio');
           chunks.push({ sourceText, requestText: sourceText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
           reviewFlags.push({
-            kind: 'tts-fallback-used', speaker: segment.speaker, sourceText,
-            chunkIndex: index, attempts: usedAttempts,
+            kind: 'tts-fallback-used',
+            speaker: segment.speaker,
+            sourceText,
+            chunkIndex: index,
+            attempts: usedAttempts,
             reason: fallbackIndex === 0 ? 'Cloud TTS used simplified performance direction.' : 'Cloud TTS used neutral performance direction.',
           });
           lastError = null;
+          chunkSucceeded = true;
           break;
         } catch (error) {
           lastError = error;
@@ -210,11 +284,16 @@ export async function synthesizeDramaSegment(input: {
         }
       }
     }
+
     if (lastError) {
       chunks.push({ sourceText, requestText, audioBuffer: null, needsPlaceholder: true, omitted: false });
       reviewFlags.push({
-        kind: 'cloud-tts-failed', speaker: segment.speaker, sourceText,
-        chunkIndex: index, attempts: usedAttempts, reason: failureReason(lastError),
+        kind: 'cloud-tts-failed',
+        speaker: segment.speaker,
+        sourceText,
+        chunkIndex: index,
+        attempts: usedAttempts,
+        reason: failureReason(lastError),
       });
     }
   }

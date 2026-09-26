@@ -38,7 +38,35 @@ export { DRAMA_ONE_SHOT_TAGS, DRAMA_STYLE_TAGS, DRAMA_PAUSE_TAGS };
 export const CLOUD_TTS_ENDPOINT =
   'https://texttospeech.googleapis.com/v1/text:synthesize';
 
-export const CLOUD_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+export const CLOUD_TTS_MODEL = 'gemini-3.8-flash-tts';
+
+export const CLOUD_TTS_FALLBACK_MODELS = [
+  'gemini-3.7-flash-tts',
+  'gemini-3.6-flash-tts',
+  'gemini-3.1-flash-tts-preview',
+] as const;
+
+export const CLOUD_TTS_MODEL_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
+  'gemini-3.8-flash-tts': ['gemini-3.7-flash-tts', 'gemini-3.6-flash-tts', 'gemini-3.1-flash-tts-preview'],
+  'gemini-3.8-flash-tts-preview': ['gemini-3.7-flash-tts-preview', 'gemini-3.6-flash-tts-preview', 'gemini-3.1-flash-tts-preview'],
+  'gemini-3.8-flash': ['gemini-3.7-flash', 'gemini-3.6-flash'],
+  'gemini-3.7-flash-tts': ['gemini-3.6-flash-tts', 'gemini-3.1-flash-tts-preview'],
+  'gemini-3.7-flash-tts-preview': ['gemini-3.6-flash-tts-preview', 'gemini-3.1-flash-tts-preview'],
+  'gemini-3.6-flash-tts': ['gemini-3.1-flash-tts-preview'],
+  'gemini-3.6-flash-tts-preview': ['gemini-3.1-flash-tts-preview'],
+};
+
+export function resolveCloudTtsModelFallbacks(
+  requestedModel?: string | null,
+  customFallbacks?: readonly string[],
+): string[] {
+  const model = requestedModel?.trim() || CLOUD_TTS_MODEL;
+  if (customFallbacks && customFallbacks.length > 0) {
+    return [...new Set([model, ...customFallbacks.map((f) => f.trim()).filter(Boolean)])];
+  }
+  const fallbacks = CLOUD_TTS_MODEL_FALLBACKS[model] ?? CLOUD_TTS_FALLBACK_MODELS;
+  return [...new Set([model, ...fallbacks])];
+}
 
 // ── Byte limits (conservative vs. the 4,000-byte hard cap) ────────────────────
 
@@ -275,6 +303,8 @@ export interface CloudTtsSynthesisOptions {
   voiceName: string;
   /** Language code; defaults to 'en-US'. */
   languageCode?: string;
+  /** Optional Gemini TTS model name. Defaults to CLOUD_TTS_MODEL ('gemini-3.8-flash-tts'). */
+  modelName?: string;
   /**
    * Service Account JSON for this profile.
    * If absent, falls back to Application Default Credentials.
@@ -302,6 +332,8 @@ export interface CloudTtsSynthesisResult {
    * in the production allowlist.
    */
   strippedTags: string[];
+  /** The Cloud TTS model name that was used for synthesis. */
+  usedModel: string;
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -324,6 +356,31 @@ export class CloudTtsApiError extends Error {
   }
 }
 
+export class CloudTtsQuotaExhaustedError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number = 429,
+    public readonly isDailyQuota: boolean = true,
+  ) {
+    super(message);
+    this.name = 'CloudTtsQuotaExhaustedError';
+  }
+}
+
+export function isCloudTtsQuotaExhaustedError(error: unknown): boolean {
+  if (error instanceof CloudTtsQuotaExhaustedError) return true;
+  if (error instanceof CloudTtsApiError) {
+    if (error.statusCode === 429) return true;
+    if (error.statusCode === 403) {
+      const lower = (error.detail || error.message).toLowerCase();
+      return lower.includes('quota') || lower.includes('credit') || lower.includes('resource_exhausted') || lower.includes('billing') || lower.includes('limit');
+    }
+  }
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (message.includes('429') || message.includes('quota') || message.includes('resource_exhausted') || message.includes('credit') || message.includes('rate limit')) &&
+    !message.includes('director validation');
+}
+
 export class CloudTtsTransportError extends Error {
   constructor(cause: unknown) {
     super('Failed to reach Google Cloud TTS endpoint.', { cause });
@@ -333,7 +390,7 @@ export class CloudTtsTransportError extends Error {
 
 /** Build the documented REST body and check the final UTF-8 field sizes. */
 export function buildCloudTtsRequest(options: Pick<CloudTtsSynthesisOptions,
-  'text' | 'stylePrompt' | 'voiceName' | 'languageCode' | 'technicalOverrides'>): CloudTtsSynthesizeRequest {
+  'text' | 'stylePrompt' | 'voiceName' | 'languageCode' | 'technicalOverrides' | 'modelName'>): CloudTtsSynthesizeRequest {
   const { sanitized: text } = stripDisallowedTags(options.text);
   const prompt = options.stylePrompt;
   if (!options.voiceName.trim()) throw new CloudTtsInputError('Voice name must not be empty.');
@@ -353,7 +410,7 @@ export function buildCloudTtsRequest(options: Pick<CloudTtsSynthesisOptions,
   }
   return {
     input: { text, ...(prompt ? { prompt } : {}) },
-    voice: { name: options.voiceName, languageCode: options.languageCode ?? 'en-US', modelName: CLOUD_TTS_MODEL },
+    voice: { name: options.voiceName, languageCode: options.languageCode ?? 'en-US', modelName: options.modelName || CLOUD_TTS_MODEL },
     audioConfig: {
       audioEncoding: 'MP3',
       ...(speakingRate !== undefined ? { speakingRate } : {}),
@@ -431,7 +488,14 @@ export async function synthesizeWithCloudTts(
 
   // ── 5. Build request body ──────────────────────────────────────────────────
 
-  const requestBody = buildCloudTtsRequest({ text, stylePrompt, voiceName, languageCode, technicalOverrides });
+  const requestBody = buildCloudTtsRequest({
+    text,
+    stylePrompt,
+    voiceName,
+    languageCode,
+    technicalOverrides,
+    modelName: options.modelName,
+  });
 
   // ── 6. Make the request ────────────────────────────────────────────────────
 
@@ -492,5 +556,6 @@ export async function synthesizeWithCloudTts(
     audioBuffer,
     credentialCacheKey: cacheKey,
     strippedTags,
+    usedModel: options.modelName || CLOUD_TTS_MODEL,
   };
 }

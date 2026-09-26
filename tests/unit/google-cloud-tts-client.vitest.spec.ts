@@ -25,6 +25,10 @@ import {
   DRAMA_PAUSE_TAGS,
   DRAMA_ALLOWED_TAG_SET,
   CLOUD_TTS_MODEL,
+  CLOUD_TTS_FALLBACK_MODELS,
+  resolveCloudTtsModelFallbacks,
+  CloudTtsQuotaExhaustedError,
+  isCloudTtsQuotaExhaustedError,
 } from '../../src/lib/server/smart-audio/google-cloud-tts-client';
 
 import { GoogleCloudAuthError } from '../../src/lib/server/smart-audio/google-cloud-auth';
@@ -466,7 +470,30 @@ describe('Stage 3 — byte limit constants', () => {
     expect(CLOUD_TTS_SAFE_PROMPT_BYTES).toBe(3600);
   });
 
-  it('CLOUD_TTS_MODEL is gemini-3.1-flash-tts-preview', () => {
-    expect(CLOUD_TTS_MODEL).toBe('gemini-3.1-flash-tts-preview');
+  it('CLOUD_TTS_MODEL is gemini-3.8-flash-tts', () => {
+    expect(CLOUD_TTS_MODEL).toBe('gemini-3.8-flash-tts');
+  });
+
+  it('CLOUD_TTS_FALLBACK_MODELS contains 3.7 and 3.6', () => {
+    expect(CLOUD_TTS_FALLBACK_MODELS).toEqual([
+      'gemini-3.7-flash-tts',
+      'gemini-3.6-flash-tts',
+      'gemini-3.1-flash-tts-preview',
+    ]);
+  });
+
+  it('resolveCloudTtsModelFallbacks produces 3.8 -> 3.7 -> 3.6 fallback chain by default', () => {
+    const chain = resolveCloudTtsModelFallbacks();
+    expect(chain[0]).toBe('gemini-3.8-flash-tts');
+    expect(chain).toContain('gemini-3.7-flash-tts');
+    expect(chain).toContain('gemini-3.6-flash-tts');
+  });
+
+  it('isCloudTtsQuotaExhaustedError identifies 429 and 403 quota exhaustion', () => {
+    expect(isCloudTtsQuotaExhaustedError(new CloudTtsQuotaExhaustedError('Quota exceeded'))).toBe(true);
+    expect(isCloudTtsQuotaExhaustedError(new CloudTtsApiError('Resource exhausted', 429, 'RESOURCE_EXHAUSTED'))).toBe(true);
+    expect(isCloudTtsQuotaExhaustedError(new CloudTtsApiError('Daily limit exceeded', 403, 'Quota exceeded'))).toBe(true);
+    expect(isCloudTtsQuotaExhaustedError(new CloudTtsApiError('Unauthorized', 401, 'Bad token'))).toBe(false);
+    expect(isCloudTtsQuotaExhaustedError(new CloudTtsApiError('Internal error', 500, 'Server error'))).toBe(false);
   });
 });

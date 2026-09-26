@@ -496,10 +496,37 @@ export async function PATCH(req: NextRequest) {
         .set({ status: 'paused', updatedAt: Date.now() })
         .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId), inArray(audiobookJobs.status, ['queued', 'running', 'waiting_for_pdf'])));
     } else if (action === 'resume') {
+      const existingRows = await db.select({ settingsJson: audiobookJobs.settingsJson })
+        .from(audiobookJobs)
+        .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId)))
+        .limit(1);
+
+      let updatedSettingsJson: string | undefined = undefined;
+      if (existingRows.length > 0) {
+        try {
+          const parsed = typeof existingRows[0].settingsJson === 'string'
+            ? JSON.parse(existingRows[0].settingsJson)
+            : (existingRows[0].settingsJson || {});
+          if (parsed && typeof parsed === 'object') {
+            delete parsed.nextAttemptAt;
+            updatedSettingsJson = JSON.stringify(parsed);
+          }
+        } catch {}
+      }
+
       await db.update(audiobookJobs)
-        .set({ status: 'queued', error: null, updatedAt: Date.now() })
-        .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId), eq(audiobookJobs.status, 'paused')));
-      
+        .set({
+          status: 'queued',
+          error: null,
+          updatedAt: Date.now(),
+          ...(updatedSettingsJson ? { settingsJson: updatedSettingsJson } : {}),
+        })
+        .where(and(
+          eq(audiobookJobs.id, id),
+          eq(audiobookJobs.userId, ctxOrRes.userId),
+          inArray(audiobookJobs.status, ['paused', 'queued']),
+        ));
+
       runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
       wakeAudiobookQueue();
     }

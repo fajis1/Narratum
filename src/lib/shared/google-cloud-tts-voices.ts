@@ -60,7 +60,7 @@ export const CLOUD_TTS_MALE_VOICES = [
 
 export type CloudTtsMaleVoice = (typeof CLOUD_TTS_MALE_VOICES)[number];
 
-export const CLOUD_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+export const CLOUD_TTS_MODEL = 'gemini-3.8-flash-tts';
 
 // ── Combined catalog (30) ─────────────────────────────────────────────────────
 

@@ -33,7 +33,7 @@ describe('Drama Cloud TTS request builder', () => {
     const result = buildDramaCloudTtsRequest({ segment, characterMap });
     expect(result.request).toMatchObject({
       input: { text: 'We should go.' },
-      voice: { name: 'Kore', languageCode: 'en-US', modelName: 'gemini-3.1-flash-tts-preview' },
+      voice: { name: 'Kore', languageCode: 'en-US', modelName: 'gemini-3.8-flash-tts' },
       audioConfig: { audioEncoding: 'MP3', speakingRate: 0.9, pitch: -1 },
     });
     expect(result.request).not.toHaveProperty('styleInstructions');

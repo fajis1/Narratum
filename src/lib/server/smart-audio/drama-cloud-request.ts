@@ -84,6 +84,7 @@ export function buildDramaCloudTtsRequest(input: {
   characterMap: SmartAudioCharacterMap;
   languageCode?: string;
   policy?: DramaDirectorPolicy;
+  modelName?: string;
 }): DramaCloudRequest {
   const { segment } = input;
   if (segment.omit_from_audio) throw new CloudTtsInputError('An omitted segment cannot be synthesized.');
@@ -98,6 +99,7 @@ export function buildDramaCloudTtsRequest(input: {
     stylePrompt,
     voiceName: entry.voiceId!,
     languageCode: input.languageCode ?? 'en-US',
+    modelName: input.modelName,
     ...(entry.cloudDirection?.technicalOverrides
       ? { technicalOverrides: entry.cloudDirection.technicalOverrides }
       : {}),

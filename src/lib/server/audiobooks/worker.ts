@@ -32,12 +32,15 @@ import {
 import {
   AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
   GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
+  GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE,
+  calculateRemainingDailyQuotaMs,
 } from '@/lib/shared/audiobook-job-status';
 import { isAudiobookJobEligibleToRun } from './queue-eligibility';
 export { isAudiobookJobEligibleToRun } from './queue-eligibility';
 import {
   resolveCleanupAiModel,
   resolveCleanupAiModels,
+  resolveDramaDirectorModel,
   resolveSmartAudioValidationRepairModel,
 } from '@/lib/shared/smart-audio-models';
 import {
@@ -72,6 +75,12 @@ import {
   autoAssignCloudTtsMinorVoices,
   getCloudTtsCharacterMapReadiness,
 } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import {
+  CLOUD_TTS_MODEL,
+  CLOUD_TTS_FALLBACK_MODELS,
+  CloudTtsQuotaExhaustedError,
+  isCloudTtsQuotaExhaustedError,
+} from '@/lib/server/smart-audio/google-cloud-tts-client';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
 import { mergeGlobalDefinitions, readGlobalDefinitions } from '@/lib/server/smart-audio/global-definition-library';
 import { preparePdfAudiobookBlocks } from '@/lib/shared/pdf-audiobook-blocks';
@@ -1723,10 +1732,12 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               characterMap: resolvedDocumentSettings.smartAudioCharacters!,
               geminiApiKey: selectedProfile.geminiApiKey || '',
               backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
-              directorModel: resolveCleanupAiModel(selectedProfile),
+              directorModel: resolveDramaDirectorModel(selectedProfile),
               serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
               dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
               priorContinuityState: continuityState,
+              ttsModel: typeof settings.ttsModel === 'string' && settings.ttsModel.trim() ? settings.ttsModel : CLOUD_TTS_MODEL,
+              ttsModelFallbacks: CLOUD_TTS_FALLBACK_MODELS,
             });
             ttsBuffer = drama.audioBuffer;
             await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: drama.reviewFlags });
@@ -1781,6 +1792,51 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       } catch (error) {
         if (error instanceof AudiobookJobStoppedError) throw error;
         const message = error instanceof Error ? error.message : String(error);
+
+        // ── Smart HTTP Errorcode / Quota Handling for Cloud Drama & TTS ───────
+        const isCloudTtsQuota = isCloudTtsQuotaExhaustedError(error);
+        const isGeminiQuota = /\bHTTP (429|503)\b/.test(message) ||
+          /resource_exhausted|quota exceeded|rate limit|too many requests/i.test(message);
+
+        if (isCloudTtsQuota || isGeminiQuota) {
+          if (nc) await nc.close();
+          const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
+
+          const isDaily = isCloudTtsQuota
+            ? (error instanceof CloudTtsQuotaExhaustedError ? error.isDailyQuota : true)
+            : /daily|quota|credit/i.test(message) || /\b429\b/.test(message);
+          const cooldownMs = isDaily
+            ? calculateRemainingDailyQuotaMs()
+            : 300 * 1000;
+
+          jobSettingsParsed.nextAttemptAt = Date.now() + cooldownMs;
+
+          const pauseMessage = isCloudTtsQuota
+            ? GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE
+            : GEMINI_RATE_LIMIT_PAUSE_MESSAGE;
+
+          await updateClaimedAudiobookJob(job.id, 'running', {
+            status: 'queued',
+            createdAt: job.createdAt,
+            updatedAt: Date.now(),
+            error: pauseMessage,
+            settingsJson: JSON.stringify(jobSettingsParsed),
+          });
+
+          serverLogger.warn({
+            event: isCloudTtsQuota ? 'audiobook.queue.cloud_tts.quota_paused' : 'audiobook.queue.drama_director.rate_limit_paused',
+            jobId: job.id,
+            bookId,
+            chapter: chapter.index,
+            cooldownSeconds: Math.round(cooldownMs / 1000),
+            error: message,
+          }, isCloudTtsQuota
+            ? `Google Cloud TTS daily quota/credits exhausted. Pausing audiobook until daily refresh (${Math.round(cooldownMs / 1000)}s).`
+            : `Drama Director hit Gemini API limits. Yielding job with ${Math.round(cooldownMs / 1000)}s cooldown.`
+          );
+          return;
+        }
+
         const issues = (error instanceof DramaDirectorValidationError || (error as { name?: string })?.name === 'DramaDirectorValidationError') && Array.isArray((error as { issues?: string[] }).issues)
           ? (error as { issues: string[] }).issues
           : error instanceof CloudDramaGenerationError

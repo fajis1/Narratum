@@ -30,6 +30,9 @@ export async function generateCloudDramaAudiobook(input: {
   dramaGeminiTtsSettings?: unknown;
   priorContinuityState?: string;
   signal?: AbortSignal;
+  ttsModel?: string;
+  ttsModelFallbacks?: readonly string[];
+  onModelFallback?: (fromModel: string, toModel: string, reason: string) => void;
 }): Promise<CloudDramaAudiobookResult> {
   const readiness = getCloudTtsCharacterMapReadiness(input.characterMap);
   if (!readiness.ready || !readiness.map) throw new Error('Cloud Drama cast is not ready.');
@@ -64,6 +67,9 @@ export async function generateCloudDramaAudiobook(input: {
         serviceAccountJson: input.serviceAccountJson,
         languageCode: profileSettings.languageCode,
         policy,
+        modelName: input.ttsModel,
+        fallbackModels: input.ttsModelFallbacks,
+        onModelFallback: input.onModelFallback,
       });
       reviewFlags.push(...result.reviewFlags);
       const failures = result.reviewFlags.filter((flag) => flag.kind === 'cloud-tts-failed');

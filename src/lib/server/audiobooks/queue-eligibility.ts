@@ -1,4 +1,4 @@
-import { GEMINI_RATE_LIMIT_PAUSE_MESSAGE } from '@/lib/shared/audiobook-job-status';
+import { isGeminiRateLimitPause } from '@/lib/shared/audiobook-job-status';
 
 export interface AudiobookJobCandidate {
   id: string;
@@ -26,7 +26,7 @@ export function isAudiobookJobEligibleToRun(
   if (activeRunningJobIds.has(row.id)) return false;
   try {
     const settings = typeof row.settingsJson === 'string' ? JSON.parse(row.settingsJson) : (row.settingsJson || {});
-    if (row.error === GEMINI_RATE_LIMIT_PAUSE_MESSAGE) {
+    if (isGeminiRateLimitPause(row.error)) {
       if (typeof settings?.nextAttemptAt === 'number') {
         return settings.nextAttemptAt <= now;
       }

@@ -3,7 +3,10 @@
 import { useState, useEffect } from 'react';
 import { MultiVoiceCharacterModal } from '@/components/doclist/MultiVoiceCharacterModal';
 import { ChapterErrorLogModal } from '@/components/audiobooks/ChapterErrorLogModal';
-import { AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS } from '@/lib/shared/audiobook-job-status';
+import {
+  AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
+  isGeminiRateLimitPause,
+} from '@/lib/shared/audiobook-job-status';
 import { WAITING_FOR_VOICES_STATUS } from '@/lib/shared/multi-voice';
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from '@/lib/shared/audiobook-runtime-phase';
 
@@ -377,7 +380,7 @@ export function JobsInlineView() {
                             ? 'text-accent'
                             : 'text-warning'
                         }`}>
-                          {job.status}
+                          {isGeminiRateLimitPause(job.error) && job.status === 'queued' ? 'paused (rate limit)' : job.status}
                         </span>
                         {isWaitingForGpu && (
                           <span className="ml-2 uppercase font-semibold text-warning">· Waiting for GPU</span>
@@ -417,15 +420,26 @@ export function JobsInlineView() {
                       <span>Created: {new Date(job.createdAt).toLocaleString()}</span>
                       {job.error && !isWaitingForVoices && (
                         <div className="mt-1">
-                          <p className="text-danger max-w-md break-words">Error: {job.error}</p>
-                          <button
-                            type="button"
-                            onClick={() => setErrorLogJob(job)}
-                            className="mt-1 text-accent font-semibold hover:underline flex items-center gap-1 text-xs"
-                            title="View detailed validation errors and diagnostic logs"
-                          >
-                            <span>📋 View Error Log & Diagnostics</span>
-                          </button>
+                          {isGeminiRateLimitPause(job.error) ? (
+                            <div className="bg-warning/10 border border-warning/30 rounded p-2 text-warning max-w-md text-left">
+                              <p className="font-semibold flex items-center gap-1">
+                                <span>⏸️ Paused (Rate Limit / Quota)</span>
+                              </p>
+                              <p className="mt-0.5 break-words">{job.error}</p>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-danger max-w-md break-words">Error: {job.error}</p>
+                              <button
+                                type="button"
+                                onClick={() => setErrorLogJob(job)}
+                                className="mt-1 text-accent font-semibold hover:underline flex items-center gap-1 text-xs"
+                                title="View detailed validation errors and diagnostic logs"
+                              >
+                                <span>📋 View Error Log & Diagnostics</span>
+                              </button>
+                            </>
+                          )}
                         </div>
                       )}
                       {isPauseRequested && <p className="mt-1 text-warning">Pause requested. The worker will stop after its current step.</p>}
@@ -448,12 +462,12 @@ export function JobsInlineView() {
                           Listen / Download
                         </a>
                       )}
-                      {!isWaitingForVoices && ['queued', 'running', 'waiting_for_pdf'].includes(job.status) && (
+                      {!isWaitingForVoices && !isGeminiRateLimitPause(job.error) && ['queued', 'running', 'waiting_for_pdf'].includes(job.status) && (
                         <button onClick={() => { onTogglePauseJob(job.id, 'pause'); }} className="text-warning font-semibold hover:underline bg-surface-sunken border border-warning px-2 py-1 rounded">
                           Pause
                         </button>
                       )}
-                      {job.status === 'paused' && (
+                      {(job.status === 'paused' || (job.status === 'queued' && isGeminiRateLimitPause(job.error))) && (
                         <button onClick={() => { onTogglePauseJob(job.id, 'resume'); }} className="text-success font-semibold hover:underline bg-surface-sunken border border-success px-2 py-1 rounded">
                           Resume
                         </button>
