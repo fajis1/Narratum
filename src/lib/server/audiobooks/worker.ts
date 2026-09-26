@@ -1881,6 +1881,17 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
     await db.update(audiobooks).set({ totalBytes }).where(and(eq(audiobooks.id, bookId), eq(audiobooks.userId, userId)));
     serverLogger.info({ event: 'audiobook.queue.complete', jobId: job.id, documentId: job.documentId }, `Successfully completed audiobook job ${job.id}`);
 
+    if (jobSettings.useSmartAudio) {
+      // Post-generation pronunciation repair sweep (fire-and-don't-fail)
+      try {
+        const { runPostGenerationPronunciationSweep } = await import('./post-generation-repair');
+        const sweepStats = await runPostGenerationPronunciationSweep(bookId, userId, job.id, jobSettings.smartAudioProfileId);
+        serverLogger.info({ event: 'audiobook.postsweep.complete', jobId: job.id, ...sweepStats }, 'Post-generation pronunciation sweep complete');
+      } catch (sweepErr) {
+        serverLogger.warn({ event: 'audiobook.postsweep.failed', error: String(sweepErr) }, 'Post-generation pronunciation sweep failed (non-fatal)');
+      }
+    }
+
     // Fire-and-forget internal request to pre-compile the .m4b so the user doesn't have to wait
     const baseUrl = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT || 3003}`;
     fetch(`${baseUrl}/api/audiobook?bookId=${bookId}&format=m4b&userId=${userId}`, {

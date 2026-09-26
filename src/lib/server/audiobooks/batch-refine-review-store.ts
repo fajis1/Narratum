@@ -193,6 +193,7 @@ export async function approveBatchRefineChange(input: {
   overrideIssueIds?: string[];
   recordingVoice?: string;
   overrideFullManualEdit?: boolean;
+  skipJobIdleCheck?: boolean;
 }): Promise<{ changeId: string; queued: boolean }> {
   const owned = await ownedChange(input.changeId, input.userId);
   if (!owned) throw new BatchRefineReviewConflictError('Batch Refine change not found.');
@@ -207,7 +208,7 @@ export async function approveBatchRefineChange(input: {
   const pronunciationRepair = owned.run.rule === PRONUNCIATION_REPAIR_RULE;
   if (pronunciationRepair) {
     const jobs = await db.select({ status: audiobookJobs.status }).from(audiobookJobs).where(and(eq(audiobookJobs.userId, input.userId), eq(audiobookJobs.documentId, owned.change.documentId)));
-    if (jobs.some((job: { status: string }) => job.status === 'queued' || job.status === 'running')) throw new BatchRefineReviewConflictError('Pause background generation before approving pronunciation repairs.');
+    if (!input.skipJobIdleCheck && jobs.some((job: { status: string }) => job.status === 'queued' || job.status === 'running')) throw new BatchRefineReviewConflictError('Pause background generation before approving pronunciation repairs.');
     await assertStoredPronunciationRepair({ bookId: owned.change.documentId, userId: input.userId, fileName: owned.change.textFileName, previous: owned.change.previousText, proposed: proposedText, allowSourceEvidenceOverride: input.overrideSourceEvidence === true, overrideIssueIds: input.overrideIssueIds, allowFullManualOverride: input.overrideFullManualEdit === true });
     if (/<voice\b/u.test(proposedText)) parseVoiceTaggedText(proposedText, { includeOmitted: true });
   }
