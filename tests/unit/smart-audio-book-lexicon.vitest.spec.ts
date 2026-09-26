@@ -515,7 +515,7 @@ describe('Smart Audio book lexicon', () => {
     expect(defaults.profiles.filter((profile) => profile.workerMode === 'multi-voice'))
       .toEqual([expect.objectContaining({ name: 'LitRPG Audio Drama' })]);
     expect(defaults.profiles
-      .filter((profile) => !['scholar', 'bibliography-catcher', 'multi-voice'].includes(profile.workerMode || ''))
+      .filter((profile) => !['scholar', 'bibliography-catcher', 'multi-voice', 'drama-gemini-tts'].includes(profile.workerMode || ''))
       .every((profile) => profile.workerMode === 'standard'))
       .toBe(true);
   });
