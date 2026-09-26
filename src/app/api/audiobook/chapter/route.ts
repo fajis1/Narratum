@@ -33,6 +33,7 @@ import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace'
 import { getFFmpegPath } from '@/lib/server/audiobooks/ffmpeg-bin';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
+import { DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
 import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
@@ -1111,6 +1112,23 @@ export async function POST(request: NextRequest) {
         } catch (error) {
           if (error instanceof CloudDramaGenerationError) {
             await persistCloudDramaReviewFlags({ documentId: sourceDocumentId, userId: storageUserId, chapterIndex, flags: error.reviewFlags });
+          } else if (error instanceof DramaDirectorValidationError || (error as { name?: string })?.name === 'DramaDirectorValidationError') {
+            const issues = Array.isArray((error as { issues?: string[] }).issues)
+              ? (error as { issues: string[] }).issues
+              : [error instanceof Error ? error.message : String(error)];
+            await persistCloudDramaReviewFlags({
+              documentId: sourceDocumentId,
+              userId: storageUserId,
+              chapterIndex,
+              flags: [{
+                kind: 'director-validation-repair',
+                speaker: 'Director',
+                sourceText: processedTextForTts.slice(0, 300),
+                chunkIndex: 0,
+                attempts: 2,
+                reason: `Drama Director output failed validation: ${issues.slice(0, 3).join('; ')}`,
+              }],
+            }).catch(() => {});
           }
           throw error;
         }
@@ -1312,8 +1330,10 @@ export async function POST(request: NextRequest) {
       event: 'audiobook.chapter.process.failed',
       error: errorToLog(error),
     }, 'Failed to process audio chapter');
+    const rawMessage = error instanceof Error ? error.message : 'Failed to process audio chapter';
     const response = errorResponse(error, {
-      apiErrorMessage: 'Failed to process audio chapter',
+      apiErrorMessage: rawMessage,
+      includeDetails: true,
       normalize: { code: 'AUDIOBOOK_CHAPTER_PROCESS_FAILED', errorClass: 'upstream' },
     });
     attachDeviceIdCookie(response, deviceIdToSet, didCreateDeviceIdCookie);

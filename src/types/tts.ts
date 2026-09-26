@@ -70,5 +70,6 @@ export interface TTSAudiobookChapter {
   isEmptyText?: boolean;
   hasAudio?: boolean;
   hasRejected?: boolean;
+  hasFailure?: boolean;
   needsReview?: boolean;
 }

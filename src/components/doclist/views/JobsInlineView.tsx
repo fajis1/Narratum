@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { MultiVoiceCharacterModal } from '@/components/doclist/MultiVoiceCharacterModal';
+import { ChapterErrorLogModal } from '@/components/audiobooks/ChapterErrorLogModal';
 import { AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS } from '@/lib/shared/audiobook-job-status';
 import { WAITING_FOR_VOICES_STATUS } from '@/lib/shared/multi-voice';
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from '@/lib/shared/audiobook-runtime-phase';
@@ -65,6 +66,7 @@ export function JobsInlineView() {
   const [clearing, setClearing] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [castingJob, setCastingJob] = useState<Job | null>(null);
+  const [errorLogJob, setErrorLogJob] = useState<Job | null>(null);
   const [filter, setFilter] = useState<QueueFilter>('active');
   const [hasInitializedFilter, setHasInitializedFilter] = useState(false);
 
@@ -413,7 +415,19 @@ export function JobsInlineView() {
                   <div className="sm:text-right text-xs text-soft flex flex-col sm:items-end justify-between gap-2">
                     <div>
                       <span>Created: {new Date(job.createdAt).toLocaleString()}</span>
-                      {job.error && !isWaitingForVoices && <p className="text-danger mt-1 max-w-md break-words">Error: {job.error}</p>}
+                      {job.error && !isWaitingForVoices && (
+                        <div className="mt-1">
+                          <p className="text-danger max-w-md break-words">Error: {job.error}</p>
+                          <button
+                            type="button"
+                            onClick={() => setErrorLogJob(job)}
+                            className="mt-1 text-accent font-semibold hover:underline flex items-center gap-1 text-xs"
+                            title="View detailed validation errors and diagnostic logs"
+                          >
+                            <span>📋 View Error Log & Diagnostics</span>
+                          </button>
+                        </div>
+                      )}
                       {isPauseRequested && <p className="mt-1 text-warning">Pause requested. The worker will stop after its current step.</p>}
                       {isWaitingForVoices && <p className="mt-1 text-warning">Character casting review is required before generation can continue.</p>}
                     </div>
@@ -445,9 +459,25 @@ export function JobsInlineView() {
                         </button>
                       )}
                       {job.status === 'error' && (
-                        <button onClick={() => { onRequeueJob(job.id); }} className="text-accent font-semibold hover:underline bg-surface-sunken border border-accent px-2 py-1 rounded">
-                          Requeue
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setErrorLogJob(job)}
+                            className="text-amber-500 font-semibold hover:underline bg-surface-sunken border border-amber-500/40 px-2 py-1 rounded flex items-center gap-1"
+                            title="Inspect chapter validation errors and failure details"
+                          >
+                            <span>📋 Error Log</span>
+                          </button>
+                          <a
+                            href={`/listen/${job.documentId}?filter=needs_review`}
+                            className="text-accent font-semibold hover:underline bg-surface-sunken border border-accent px-2 py-1 rounded"
+                          >
+                            Review Chapters
+                          </a>
+                          <button onClick={() => { onRequeueJob(job.id); }} className="text-accent font-semibold hover:underline bg-surface-sunken border border-accent px-2 py-1 rounded">
+                            Requeue
+                          </button>
+                        </>
                       )}
                       <button onClick={() => { onCancelJob(job.id); }} className="text-danger font-semibold hover:underline bg-surface-sunken border border-danger px-2 py-1 rounded">
                         {job.status === 'error' ? 'Dismiss' : job.status === 'completed' ? 'Clear' : 'Cancel Generation'}
@@ -471,6 +501,22 @@ export function JobsInlineView() {
         onComplete={async () => {
           setCastingJob(null);
           await fetchJobs();
+        }}
+      />
+    )}
+    {errorLogJob && (
+      <ChapterErrorLogModal
+        open={true}
+        onClose={() => setErrorLogJob(null)}
+        bookId={errorLogJob.documentId}
+        bookTitle={errorLogJob.documentTitle}
+        jobError={errorLogJob.error}
+        onRequeue={() => {
+          onRequeueJob(errorLogJob.id);
+          setErrorLogJob(null);
+        }}
+        onNavigateToChapter={(idx) => {
+          window.location.href = `/listen/${errorLogJob.documentId}?chapter=${idx}&filter=needs_review`;
         }}
       />
     )}

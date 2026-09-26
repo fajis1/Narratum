@@ -10,6 +10,7 @@ import { MobileReviewPlayer } from "@/components/audiobooks/MobileReviewPlayer";
 import { BatchRefineReviewModal } from "@/components/audiobooks/BatchRefineReviewModal";
 import { PronunciationIssuesModal } from "@/components/audiobooks/PronunciationIssuesModal";
 import { AudiobookshelfModal } from "@/components/audiobooks/AudiobookshelfModal";
+import { ChapterErrorLogModal } from "@/components/audiobooks/ChapterErrorLogModal";
 import { BASE_BOOKS, PRESET_MODELS } from "@/components/constants";
 import { toast } from "react-hot-toast";
 import { ModalFrame } from "@/components/ui";
@@ -30,6 +31,7 @@ interface Chapter {
   isEmptyText?: boolean;
   hasAudio?: boolean;
   hasRejected?: boolean;
+  hasFailure?: boolean;
   needsReview?: boolean;
   status?: string;
 }
@@ -58,6 +60,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [showBatchRefineReview, setShowBatchRefineReview] = useState(false);
   const [showPronunciationIssues, setShowPronunciationIssues] = useState(false);
   const [showAudiobookshelfModal, setShowAudiobookshelfModal] = useState(false);
+  const [errorLogModalChapter, setErrorLogModalChapter] = useState<{ index: number | null; title?: string | null } | null>(null);
   const [batchRefineRunId, setBatchRefineRunId] = useState<string | null>(null);
   const [batchRefineRule, setBatchRefineRule] = useState('');
   const [batchRefineModel, setBatchRefineModel] = useState('gemini-2.5-flash');
@@ -119,6 +122,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const isChapterNeedingReview = useCallback((chap: Chapter): boolean => {
     return Boolean(
       chap.hasRejected ||
+      chap.hasFailure ||
       chap.needsReview ||
       chap.isEmptyText ||
       chap.hasAudio === false ||
@@ -492,7 +496,9 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       });
 
       if (!res.ok) {
-        throw new Error("Failed to regenerate audio");
+        const body = await res.json().catch(() => ({})) as { error?: string; detail?: string; message?: string };
+        const msg = body.error || body.detail || body.message || `Failed to regenerate audio (${res.status})`;
+        throw new Error(msg);
       }
       
       toast.success("Successfully queued regeneration");
@@ -1010,7 +1016,17 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                 <h2 className="text-sm font-semibold">Audiobook review flags</h2>
                 <p className="text-xs opacity-80">These chapter segments need a listening check after Cloud Drama generation.</p>
               </div>
-              <button type="button" onClick={() => void fetchReviewFlags()} className="rounded border border-amber-700/40 px-2.5 py-1 text-xs font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/40">Refresh</button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setErrorLogModalChapter({ index: null })}
+                  className="rounded border border-amber-700/40 bg-white/50 hover:bg-white/80 dark:bg-black/20 dark:hover:bg-black/40 px-2.5 py-1 text-xs font-semibold flex items-center gap-1 transition-colors"
+                  title="Inspect all chapter validation errors and diagnostic logs"
+                >
+                  <span>📋 View All Error Logs</span>
+                </button>
+                <button type="button" onClick={() => void fetchReviewFlags()} className="rounded border border-amber-700/40 px-2.5 py-1 text-xs font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/40">Refresh</button>
+              </div>
             </div>
             {reviewFlagsError && <p className="text-xs text-red-700 dark:text-red-300">{reviewFlagsError}</p>}
             <div className="grid gap-2 lg:grid-cols-2">
@@ -1026,6 +1042,14 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                         {flag.reason && <p className="mt-1 opacity-80">{flag.reason}</p>}
                       </div>
                       <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setErrorLogModalChapter({ index: flag.chapterIndex, title: chapter?.title })}
+                          className="rounded border border-amber-700/40 px-2 py-1 text-xs font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                          title="View failure log and validation details for this chapter"
+                        >
+                          📋 Details
+                        </button>
                         <button
                           type="button"
                           onClick={() => void retryReviewFlag(flag)}
@@ -1049,6 +1073,17 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       <div className="flex-none p-2 bg-surface border-b border-line-soft flex items-center justify-between flex-wrap gap-2 shadow-sm relative z-10">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-semibold text-text-soft tracking-wider mr-2 uppercase">Chunk {currentChapter.index + 1} Actions:</span>
+
+          {(currentChapter.status === 'error' || currentChapter.hasFailure || currentChapter.hasRejected || reviewFlags.some(f => f.chapterIndex === currentChapter.index)) && (
+            <button
+              type="button"
+              onClick={() => setErrorLogModalChapter({ index: currentChapter.index, title: currentChapter.title })}
+              className="bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/40 px-3 py-1.5 rounded text-xs font-semibold shrink-0 flex items-center gap-1.5 transition-colors"
+              title="Inspect validation errors and diagnostic log for this chunk"
+            >
+              <span>📋 View Error Log</span>
+            </button>
+          )}
           
           <button
             onClick={() => setIsPronunciationModalOpen(true)}
@@ -1319,6 +1354,19 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-zinc-500/20 text-zinc-400 border border-zinc-500/30" title="Audio not yet synthesized">
                                 Pending Audio
                               </span>
+                            )}
+                            {(chap.hasRejected || chap.hasFailure || chap.status === 'error' || hasReviewFlag) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setErrorLogModalChapter({ index: chap.index, title: chap.title });
+                                }}
+                                className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-600 dark:text-amber-400 border border-amber-500/30 flex items-center gap-1 transition-colors"
+                                title="Inspect validation errors and diagnostic log"
+                              >
+                                <span>📋 Log</span>
+                              </button>
                             )}
                           </div>
                         </div>
@@ -1631,12 +1679,15 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                   format: currentChapter.format,
                 }),
               });
-              if (!res.ok) throw new Error("Failed to regenerate audio");
+              if (!res.ok) {
+                const body = await res.json().catch(() => ({})) as { error?: string; detail?: string; message?: string };
+                throw new Error(body.error || body.detail || body.message || "Failed to regenerate audio");
+              }
               toast.success("Successfully rebuilt background audiobook chapter!");
               setShowMultiVoiceStudio(false);
-            } catch (err) {
+            } catch (err: any) {
               console.error(err);
-              toast.error("Error regenerating audio.");
+              toast.error(err.message || "Error regenerating audio.");
               throw err;
             } finally {
               setIsRegenerating(false);
@@ -1838,6 +1889,21 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           setShowLeftPane(true);
         }}
       />
+
+      {errorLogModalChapter && (
+        <ChapterErrorLogModal
+          open={true}
+          onClose={() => setErrorLogModalChapter(null)}
+          bookId={bookId}
+          chapterIndex={errorLogModalChapter.index}
+          chapterTitle={errorLogModalChapter.title}
+          onNavigateToChapter={(idx) => {
+            const pos = chapters.findIndex((c) => c.index === idx);
+            if (pos >= 0) setCurrentChapterPosition(pos);
+            setErrorLogModalChapter(null);
+          }}
+        />
+      )}
 
     </div>
   );

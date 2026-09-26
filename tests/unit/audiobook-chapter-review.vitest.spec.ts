@@ -87,7 +87,7 @@ describe('Audiobook Chapter Review & Filtering Logic', () => {
 
   test('identifies chapters with active Smart Audio review flags', () => {
     const flags: SmartAudioReviewFlag[] = [
-      { id: 'flag-1', chapterIndex: 3, kind: 'pause-overflow', reason: 'Excessive pauses detected' },
+      { id: 'flag-1', chapterIndex: 3, kind: 'cloud-tts-failed', reason: 'Excessive pauses detected', timestampMs: 0, createdAt: 123456 },
     ];
     // Chapter 3 normally does not need review
     expect(isChapterNeedingReview(sampleChapters[3], [])).toBe(false);
@@ -172,5 +172,42 @@ describe('Audiobook Review Route & Component Contracts', () => {
     expect(listenSource).toContain("Needs Re-recording");
     expect(listenSource).toContain("visibleChapters");
     expect(listenSource).toContain("onReviewChapters");
+  });
+
+  test('failure-log route retrieves chapter failure JSON, job error, and review flags', () => {
+    const failureLogSource = readSource('src/app/api/audiobook/failure-log/route.ts');
+    expect(failureLogSource).toContain('__pronunciation_failure.json');
+    expect(failureLogSource).toContain('audiobookJobs');
+    expect(failureLogSource).toContain('documentSettings');
+    expect(failureLogSource).toContain('normalizeSmartAudioReviewFlags');
+    expect(failureLogSource).toContain('listAudiobookObjects');
+    expect(failureLogSource).toContain('getAudiobookObjectBuffer');
+  });
+
+  test('ChapterErrorLogModal component categorizes errors and provides diagnostics', () => {
+    const modalSource = readSource('src/components/audiobooks/ChapterErrorLogModal.tsx');
+    expect(modalSource).toContain('Drama Director Validation Failure');
+    expect(modalSource).toContain('Content Safety Filter Block');
+    expect(modalSource).toContain('Upstream Quota or Rate Limit');
+    expect(modalSource).toContain('Audio Synthesis or Remux Failure');
+    expect(modalSource).toContain('navigator.clipboard.writeText');
+    expect(modalSource).toContain('Copy Diagnostic Log');
+  });
+
+  test('JobsInlineView connects error log modal to failed background jobs', () => {
+    const inlineJobs = readSource('src/components/doclist/views/JobsInlineView.tsx');
+    expect(inlineJobs).toContain('View Error Log & Diagnostics');
+    expect(inlineJobs).toContain('📋 Error Log');
+    expect(inlineJobs).toContain('<ChapterErrorLogModal');
+    expect(inlineJobs).toContain('Review Chapters');
+  });
+
+  test('ListenPage provides error log triggers and integrates ChapterErrorLogModal', () => {
+    const listenSource = readSource('src/app/(app)/listen/[bookId]/page.tsx');
+    expect(listenSource).toContain('setErrorLogModalChapter');
+    expect(listenSource).toContain('View Error Log');
+    expect(listenSource).toContain('View All Error Logs');
+    expect(listenSource).toContain('📋 Log');
+    expect(listenSource).toContain('<ChapterErrorLogModal');
   });
 });

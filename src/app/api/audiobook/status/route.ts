@@ -133,6 +133,7 @@ export async function GET(request: NextRequest) {
         isEmptyText,
         hasAudio,
         hasRejected,
+        hasFailure,
         needsReview,
       };
     });

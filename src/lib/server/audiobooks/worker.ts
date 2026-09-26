@@ -66,6 +66,7 @@ import {
 import { normalizeGeminiTokenUsage } from '@/lib/server/smart-audio/gemini-usage';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
+import { DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
 import {
   autoAssignCloudTtsMinorVoices,
@@ -1732,6 +1733,23 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
           } catch (error) {
             if (error instanceof CloudDramaGenerationError) {
               await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: error.reviewFlags });
+            } else if (error instanceof DramaDirectorValidationError || (error as { name?: string })?.name === 'DramaDirectorValidationError') {
+              const issues = Array.isArray((error as { issues?: string[] }).issues)
+                ? (error as { issues: string[] }).issues
+                : [error instanceof Error ? error.message : String(error)];
+              await persistCloudDramaReviewFlags({
+                documentId: job.documentId,
+                userId,
+                chapterIndex: chapter.index,
+                flags: [{
+                  kind: 'director-validation-repair',
+                  speaker: 'Director',
+                  sourceText: processedTextForTts.slice(0, 300),
+                  chunkIndex: 0,
+                  attempts: 2,
+                  reason: `Drama Director output failed validation: ${issues.slice(0, 3).join('; ')}`,
+                }],
+              }).catch(() => {});
             }
             throw error;
           }
@@ -1763,6 +1781,11 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       } catch (error) {
         if (error instanceof AudiobookJobStoppedError) throw error;
         const message = error instanceof Error ? error.message : String(error);
+        const issues = (error instanceof DramaDirectorValidationError || (error as { name?: string })?.name === 'DramaDirectorValidationError') && Array.isArray((error as { issues?: string[] }).issues)
+          ? (error as { issues: string[] }).issues
+          : error instanceof CloudDramaGenerationError
+            ? error.reviewFlags.map(f => `${f.speaker ? `[${f.speaker}] ` : ''}${f.reason}`)
+            : [`TTS recording failed: ${message}`];
         try {
           await savePronunciationFailure({
             bookId,
@@ -1771,7 +1794,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
             chapterTitle: chapter.title,
             sourceText: cleanupSource,
             rejected: { status: 'success', cleaned_text: processedTextForTts },
-            errors: [`TTS recording failed: ${message}`],
+            errors: issues.length ? issues : [`TTS recording failed: ${message}`],
             jobId: job.id,
             profileId: selectedProfile?.id,
             cast: multiVoiceCharacters,
