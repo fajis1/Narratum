@@ -1216,6 +1216,10 @@ export async function POST(request: NextRequest) {
     await deleteAudiobookObject(bookId, storageUserId, 'complete.m4b', testNamespace).catch(() => {});
     await deleteAudiobookObject(bookId, storageUserId, 'complete.mp3.manifest.json', testNamespace).catch(() => {});
     await deleteAudiobookObject(bookId, storageUserId, 'complete.m4b.manifest.json', testNamespace).catch(() => {});
+    await Promise.all([
+      deleteAudiobookObject(bookId, storageUserId, `${chapterPrefix}rejected.txt`, testNamespace).catch(() => {}),
+      deleteAudiobookObject(bookId, storageUserId, `${chapterPrefix}pronunciation_failure.json`, testNamespace).catch(() => {}),
+    ]);
 
     if (!normalizedExistingSettings && incomingSettings) {
       const settingsToPersist: AudiobookGenerationSettings = {

@@ -83,19 +83,57 @@ export async function GET(request: NextRequest) {
       if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
     }
 
-    const chapters: TTSAudiobookChapter[] = chapterObjects.map((chapter) => {
-      const oneBasedPrefix = String(chapter.index + 1).padStart(4, '0') + '__';
-      const txtFileObj = objects.find(o => o.fileName.startsWith(oneBasedPrefix) && o.fileName.endsWith('.txt'));
+    const allChapterIndices = new Set<number>();
+    for (const chapter of chapterObjects) {
+      allChapterIndices.add(chapter.index);
+    }
+    for (const fileName of objectNames) {
+      const match = /^(\d{1,6})__/u.exec(fileName);
+      if (match) {
+        const idx = Number.parseInt(match[1], 10) - 1;
+        if (Number.isInteger(idx) && idx >= 0) {
+          allChapterIndices.add(idx);
+        }
+      }
+    }
+    for (const row of chapterRows) {
+      allChapterIndices.add(row.chapterIndex);
+    }
+
+    const sortedIndices = Array.from(allChapterIndices).sort((a, b) => a - b);
+    const chapterObjByIndex = new Map(chapterObjects.map((c) => [c.index, c]));
+
+    const chapters: TTSAudiobookChapter[] = sortedIndices.map((index) => {
+      const oneBasedPrefix = String(index + 1).padStart(4, '0') + '__';
+      const chapterObj = chapterObjByIndex.get(index);
+      const chapter = {
+        index,
+        title: chapterObj?.title ?? `Chapter ${index + 1}`,
+      };
+      const txtFileObj = objects.find(
+        (o) => o.fileName.startsWith(oneBasedPrefix) && (
+          o.fileName.endsWith('__text.txt') ||
+          o.fileName.endsWith('__rejected.txt') ||
+          (o.fileName.endsWith('.txt') && !o.fileName.endsWith('__original.txt') && !o.fileName.endsWith('__changelog.txt'))
+        )
+      );
+      const hasRejected = objects.some((o) => o.fileName === `${oneBasedPrefix}rejected.txt`);
+      const hasFailure = objects.some((o) => o.fileName === `${oneBasedPrefix}pronunciation_failure.json`);
       const isEmptyText = !txtFileObj || txtFileObj.size < 5; // empty or extremely small
-      
+      const hasAudio = Boolean(chapterObj);
+      const needsReview = hasRejected || hasFailure || isEmptyText || !hasAudio;
+
       return {
         index: chapter.index,
         title: titleByIndex.get(chapter.index) ?? chapter.title,
         duration: durationByIndex.get(chapter.index),
-        status: 'completed',
+        status: (hasRejected || hasFailure) ? 'error' : (!hasAudio ? 'pending' : 'completed'),
         bookId,
-        format: chapter.format,
+        format: chapterObj?.format ?? 'mp3',
         isEmptyText,
+        hasAudio,
+        hasRejected,
+        needsReview,
       };
     });
 

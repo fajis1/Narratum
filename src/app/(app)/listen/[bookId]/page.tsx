@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, use, useMemo } from "react";
+import { useState, useEffect, useRef, use, useMemo, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { HTMLViewer } from "@/components/views/HTMLViewer";
 import { parseHtmlBlocks } from "@/lib/client/html/blocks";
@@ -28,6 +28,10 @@ interface Chapter {
   duration?: number;
   format: string;
   isEmptyText?: boolean;
+  hasAudio?: boolean;
+  hasRejected?: boolean;
+  needsReview?: boolean;
+  status?: string;
 }
 
 export default function ListenPage({ params }: { params: Promise<{ bookId: string }> }) {
@@ -39,6 +43,9 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentChapterPosition, setCurrentChapterPosition] = useState(0);
+  const [chapterFilter, setChapterFilter] = useState<'all' | 'needs_review'>('all');
+  const [chapterSort, setChapterSort] = useState<'default' | 'review_first'>('default');
+  const [chapterSearch, setChapterSearch] = useState('');
   
   const [showLeftPane, setShowLeftPane] = useState(true);
   const [showMiddlePane, setShowMiddlePane] = useState(true);
@@ -100,6 +107,93 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     next.delete('reviewPronunciation');
     router.replace(next.size ? `/listen/${encodeURIComponent(bookId)}?${next}` : `/listen/${encodeURIComponent(bookId)}`);
   }, [bookId, router, searchParams]);
+
+  useEffect(() => {
+    const filterParam = searchParams.get('filter') || searchParams.get('tab');
+    const needsReviewParam = searchParams.get('needsReview');
+    if (filterParam === 'review' || filterParam === 'needs_review' || needsReviewParam === 'true') {
+      setChapterFilter('needs_review');
+    }
+  }, [searchParams]);
+
+  const isChapterNeedingReview = useCallback((chap: Chapter): boolean => {
+    return Boolean(
+      chap.hasRejected ||
+      chap.needsReview ||
+      chap.isEmptyText ||
+      chap.hasAudio === false ||
+      chap.status === 'error' ||
+      reviewFlags.some((f) => f.chapterIndex === chap.index)
+    );
+  }, [reviewFlags]);
+
+  const reviewChaptersCount = useMemo(() => {
+    return chapters.filter((c) => isChapterNeedingReview(c)).length;
+  }, [chapters, isChapterNeedingReview]);
+
+  const visibleChapters = useMemo(() => {
+    let list = [...chapters];
+
+    if (chapterSearch.trim()) {
+      const q = chapterSearch.trim().toLowerCase();
+      list = list.filter((c) => {
+        const chunkLabel = `chunk ${c.index + 1}`.toLowerCase();
+        const titleLabel = (c.title || '').toLowerCase();
+        return chunkLabel.includes(q) || titleLabel.includes(q);
+      });
+    }
+
+    if (chapterFilter === 'needs_review') {
+      list = list.filter((c) => isChapterNeedingReview(c));
+    }
+
+    if (chapterSort === 'review_first') {
+      list.sort((a, b) => {
+        const aNeeds = isChapterNeedingReview(a) ? 1 : 0;
+        const bNeeds = isChapterNeedingReview(b) ? 1 : 0;
+        if (bNeeds !== aNeeds) return bNeeds - aNeeds;
+        return a.index - b.index;
+      });
+    } else {
+      list.sort((a, b) => a.index - b.index);
+    }
+
+    return list;
+  }, [chapters, chapterFilter, chapterSort, chapterSearch, isChapterNeedingReview]);
+
+  useEffect(() => {
+    if (chapterFilter === 'needs_review' && visibleChapters.length > 0) {
+      const currentIsVisible = visibleChapters.some((c) => c.index === currentChapter?.index);
+      if (!currentIsVisible) {
+        const targetIndex = chapters.findIndex((c) => c.index === visibleChapters[0].index);
+        if (targetIndex >= 0) setCurrentChapterPosition(targetIndex);
+      }
+    }
+  }, [chapterFilter, visibleChapters, currentChapter?.index, chapters]);
+
+  const currentVisibleIndex = visibleChapters.findIndex((c) => c.index === currentChapter?.index);
+  const canGoPrev = currentVisibleIndex > 0;
+  const canGoNext = currentVisibleIndex >= 0 && currentVisibleIndex < visibleChapters.length - 1;
+
+  const handlePrevChapter = () => {
+    if (canGoPrev) {
+      const target = visibleChapters[currentVisibleIndex - 1];
+      const targetIdx = chapters.findIndex((c) => c.index === target.index);
+      if (targetIdx >= 0) setCurrentChapterPosition(targetIdx);
+    } else if (currentChapterPosition > 0) {
+      setCurrentChapterPosition((i) => i - 1);
+    }
+  };
+
+  const handleNextChapter = () => {
+    if (canGoNext) {
+      const target = visibleChapters[currentVisibleIndex + 1];
+      const targetIdx = chapters.findIndex((c) => c.index === target.index);
+      if (targetIdx >= 0) setCurrentChapterPosition(targetIdx);
+    } else if (currentChapterPosition < chapters.length - 1) {
+      setCurrentChapterPosition((i) => i + 1);
+    }
+  };
   const activeJobSettings = useMemo(() => {
     if (!activeJob?.settingsJson) return {} as Record<string, unknown>;
     if (typeof activeJob.settingsJson === 'string') {
@@ -752,7 +846,12 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         
         <div>
           <h1 className="text-xl font-bold text-text-strong line-clamp-1">Review: {currentChapter.title}</h1>
-          <p className="text-text-soft text-sm">Chunk {currentChapter.index + 1} · Item {currentChapterPosition + 1} of {chapters.length}</p>
+          <p className="text-text-soft text-sm">
+            Chunk {currentChapter.index + 1}
+            {chapterFilter === 'needs_review'
+              ? ` · Flagged ${currentVisibleIndex >= 0 ? currentVisibleIndex + 1 : 1} of ${visibleChapters.length} (${chapters.length} total)`
+              : ` · Item ${currentChapterPosition + 1} of ${chapters.length}`}
+          </p>
         </div>
         {activeJob && (activeJob.status === 'running' || activeJob.status === 'queued') && (
           <div className="mt-2 flex items-center gap-4 bg-indigo-50 border border-indigo-200 rounded-md px-3 py-1.5 shadow-sm">
@@ -887,17 +986,17 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           <div className="flex gap-1 ml-auto md:ml-2">
             <button
               className="px-3 py-1.5 border border-line-soft rounded text-sm disabled:opacity-50"
-              onClick={() => setCurrentChapterPosition(i => i - 1)}
-              disabled={currentChapterPosition === 0}
+              onClick={handlePrevChapter}
+              disabled={chapterFilter === 'needs_review' ? !canGoPrev : currentChapterPosition === 0}
             >
-              Prev Chapter
+              {chapterFilter === 'needs_review' ? 'Prev Flagged' : 'Prev Chapter'}
             </button>
             <button
               className="px-3 py-1.5 border border-line-soft rounded text-sm disabled:opacity-50"
-              onClick={() => setCurrentChapterPosition(i => i + 1)}
-              disabled={currentChapterPosition === chapters.length - 1}
+              onClick={handleNextChapter}
+              disabled={chapterFilter === 'needs_review' ? !canGoNext : currentChapterPosition === chapters.length - 1}
             >
-              Next Chapter
+              {chapterFilter === 'needs_review' ? 'Next Flagged' : 'Next Chapter'}
             </button>
           </div>
         </div>
@@ -1067,32 +1166,164 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         {/* Far Left side: Chapter List / Guesses */}
         {showLeftPane && (
           <div className={`w-full ${isMultiVoice ? 'md:w-1/2' : 'md:w-1/4'} flex flex-col border-r border-line-soft bg-surface h-1/3 md:h-full`}>
-            <div className="p-4 border-b border-line-soft font-semibold text-text-strong bg-surface-raised shrink-0">
-              {isMultiVoice ? 'Chapters & Speakers' : 'Context / Chapter Guesses'}
-            </div>
-            <div className="flex-1 overflow-y-auto p-2">
-              {chapters.map((chap, idx) => {
-                const selected = idx === currentChapterPosition;
-                return (
-                  <div key={chap.index} className="mb-1">
+            <div className="p-3 border-b border-line-soft bg-surface-raised shrink-0 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-text-strong text-sm">
+                  {isMultiVoice ? 'Chapters & Speakers' : 'Context / Chapter Guesses'}
+                </span>
+                {reviewChaptersCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-500 border border-amber-500/30">
+                    {reviewChaptersCount} need review
+                  </span>
+                )}
+              </div>
+
+              {/* Filter Tabs */}
+              <div className="flex gap-1.5 p-1 bg-surface rounded-lg border border-line-soft text-xs">
+                <button
+                  type="button"
+                  onClick={() => setChapterFilter('all')}
+                  className={`flex-1 py-1 px-2 rounded-md font-medium transition-colors text-center ${
+                    chapterFilter === 'all'
+                      ? 'bg-accent text-background shadow-xs font-semibold'
+                      : 'text-text-soft hover:text-text-strong'
+                  }`}
+                >
+                  All ({chapters.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChapterFilter('needs_review')}
+                  className={`flex-1 py-1 px-2 rounded-md font-medium transition-colors text-center flex items-center justify-center gap-1 ${
+                    chapterFilter === 'needs_review'
+                      ? 'bg-amber-600 text-white shadow-xs font-semibold'
+                      : reviewChaptersCount > 0
+                      ? 'text-amber-500 hover:bg-amber-500/10'
+                      : 'text-text-soft hover:text-text-strong'
+                  }`}
+                >
+                  <span>⚠️ Needs Review</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${chapterFilter === 'needs_review' ? 'bg-amber-800 text-amber-100' : 'bg-amber-500/20 text-amber-500'}`}>
+                    {reviewChaptersCount}
+                  </span>
+                </button>
+              </div>
+
+              {/* Sort & Search Toolbar */}
+              <div className="flex items-center gap-1.5 text-xs">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={chapterSearch}
+                    onChange={(e) => setChapterSearch(e.target.value)}
+                    placeholder="Search chunk or title..."
+                    className="w-full bg-surface border border-line-soft rounded px-2 py-1 text-xs text-text-strong placeholder:text-text-soft outline-none focus:border-accent"
+                  />
+                  {chapterSearch && (
                     <button
-                      onClick={() => setCurrentChapterPosition(idx)}
-                      className={`w-full text-left p-3 rounded text-sm transition-colors ${
-                        selected
-                          ? "bg-indigo-500/20 text-brand-400 border border-indigo-500/30"
-                          : "text-text-soft hover:bg-surface-raised border border-transparent"
-                      }`}
+                      type="button"
+                      onClick={() => setChapterSearch('')}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-soft hover:text-text-strong text-xs"
+                      aria-label="Clear search"
                     >
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="font-medium">Chunk {chap.index + 1}</div>
-                        {chap.isEmptyText && (
-                          <span className="text-red-500 shrink-0 text-base" title="Warning: AI returned empty text for this chunk!">
-                            ⚠️
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs mt-1 line-clamp-2 opacity-80">{chap.title}</div>
+                      ✕
                     </button>
+                  )}
+                </div>
+                <select
+                  value={chapterSort}
+                  onChange={(e) => setChapterSort(e.target.value as 'default' | 'review_first')}
+                  className="bg-surface border border-line-soft rounded px-2 py-1 text-xs text-text-strong outline-none"
+                  aria-label="Sort chapters"
+                >
+                  <option value="default">Order: Chunk #</option>
+                  <option value="review_first">Order: Review First</option>
+                </select>
+              </div>
+
+              {/* Review notification pill when showing all and review items exist */}
+              {chapterFilter === 'all' && reviewChaptersCount > 0 && (
+                <div className="flex items-center justify-between text-[11px] px-2 py-1 rounded bg-amber-500/10 border border-amber-500/30 text-amber-500">
+                  <span>{reviewChaptersCount} chapter(s) need attention</span>
+                  <button
+                    type="button"
+                    onClick={() => setChapterFilter('needs_review')}
+                    className="underline font-semibold hover:text-amber-400 ml-1"
+                  >
+                    Filter list
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-2">
+              {visibleChapters.length === 0 ? (
+                <div className="p-4 text-center text-xs text-text-soft space-y-2">
+                  {chapterFilter === 'needs_review' ? (
+                    <>
+                      <div className="text-2xl">🎉</div>
+                      <p className="font-semibold text-text-strong">No chapters need manual review!</p>
+                      <p>All chapters have passed validation and have recorded audio.</p>
+                      <button
+                        type="button"
+                        onClick={() => setChapterFilter('all')}
+                        className="mt-2 text-accent underline font-medium"
+                      >
+                        Show all {chapters.length} chapters
+                      </button>
+                    </>
+                  ) : (
+                    <p>No chapters matched your search query.</p>
+                  )}
+                </div>
+              ) : (
+                visibleChapters.map((chap) => {
+                  const selected = chap.index === currentChapter?.index;
+                  const isFlagged = isChapterNeedingReview(chap);
+                  const hasReviewFlag = reviewFlags.some(f => f.chapterIndex === chap.index);
+                  const originalIndex = chapters.findIndex(c => c.index === chap.index);
+
+                  return (
+                    <div key={chap.index} className="mb-1">
+                      <button
+                        onClick={() => {
+                          if (originalIndex >= 0) setCurrentChapterPosition(originalIndex);
+                        }}
+                        className={`w-full text-left p-3 rounded text-sm transition-colors border ${
+                          selected
+                            ? "bg-indigo-500/20 text-brand-400 border-indigo-500/30"
+                            : isFlagged
+                            ? "bg-amber-500/5 hover:bg-amber-500/10 border-amber-500/30 text-text-strong"
+                            : "text-text-soft hover:bg-surface-raised border-transparent"
+                        }`}
+                      >
+                        <div className="flex justify-between items-start gap-1.5 flex-wrap">
+                          <div className="font-medium flex items-center gap-1.5 flex-wrap">
+                            <span>Chunk {chap.index + 1}</span>
+                            {chap.hasRejected && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30" title="Generation rejected. Requires review and re-recording before complete export or upload.">
+                                Needs Re-recording
+                              </span>
+                            )}
+                            {chap.isEmptyText && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30" title="Empty text or extraction error">
+                                Empty Text
+                              </span>
+                            )}
+                            {hasReviewFlag && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30" title="Flagged during Cloud Drama generation">
+                                Review Flag
+                              </span>
+                            )}
+                            {chap.hasAudio === false && !chap.hasRejected && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-zinc-500/20 text-zinc-400 border border-zinc-500/30" title="Audio not yet synthesized">
+                                Pending Audio
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-xs mt-1 line-clamp-2 opacity-80">{chap.title}</div>
+                      </button>
                     {selected && isMultiVoice && (
                       <div className="ml-3 border-l border-indigo-500/30 py-1 pl-2" aria-label="Speaker segments for selected chapter">
                         {speakerSegments.length > 0 ? speakerSegments.map((segment, segmentIndex) => (
@@ -1188,7 +1419,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                     )}
                   </div>
                 );
-              })}
+              }))}
             </div>
           </div>
         )}
@@ -1602,6 +1833,10 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         open={showAudiobookshelfModal}
         onClose={() => setShowAudiobookshelfModal(false)}
         bookId={bookId}
+        onReviewChapters={() => {
+          setChapterFilter('needs_review');
+          setShowLeftPane(true);
+        }}
       />
 
     </div>

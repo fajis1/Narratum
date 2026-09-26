@@ -27,22 +27,47 @@ export async function GET(request: NextRequest) {
     const storageUserId = ctxOrRes.userId;
     const testNamespace = getOpenReaderTestNamespace(request.headers);
     const type = request.nextUrl.searchParams.get('type');
-    const textFileName = `${String(chapterIndex + 1).padStart(4, '0')}__${type === 'original' ? 'original' : 'text'}.txt`;
+    const prefix = String(chapterIndex + 1).padStart(4, '0');
 
-    try {
-      const textBuffer = await getAudiobookObjectBuffer(bookId, storageUserId, textFileName, testNamespace);
-      return new NextResponse(textBuffer.toString('utf-8'), {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-        },
-      });
-    } catch (e) {
-      if (isMissingBlobError(e)) {
-        return NextResponse.json({ error: 'Text file not found for this chapter' }, { status: 404 });
+    let textBuffer: Buffer | null = null;
+    if (type === 'original') {
+      try {
+        textBuffer = await getAudiobookObjectBuffer(bookId, storageUserId, `${prefix}__original.txt`, testNamespace);
+      } catch (e) {
+        if (!isMissingBlobError(e)) throw e;
       }
-      throw e;
+    } else if (type === 'rejected') {
+      try {
+        textBuffer = await getAudiobookObjectBuffer(bookId, storageUserId, `${prefix}__rejected.txt`, testNamespace);
+      } catch (e) {
+        if (!isMissingBlobError(e)) throw e;
+      }
+    } else {
+      // Default: try __text.txt first, then fallback to __rejected.txt if this chapter was rejected
+      try {
+        textBuffer = await getAudiobookObjectBuffer(bookId, storageUserId, `${prefix}__text.txt`, testNamespace);
+      } catch (e) {
+        if (!isMissingBlobError(e)) throw e;
+      }
+      if (!textBuffer) {
+        try {
+          textBuffer = await getAudiobookObjectBuffer(bookId, storageUserId, `${prefix}__rejected.txt`, testNamespace);
+        } catch (e) {
+          if (!isMissingBlobError(e)) throw e;
+        }
+      }
     }
+
+    if (!textBuffer) {
+      return NextResponse.json({ error: 'Text file not found for this chapter' }, { status: 404 });
+    }
+
+    return new NextResponse(textBuffer.toString('utf-8'), {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+    });
   } catch (error) {
     serverLogger.error({
       event: 'audiobook.text.fetch.failed',

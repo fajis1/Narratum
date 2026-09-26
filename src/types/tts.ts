@@ -68,4 +68,7 @@ export interface TTSAudiobookChapter {
   bookId?: string;
   format?: TTSAudiobookFormat;
   isEmptyText?: boolean;
+  hasAudio?: boolean;
+  hasRejected?: boolean;
+  needsReview?: boolean;
 }

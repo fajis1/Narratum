@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
+import { useRouter } from 'next/navigation';
 import { Button, Input, ModalFrame } from '@/components/ui';
 
 export interface AudiobookshelfModalProps {
@@ -12,6 +13,7 @@ export interface AudiobookshelfModalProps {
   initialTitle?: string;
   initialAuthor?: string;
   documentType?: string;
+  onReviewChapters?: () => void;
 }
 
 interface AudiobookshelfFolder {
@@ -68,7 +70,9 @@ export function AudiobookshelfModal({
   initialTitle = '',
   initialAuthor = '',
   documentType = 'pdf',
+  onReviewChapters,
 }: AudiobookshelfModalProps) {
+  const router = useRouter();
   const [config, setConfig] = useState<AudiobookshelfConfigResponse | null>(null);
   const [isLoadingConfig, setIsLoadingConfig] = useState(false);
   const [title, setTitle] = useState(initialTitle);
@@ -86,6 +90,7 @@ export function AudiobookshelfModal({
   const [isInferring, setIsInferring] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Sync initial title/author when opening
   useEffect(() => {
@@ -94,6 +99,9 @@ export function AudiobookshelfModal({
       if (initialAuthor) setAuthor(initialAuthor);
       setStatusMessage(null);
       setMatchResult(null);
+      setUploadError(null);
+    } else {
+      setUploadError(null);
     }
   }, [open, initialTitle, initialAuthor]);
 
@@ -244,6 +252,7 @@ export function AudiobookshelfModal({
     }
 
     setIsUploading(true);
+    setUploadError(null);
     setStatusMessage('Assembling audio and uploading to Audiobookshelf... (this may take a minute)');
 
     try {
@@ -280,7 +289,9 @@ export function AudiobookshelfModal({
       onClose();
     } catch (err) {
       console.error('Audiobookshelf upload failed:', err);
-      toast.error((err as Error).message || 'Failed to send audiobook to Audiobookshelf');
+      const msg = (err as Error).message || 'Failed to send audiobook to Audiobookshelf';
+      setUploadError(msg);
+      toast.error(msg);
       setStatusMessage(null);
     } finally {
       setIsUploading(false);
@@ -328,6 +339,35 @@ export function AudiobookshelfModal({
           </div>
         ) : (
           <div className="space-y-4">
+            {uploadError && (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs space-y-2 text-text-strong">
+                <div className="flex items-start gap-2">
+                  <span className="text-amber-500 font-bold text-sm leading-none mt-0.5">⚠️</span>
+                  <div className="flex-1">
+                    <p className="font-semibold text-amber-500">Upload Blocked</p>
+                    <p className="text-text-soft mt-0.5">{uploadError}</p>
+                  </div>
+                </div>
+                {uploadError.includes('require review') && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        if (onReviewChapters) {
+                          onReviewChapters();
+                        } else {
+                          router.push(`/listen/${encodeURIComponent(bookId)}?filter=needs_review`);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs shadow-xs transition-colors"
+                    >
+                      <span>🔍</span> Open & Filter Chapters Needing Review
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             {/* Server connection pill */}
             <div className="flex items-center justify-between text-xs px-3 py-2 rounded-md bg-surface-raised border border-line-soft">
               <div className="flex items-center gap-1.5 text-foreground">
