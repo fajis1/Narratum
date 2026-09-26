@@ -258,5 +258,68 @@ describe('targeted pronunciation scan and patches', () => {
     const badPatch = { id: issues[0].id, replacement: 'He [lives](!/lɪvz/)' };
     expect(() => applyPronunciationPatches(text, issues, [badPatch])).toThrow('English');
   });
+
+  test('multi-word transliterated phrase tags can be split into per-word tags', () => {
+    // [deuteros theos](/doʊtɛrɒs θɛɒs/) — two transliterated words in one tag
+    const text = 'the logos a second God, [deuteros theos](/doʊtɛrɒs θɛɒs/): end.';
+    const issues = scanPronunciationIssues(text);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('unsafe_pronunciation');
+    const patch = { id: issues[0].id, replacement: '[deuteros](/doʊtɛrɒs/) [theos](/θɛɒs/)' };
+    const proposed = applyPronunciationPatches(text, issues, [patch]);
+    expect(scanPronunciationIssues(proposed)).toEqual([]);
+    expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
+  });
+
+  test('spaced IPA for a single-word label is fixed by compacting the IPA', () => {
+    // [symmorphizomenos](/summoʊrfi zoʊmɛnoʊs/) — label is one word but IPA has a space
+    const text = 'becoming [symmorphizomenos](/summoʊrfi zoʊmɛnoʊs/) to death.';
+    const issues = scanPronunciationIssues(text);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('structural');
+    const patch = { id: issues[0].id, replacement: '[symmorphizomenos](/summoʊrfizoʊmɛnoʊs/)' };
+    const proposed = applyPronunciationPatches(text, issues, [patch]);
+    expect(scanPronunciationIssues(proposed)).toEqual([]);
+    expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
+  });
+
+  test('syllable-boundary period between vowels in IPA is fixed by removing the period', () => {
+    // [ekklesiais](/ɛklɛsi.aɪs/) — period between vowels is unsupported
+    const text = '[tais](/teɪs/) [ekklesiais](/ɛklɛsi.aɪs/) [tes](/teɪs/) Galatias.';
+    const issues = scanPronunciationIssues(text);
+    const flagged = issues.find(i => i.text.includes('ekklesiais'));
+    expect(flagged).toBeDefined();
+    expect(flagged!.kind).toBe('unsafe_pronunciation');
+    const patch = { id: flagged!.id, replacement: '[ekklesiais](/ɛklɛsiaɪs/)' };
+    const proposed = applyPronunciationPatches(text, issues.filter(i => i.id === flagged!.id), [patch]);
+    expect(scanPronunciationIssues(proposed).filter(i => i.text.includes('ekklesiais'))).toEqual([]);
+    expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
+  });
+
+  test('silent p before n is fixed by removing the leading p from the IPA', () => {
+    // [πνικτόν](/pniktoʊn/) — πν-onset: p is silent, IPA must not start with p
+    const text = 'from ensnared animals, [πνικτόν](/pniktoʊn/), and from unchastity.';
+    const issues = scanPronunciationIssues(text);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('structural');
+    const patch = { id: issues[0].id, replacement: '[πνικτόν](/nɪktoʊn/)' };
+    const proposed = applyPronunciationPatches(text, issues, [patch]);
+    expect(scanPronunciationIssues(proposed)).toEqual([]);
+    expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
+  });
+
+  test('abbreviation tag with spaced IPA can be repaired by removing the pronunciation tag', () => {
+    // [c.e.](/siː iː/) — English abbreviation; Kokoro reads these fine without markup
+    const text = 'the First Revolt in 68 [c.e.](/siː iː/) When he states';
+    const issues = scanPronunciationIssues(text);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('structural');
+    const patch = { id: issues[0].id, replacement: 'c.e.' };
+    const proposed = applyPronunciationPatches(text, issues, [patch]);
+    expect(proposed).toBe('the First Revolt in 68 c.e. When he states');
+    expect(scanPronunciationIssues(proposed)).toEqual([]);
+    expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
+  });
+
 });
 
