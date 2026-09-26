@@ -253,7 +253,7 @@ describe('pronunciation repair service', () => {
     const details = onDiagnostics.mock.calls[0][0];
     expect(details).toMatchObject({ stage: 'patch-coverage', validatorReason: 'Repair changed unrelated English text.', finishReason: 'STOP', httpStatus: 200 });
     expect(details.findings[0]).toMatchObject({ id: '0', original: '[Aetherian](/bad split/)', replacement: 'Someone else' });
-    expect(details.systemInstruction).toContain('Preserve all English words and numbers.');
+    expect(details.systemInstruction).toContain('Preserve all original words.');
     expect(mocks.createRun).not.toHaveBeenCalled();
   });
 

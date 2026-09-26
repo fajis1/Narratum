@@ -31,7 +31,7 @@ test('keeps the exact repair task with profile pronunciation guidance and mandat
   expect(prompt).toContain('CUSTOM PRONUNCIATION GUIDE');
   expect(prompt).toContain('KOKORO PRONUNCIATION COMPATIBILITY POLICY');
   expect(prompt).toContain('θε(οῦ) is one complete word');
-  expect(prompt).toContain('Preserve all English words and numbers.');
+  expect(prompt).toContain('Preserve all original words.');
   expect(prompt).toContain('If a reading cannot be resolved, omit its patch');
 });
 test('identifies specific bad replacements and missing findings without modifying source', () => {

@@ -38,6 +38,7 @@ vi.mock('@/db/schema', () => ({
 vi.mock('drizzle-orm', () => ({
   and: vi.fn(),
   eq: vi.fn(),
+  inArray: vi.fn(),
 }));
 vi.mock('@/lib/server/logger', () => ({
   serverLogger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
@@ -78,8 +79,8 @@ describe('runPostGenerationPronunciationSweep', () => {
 
     const stats = await runPostGenerationPronunciationSweep('book1', 'user1', 'job1');
 
-    expect(stats.swept).toBe(2);
-    expect(stats.skipped).toBe(2);
+    expect(stats.swept).toBe(0);    // no chapters had pronunciation issues
+    expect(stats.skipped).toBe(2);   // both chapters were clean → skipped
     expect(stats.autoApproved).toBe(0);
     expect(stats.pendingReview).toBe(0);
     

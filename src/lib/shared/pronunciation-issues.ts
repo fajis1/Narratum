@@ -156,6 +156,21 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
         if (tagged.every(word => word !== undefined)) replacement = tagged.join('');
       }
       else if (formatted !== value && !scanPronunciationIssues(formatted).length) replacement = formatted;
+      // Doubled opening bracket: [[word](/ipa/) → [word](/ipa/).
+      // Stripping the stray leading [ produces a valid single tag; suggest it directly.
+      else if (value.startsWith('[[')) {
+        const stripped = value.slice(1);
+        if (!scanPronunciationIssues(stripped).length) replacement = stripped;
+      }
+      // IPA-as-label nesting: [word](/[word](/ipa/)/) → [word](/ipa/).
+      // Extract the innermost clean tag from a doubly-wrapped label.
+      else {
+        const innerTag = /^\[[^\[\]\r\n]+\]\(\/\[([^\[\]\r\n]+)\]\(\/([^/\r\n]+)\/\)\/\)$/u.exec(value);
+        if (innerTag) {
+          const candidate = `[${innerTag[1]}](/${innerTag[2]}/)`;
+          if (!scanPronunciationIssues(candidate).length) replacement = candidate;
+        }
+      }
     }
     const kind: PronunciationIssue['kind'] = /Mixed-script OCR|bare IPA/iu.test(region.reason)
       ? 'ocr_source'
@@ -213,6 +228,11 @@ function assertSourceWords(original: string, replacement: string, sourceText?: s
   // Never compare just that label and accidentally authorize dropping the tail.
   if (pronunciationMarkupRegions(normalizeRepairMarkup(original)).some(region => region.nested)) {
     if (nestedSourceReconstruction(original, replacement, sourceText)) return;
+    // Structural deduplication: [word](/[word](/ipa/)/) → [word](/ipa/).
+    // The IPA slot itself contains a complete tag; collapsing to that inner tag
+    // changes nothing semantically. No source-text evidence is required.
+    const innerTag = /^\[[^\[\]\r\n]+\]\(\/\[([^\[\]\r\n]+)\]\(\/([^/\r\n]+)\/\)\/\)$/u.exec(original);
+    if (innerTag && replacement === `[${innerTag[1]}](/${innerTag[2]}/)` && !scanPronunciationIssues(replacement).length) return;
     throw new Error('Nested repair requires verified source evidence for the complete word sequence.');
   }
   if (visibleForeign(original) === visibleForeign(replacement)) return;
