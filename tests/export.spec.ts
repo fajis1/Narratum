@@ -650,12 +650,11 @@ test('resumes audiobook when a chapter is missing and full download succeeds (EP
 
   await waitForChaptersHeading(page);
   const chapterActionsButtons = page.getByRole('button', { name: 'Chapter actions' });
-  await waitForBackendDownloadReady(page, bookId, { minChapters: 2 });
+  await waitForBackendDownloadReady(page, bookId, { minChapters: 3 });
   const beforeDelete = await expectChaptersBackendState(page, bookId);
   const chapterCountBefore = beforeDelete.chapters.length;
-  expect(chapterCountBefore).toBeGreaterThanOrEqual(2);
-  expect(chapterCountBefore).toBeLessThanOrEqual(4);
-  await expect(chapterActionsButtons).toHaveCount(chapterCountBefore, { timeout: 20_000 });
+  expect(chapterCountBefore).toBe(3);
+  await expect(chapterActionsButtons).toHaveCount(3, { timeout: 20_000 });
 
   // Delete the first chapter via the backend API so the audiobook has a missing index (0).
   // This is more reliable than clicking through the chapter actions menu in headless runs.
@@ -664,18 +663,19 @@ test('resumes audiobook when a chapter is missing and full download succeeds (EP
   );
   expect(deleteRes.ok()).toBeTruthy();
 
-  // Wait for backend to reflect exactly one missing chapter.
+  // Wait for backend to reflect the missing chapter 0.
   await expect
     .poll(async () => {
       const json = await expectChaptersBackendState(page, bookId);
-      return json.chapters?.length ?? 0;
+      return json.chapters?.some((ch: any) => ch.index === 0) ?? false;
     }, { timeout: 30_000 })
-    .toBe(chapterCountBefore - 1);
+    .toBe(false);
 
   const jsonAfterDelete = await expectChaptersBackendState(page, bookId);
   expect(jsonAfterDelete.exists).toBe(true);
   expect(Array.isArray(jsonAfterDelete.chapters)).toBe(true);
-  expect(jsonAfterDelete.chapters.length).toBe(chapterCountBefore - 1);
+  // Do not assert exact length here because the background worker may have appended a new chapter.
+  expect(jsonAfterDelete.chapters.some((ch: any) => ch.index === 0)).toBe(false);
 
   // Close and reopen the modal to ensure "resume" loads the missing placeholder from the backend.
   await page.getByRole('button', { name: 'Close' }).click();

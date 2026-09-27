@@ -1505,7 +1505,6 @@ export async function DELETE(request: NextRequest) {
 
     for (const fileName of objectNames) {
       if (!fileName.startsWith(chapterPrefix)) continue;
-      if (!fileName.endsWith('.mp3') && !fileName.endsWith('.m4b')) continue;
       await deleteAudiobookObject(bookId, storageUserId, fileName, testNamespace).catch(() => {});
     }
 
