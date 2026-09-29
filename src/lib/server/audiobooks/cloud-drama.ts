@@ -67,6 +67,7 @@ export async function generateCloudDramaAudiobook(input: {
         policy,
         modelName: input.ttsModel as import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel | undefined,
         fallbackModels: input.ttsModelFallbacks as readonly import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel[] | undefined,
+        signal: input.signal,
       });
       reviewFlags.push(...result.reviewFlags);
       const failures = result.reviewFlags.filter((flag) => flag.kind === 'cloud-tts-failed');

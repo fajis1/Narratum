@@ -7,7 +7,7 @@ import {
   readSmartAudioProfilesDocument,
   updateSmartAudioProfilePronunciations,
 } from '@/lib/server/smart-audio-profiles';
-import { eq, and, asc, lt, inArray, sql, or } from 'drizzle-orm';
+import { eq, and, asc, lt, inArray, sql, or, like, notLike, isNull } from 'drizzle-orm';
 import { db } from '@/db';
 import { audiobookJobs, documents, audiobooks, audiobookChapters, adminSettings, documentSettings } from '@/db/schema';
 import { readCurrentParsedPdfArtifact } from '@/lib/server/pdf-parse/artifact';
@@ -34,6 +34,9 @@ import {
   GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
   GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE,
   calculateRemainingDailyQuotaMs,
+  formatSystemResourcePauseMessage,
+  isSystemResourcePause,
+  SYSTEM_RESOURCES_PAUSE_PREFIX,
 } from '@/lib/shared/audiobook-job-status';
 import { isAudiobookJobEligibleToRun } from './queue-eligibility';
 export { isAudiobookJobEligibleToRun } from './queue-eligibility';
@@ -76,11 +79,11 @@ import {
   getCloudTtsCharacterMapReadiness,
 } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
 import {
-  CLOUD_TTS_MODEL,
-  CLOUD_TTS_FALLBACK_MODELS,
-  CloudTtsQuotaExhaustedError,
-  isCloudTtsQuotaExhaustedError,
-} from '@/lib/server/smart-audio/google-cloud-tts-client';
+  GEMINI_TTS_FALLBACK_MODELS,
+  GEMINI_TTS_MODEL,
+  GeminiTtsQuotaExhaustedError,
+  isGeminiTtsQuotaExhaustedError,
+} from '@/lib/server/smart-audio/gemini-tts-client';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
 import { mergeGlobalDefinitions, readGlobalDefinitions } from '@/lib/server/smart-audio/global-definition-library';
 import { preparePdfAudiobookBlocks } from '@/lib/shared/pdf-audiobook-blocks';
@@ -538,10 +541,32 @@ export async function processAudiobookQueue(context?: TaskContext) {
     }
   }
 
-  const resources = await checkSystemResources();
+  const resources = await checkSystemResources({ forceFresh: true });
   if (!resources.ok) {
-    serverLogger.warn({ event: 'audiobook.queue.degraded', reason: resources.reason }, `System resources degraded: ${resources.reason}`);
+    const haltReason = resources.reason || 'Low system resources';
+    const haltMessage = formatSystemResourcePauseMessage(haltReason);
+    serverLogger.warn({ event: 'audiobook.queue.degraded', reason: haltReason }, `System resources degraded: ${haltReason}`);
+
+    try {
+      await db.update(audiobookJobs)
+        .set({ error: haltMessage, updatedAt: Date.now() })
+        .where(and(
+          inArray(audiobookJobs.status, ['queued', 'waiting_for_pdf']),
+          or(isNull(audiobookJobs.error), notLike(audiobookJobs.error, `${SYSTEM_RESOURCES_PAUSE_PREFIX}%`))
+        ));
+    } catch (dbErr) {
+      serverLogger.warn({ event: 'audiobook.queue.degraded_update_failed', error: String(dbErr) }, 'Failed to record degraded error on queued jobs');
+    }
     return;
+  } else {
+    try {
+      await db.update(audiobookJobs)
+        .set({ error: null, updatedAt: Date.now() })
+        .where(and(
+          inArray(audiobookJobs.status, ['queued', 'waiting_for_pdf']),
+          like(audiobookJobs.error, `${SYSTEM_RESOURCES_PAUSE_PREFIX}%`)
+        ));
+    } catch {}
   }
 
   if (isQueueLoopRunning) {
@@ -1736,8 +1761,8 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
               dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
               priorContinuityState: continuityState,
-              ttsModel: typeof settings.ttsModel === 'string' && settings.ttsModel.trim() ? settings.ttsModel : CLOUD_TTS_MODEL,
-              ttsModelFallbacks: CLOUD_TTS_FALLBACK_MODELS,
+              ttsModel: GEMINI_TTS_MODEL,
+              ttsModelFallbacks: GEMINI_TTS_FALLBACK_MODELS,
             });
             ttsBuffer = drama.audioBuffer;
             await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: drama.reviewFlags });
@@ -1794,26 +1819,22 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
         const message = error instanceof Error ? error.message : String(error);
 
         // ── Smart HTTP Errorcode / Quota Handling for Cloud Drama & TTS ───────
-        const isCloudTtsQuota = isCloudTtsQuotaExhaustedError(error);
-        const isGeminiQuota = /\bHTTP (429|402|403|503)\b/.test(message) ||
+        const isGeminiTtsQuota = isGeminiTtsQuotaExhaustedError(error);
+        const isGeminiQuota = isGeminiTtsQuota || /\bHTTP (429|402|403|503)\b/.test(message) ||
           /resource_exhausted|quota exceeded|rate limit|too many requests|payment required|billing/i.test(message);
 
-        if (isCloudTtsQuota || isGeminiQuota) {
+        if (isGeminiQuota) {
           if (nc) await nc.close();
           const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
 
-          const isDaily = isCloudTtsQuota
-            ? (error instanceof CloudTtsQuotaExhaustedError ? error.isDailyQuota : true)
-            : /daily|quota|credit/i.test(message) || /\b429\b/.test(message);
-          const cooldownMs = isDaily
-            ? calculateRemainingDailyQuotaMs()
-            : 300 * 1000;
+          const isDaily = !isGeminiTtsQuota && (/daily|quota|credit/i.test(message) || /\b429\b/.test(message));
+          const cooldownMs = isGeminiTtsQuota && error instanceof GeminiTtsQuotaExhaustedError && error.retryAfterMs !== undefined
+            ? Math.max(1_000, error.retryAfterMs)
+            : isDaily ? calculateRemainingDailyQuotaMs() : 300 * 1000;
 
           jobSettingsParsed.nextAttemptAt = Date.now() + cooldownMs;
 
-          const pauseMessage = isCloudTtsQuota
-            ? GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE
-            : GEMINI_RATE_LIMIT_PAUSE_MESSAGE;
+          const pauseMessage = GEMINI_RATE_LIMIT_PAUSE_MESSAGE;
 
           await updateClaimedAudiobookJob(job.id, 'running', {
             status: 'queued',
@@ -1824,14 +1845,14 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
           });
 
           serverLogger.warn({
-            event: isCloudTtsQuota ? 'audiobook.queue.cloud_tts.quota_paused' : 'audiobook.queue.drama_director.rate_limit_paused',
+            event: isGeminiTtsQuota ? 'audiobook.queue.gemini_tts.quota_paused' : 'audiobook.queue.drama_director.rate_limit_paused',
             jobId: job.id,
             bookId,
             chapter: chapter.index,
             cooldownSeconds: Math.round(cooldownMs / 1000),
             error: message,
-          }, isCloudTtsQuota
-            ? `Google Cloud TTS daily quota/credits exhausted. Pausing audiobook until daily refresh (${Math.round(cooldownMs / 1000)}s).`
+          }, isGeminiTtsQuota
+            ? `Gemini TTS quota/rate limit reached. Yielding job with ${Math.round(cooldownMs / 1000)}s cooldown.`
             : `Drama Director hit Gemini API limits. Yielding job with ${Math.round(cooldownMs / 1000)}s cooldown.`
           );
           return;

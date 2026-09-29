@@ -37,6 +37,8 @@ export interface GeminiTtsSynthesisOptions {
   modelName?: GeminiTtsModel;
   /** Gemini API key. It is sent only as the x-goog-api-key header. */
   apiKey: string;
+  /** Allows audiobook cancellation to abort an in-flight provider request. */
+  signal?: AbortSignal;
 }
 
 export interface GeminiTtsSynthesisResult {
@@ -99,6 +101,21 @@ export class GeminiTtsApiError extends Error {
     super(message);
     this.name = 'GeminiTtsApiError';
   }
+}
+
+export class GeminiTtsQuotaExhaustedError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = 'GeminiTtsQuotaExhaustedError';
+  }
+}
+
+export function isGeminiTtsQuotaExhaustedError(error: unknown): error is GeminiTtsQuotaExhaustedError {
+  return error instanceof GeminiTtsQuotaExhaustedError;
 }
 
 export class GeminiTtsTransportError extends Error {
@@ -244,6 +261,7 @@ export async function synthesizeWithGeminiTts(
         'x-goog-api-key': options.apiKey,
       },
       body: JSON.stringify(requestBody),
+      signal: options.signal,
     });
   } catch (error) {
     throw new GeminiTtsTransportError(error);
@@ -285,6 +303,14 @@ export async function synthesizeWithGeminiTts(
       'Gemini TTS response contained empty audio.',
       response.status,
       'Empty base64 audio payload',
+      requestBody.model,
+    );
+  }
+  if (audioBuffer.subarray(0, 4).toString('ascii') !== 'RIFF' || audioBuffer.subarray(8, 12).toString('ascii') !== 'WAVE') {
+    throw new GeminiTtsApiError(
+      'Gemini TTS response was not a WAV payload.',
+      response.status,
+      'Expected RIFF/WAVE header',
       requestBody.model,
     );
   }

@@ -214,6 +214,19 @@ describe('synthesizeWithGeminiTts', () => {
     }
   });
 
+  it('rejects a successful response whose audio bytes are not RIFF/WAVE', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(audioPayload(Buffer.from('not-a-wav').toString('base64')))));
+    await expect(synthesizeWithGeminiTts({ text: 'Narration', voiceName: 'Kore', apiKey: testApiKey })).rejects.toThrow('not a WAV payload');
+  });
+
+  it('forwards the cancellation signal to fetch', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockResolvedValue(response(audioPayload()));
+    vi.stubGlobal('fetch', fetchMock);
+    await synthesizeWithGeminiTts({ text: 'Narration', voiceName: 'Kore', apiKey: testApiKey, signal: controller.signal });
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
+  });
+
   it('throws when a successful response has no audio content', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
       steps: [{ type: 'model_output', content: [{ type: 'text', text: 'not audio' }] }],

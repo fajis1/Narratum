@@ -1,6 +1,6 @@
 import type { DramaDirectorSegment, DramaAudioTag } from '@/lib/shared/drama-director-schema';
 import { buildGeminiDramaTtsRequest } from './drama-cloud-request';
-import { GEMINI_TTS_FALLBACK_MODELS, GEMINI_TTS_MODEL, GeminiTtsApiError, GeminiTtsTransportError, isGeminiTtsModel, synthesizeWithGeminiTts } from './gemini-tts-client';
+import { GEMINI_TTS_FALLBACK_MODELS, GEMINI_TTS_MODEL, GeminiTtsApiError, GeminiTtsQuotaExhaustedError, GeminiTtsTransportError, isGeminiTtsModel, synthesizeWithGeminiTts } from './gemini-tts-client';
 import type { GeminiTtsModel, GeminiTtsSynthesisOptions, GeminiTtsSynthesisResult } from './gemini-tts-client';
 import { DRAMA_ONE_SHOT_TAGS, DRAMA_PAUSE_TAGS, DRAMA_STYLE_TAGS } from '@/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
@@ -119,6 +119,7 @@ export async function synthesizeDramaSegment(input: {
   onModelFallback?: (fromModel: string, toModel: string, reason: string) => void;
   synthesize?: (options: CloudTtsSynthesisOptions) => Promise<CloudTtsSynthesisResult>;
   wait?: (milliseconds: number) => Promise<void>;
+  signal?: AbortSignal;
 }): Promise<DramaSynthesisResult> {
   const { segment } = input;
   if (segment.omit_from_audio) {
@@ -319,6 +320,7 @@ export async function synthesizeGeminiDramaSegment(input: {
   fallbackModels?: readonly GeminiTtsModel[];
   synthesize?: (options: GeminiTtsSynthesisOptions) => Promise<GeminiTtsSynthesisResult>;
   wait?: (milliseconds: number) => Promise<void>;
+  signal?: AbortSignal;
 }): Promise<DramaSynthesisResult> {
   if (input.segment.omit_from_audio) {
     return { chunks: [{ sourceText: input.segment.text, requestText: '', audioBuffer: null, needsPlaceholder: false, omitted: true }], reviewFlags: [] };
@@ -360,6 +362,7 @@ export async function synthesizeGeminiDramaSegment(input: {
             style: built.style,
             voiceName: built.voiceName,
             modelName,
+            signal: input.signal,
           });
           chunks.push({ sourceText, requestText: built.requestText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
           if (modelIndex > 0) reviewFlags.push({ kind: 'tts-fallback-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts, reason: `Gemini TTS fell back to model ${modelName}.` });
@@ -375,6 +378,13 @@ export async function synthesizeGeminiDramaSegment(input: {
       if (succeeded) break;
     }
     if (!succeeded) {
+      if (lastError instanceof GeminiTtsApiError && (lastError.statusCode === 429 || lastError.providerStatus === 'RESOURCE_EXHAUSTED')) {
+        throw new GeminiTtsQuotaExhaustedError(
+          `Gemini TTS quota or rate limit exhausted (HTTP ${lastError.statusCode}).`,
+          lastError.statusCode,
+          lastError.retryAfterMs,
+        );
+      }
       chunks.push({ sourceText, requestText: sourceText, audioBuffer: null, needsPlaceholder: true, omitted: false });
       reviewFlags.push({ kind: 'cloud-tts-failed', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts, reason: lastError instanceof GeminiTtsApiError ? `Gemini TTS HTTP ${lastError.statusCode}` : lastError instanceof Error ? lastError.name : 'Unknown synthesis error' });
     }

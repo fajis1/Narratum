@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  annotateDramaChunks, splitDramaTextByUtf8, synthesizeDramaSegment,
+  annotateDramaChunks, splitDramaTextByUtf8, synthesizeDramaSegment, synthesizeGeminiDramaSegment,
 } from '../../src/lib/server/smart-audio/drama-cloud-synthesis';
 import { CloudTtsApiError, CloudTtsTransportError, measureUtf8Bytes } from '../../src/lib/server/smart-audio/google-cloud-tts-client';
+import { GeminiTtsApiError, GeminiTtsQuotaExhaustedError } from '../../src/lib/server/smart-audio/gemini-tts-client';
 import type { DramaDirectorSegment } from '../../src/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '../../src/types/document-settings';
 
@@ -96,6 +97,23 @@ describe('Drama Cloud synthesis', () => {
     expect(synthesize).toHaveBeenCalledTimes(2);
     expect(result.reviewFlags).toEqual([expect.objectContaining({ kind: 'tts-retry-used', attempts: 2 })]);
     expect(result.chunks[0].audioBuffer).toEqual(success.audioBuffer);
+  });
+
+  it('uses Flash-Lite after the primary Gemini TTS model is unavailable', async () => {
+    const synthesize = vi.fn()
+      .mockRejectedValueOnce(new GeminiTtsApiError('missing', 404, 'not found', 'gemini-3.8-flash-tts'))
+      .mockResolvedValueOnce({ audioBuffer: Buffer.from('RIFF0000WAVEfmt ') });
+    const result = await synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'test', synthesize });
+    expect(synthesize.mock.calls.map(([options]) => options.modelName)).toEqual(['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']);
+    expect(result.reviewFlags).toEqual([expect.objectContaining({ kind: 'tts-fallback-used' })]);
+  });
+
+  it('bubbles an exhausted Gemini TTS quota instead of producing silence', async () => {
+    const synthesize = vi.fn().mockRejectedValue(new GeminiTtsApiError('limited', 429, 'limited', 'gemini-3.8-flash-tts', 'RESOURCE_EXHAUSTED', 12_000));
+    await expect(synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'test', synthesize, wait: async () => {} })).rejects.toMatchObject({
+      name: 'GeminiTtsQuotaExhaustedError', retryAfterMs: 12_000,
+    });
+    expect(GeminiTtsQuotaExhaustedError).toBeDefined();
   });
 
   it('flags preflight failures without losing source text', async () => {
