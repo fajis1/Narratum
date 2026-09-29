@@ -25,7 +25,6 @@ export async function generateCloudDramaAudiobook(input: {
   geminiApiKey: string;
   backupGeminiApiKey?: string;
   directorModel: string;
-  serviceAccountJson?: string;
   dramaGeminiTtsSettings?: unknown;
   priorContinuityState?: string;
   signal?: AbortSignal;

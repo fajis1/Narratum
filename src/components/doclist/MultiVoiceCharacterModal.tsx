@@ -11,7 +11,15 @@ import {
 import toast from 'react-hot-toast';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import type { GeminiVoiceCatalogEntry } from '@/lib/shared/gemini-voice-catalog';
-import { autoAssignGeminiMinorVoices, recommendAnotherGeminiVoice } from '@/lib/shared/gemini-voice-matching';
+import { autoAssignGeminiMinorVoices, recommendAnotherGeminiVoice, recommendGeminiVoices } from '@/lib/shared/gemini-voice-matching';
+import {
+  filterGeminiVoiceLibrary,
+  formatGeminiAssignmentReason,
+  formatGeminiVoiceMetadata,
+  listGeminiVoiceMetadataValues,
+  type GeminiVoiceGenderFilter,
+  type GeminiVoicePitchFilter,
+} from '@/lib/shared/gemini-voice-library-ui';
 
 interface MultiVoiceCharacterModalProps {
   documentId: string;
@@ -48,13 +56,16 @@ export function MultiVoiceCharacterModal({
   const [geminiVoices, setGeminiVoices] = useState<GeminiVoiceCatalogEntry[]>([]);
   const [geminiVoiceSource, setGeminiVoiceSource] = useState<string | null>(null);
   const [voiceSearch, setVoiceSearch] = useState('');
-  const [voiceGenderFilter, setVoiceGenderFilter] = useState<'all' | 'female' | 'male' | 'neutral' | 'unknown'>('all');
+  const [voiceGenderFilter, setVoiceGenderFilter] = useState<GeminiVoiceGenderFilter>('all');
+  const [voicePitchFilter, setVoicePitchFilter] = useState<GeminiVoicePitchFilter>('all');
   const [voiceAccentFilter, setVoiceAccentFilter] = useState('all');
+  const [voiceContextFilter, setVoiceContextFilter] = useState('all');
   const [hideUsedVoices, setHideUsedVoices] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
+  const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [previewModeByCharacter, setPreviewModeByCharacter] = useState<Record<string, 'voice-only' | 'character' | 'scene'>>({});
   const [previewTextByCharacter, setPreviewTextByCharacter] = useState<Record<string, string>>({});
   const [previewContextByCharacter, setPreviewContextByCharacter] = useState<Record<string, string>>({});
@@ -64,18 +75,30 @@ export function MultiVoiceCharacterModal({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioUrl = useRef<string | null>(null);
+  const audioPlayer = useRef<HTMLAudioElement | null>(null);
   const scanInFlight = useRef(false);
   const isCloudDrama = workerMode === 'drama-gemini-tts';
   const normalizeCast = useCallback((value: unknown) => normalizeSmartAudioCharacterMap(
     value, isCloudDrama ? { preserveSafeVoiceIds: true } : {},
   ), [isCloudDrama]);
 
+  const stopPreview = useCallback(() => {
+    if (audioPlayer.current) {
+      audioPlayer.current.pause();
+      audioPlayer.current.src = '';
+      audioPlayer.current = null;
+    }
+    if (audioUrl.current) URL.revokeObjectURL(audioUrl.current);
+    audioUrl.current = null;
+    setIsPlaying(null);
+    setPlayingVoiceId(null);
+  }, []);
+
   const clearTransientResources = useCallback(() => {
     if (retryTimer.current) clearTimeout(retryTimer.current);
     retryTimer.current = null;
-    if (audioUrl.current) URL.revokeObjectURL(audioUrl.current);
-    audioUrl.current = null;
-  }, []);
+    stopPreview();
+  }, [stopPreview]);
 
   const scanCharacters = useCallback(async () => {
     if (!isOpen || scanInFlight.current) return;
@@ -205,21 +228,56 @@ export function MultiVoiceCharacterModal({
     }
     return assignments;
   }, [primaryCharacters]);
-  const geminiAccents = useMemo(() => [...new Set(
-    geminiVoices.map((voice) => voice.accent?.trim()).filter((accent): accent is string => Boolean(accent)),
-  )].sort((left, right) => left.localeCompare(right)), [geminiVoices]);
-  const filteredVoiceIds = useMemo(() => {
-    if (!isCloudDrama) return null;
-    const query = voiceSearch.trim().toLocaleLowerCase();
-    return new Set(geminiVoices.filter((voice) => {
-      const searchable = [voice.id, voice.displayName, voice.languageCode, voice.accent, voice.gender, voice.pitch, voice.persona, voice.context, voice.description]
-        .filter(Boolean).join(' ').toLocaleLowerCase();
-      if (query && !searchable.includes(query)) return false;
-      if (voiceGenderFilter !== 'all' && voice.gender !== voiceGenderFilter) return false;
-      if (voiceAccentFilter !== 'all' && voice.accent !== voiceAccentFilter) return false;
-      return !hideUsedVoices || !charactersByVoice.has(voice.id);
-    }).map((voice) => voice.id));
-  }, [charactersByVoice, geminiVoices, hideUsedVoices, isCloudDrama, voiceAccentFilter, voiceGenderFilter, voiceSearch]);
+  const geminiAccents = useMemo(() => listGeminiVoiceMetadataValues(geminiVoices, 'accent'), [geminiVoices]);
+  const geminiContexts = useMemo(() => listGeminiVoiceMetadataValues(geminiVoices, 'context'), [geminiVoices]);
+  const visibleGeminiVoices = useCallback((currentVoiceId?: string | null) => filterGeminiVoiceLibrary(geminiVoices, {
+    query: voiceSearch,
+    gender: voiceGenderFilter,
+    pitch: voicePitchFilter,
+    accent: voiceAccentFilter,
+    context: voiceContextFilter,
+    hideUsed: hideUsedVoices,
+    currentVoiceId,
+  }, new Set(charactersByVoice.keys())), [charactersByVoice, geminiVoices, hideUsedVoices, voiceAccentFilter, voiceContextFilter, voiceGenderFilter, voicePitchFilter, voiceSearch]);
+  const recommendedVoices = useMemo(() => {
+    const result = new Map<string, ReturnType<typeof recommendGeminiVoices>[number]>();
+    if (!isCloudDrama) return result;
+    const narratorVoiceId = primaryCharacters.find((entry) => entry.name.toLocaleLowerCase() === 'narrator')?.voiceId || null;
+    for (const character of primaryCharacters) {
+      if (character.name.toLocaleLowerCase() !== 'narrator' && character.importance !== 'main') continue;
+      const usedVoiceIds = new Set(primaryCharacters
+        .filter((entry) => entry.name !== character.name && entry.voiceId)
+        .map((entry) => entry.voiceId as string));
+      const [recommendation] = recommendGeminiVoices({
+        character: { ...character, voiceAssignment: undefined },
+        voices: geminiVoices,
+        usedVoiceIds,
+        narratorVoiceId,
+        limit: 1,
+      });
+      if (recommendation) result.set(character.name, recommendation);
+    }
+    return result;
+  }, [geminiVoices, isCloudDrama, primaryCharacters]);
+
+  const applyGeminiVoice = (name: string, voice: GeminiVoiceCatalogEntry) => {
+    updateEntry(name, (entry) => {
+      entry.voiceId = voice.id;
+      entry.voiceAssignment = {
+        provider: 'gemini', voiceId: voice.id, assignedAt: Date.now(), assignmentSource: 'user',
+        catalogSnapshot: {
+          displayName: voice.displayName,
+          ...(voice.languageCode ? { languageCode: voice.languageCode } : {}),
+          ...(voice.accent ? { accent: voice.accent } : {}),
+          gender: voice.gender, pitch: voice.pitch,
+          ...(voice.persona ? { persona: voice.persona } : {}),
+          ...(voice.context ? { context: voice.context } : {}),
+          ...(voice.description ? { description: voice.description } : {}),
+        },
+        reason: 'Selected manually in the Gemini Voice Library.',
+      };
+    });
+  };
 
   const handleRecommendAnother = (name: string) => {
     const entry = characterMap?.entries[name];
@@ -314,9 +372,15 @@ export function MultiVoiceCharacterModal({
     const entry = characterMap?.entries[name];
     const voiceId = voiceOverride || entry?.voiceId;
     if (!voiceId) return;
+    if (isPlaying === name && playingVoiceId === voiceId) {
+      stopPreview();
+      return;
+    }
     const previewMode = requestedMode || previewModeByCharacter[name] || 'character';
+    stopPreview();
     setPreviewModeByCharacter((current) => ({ ...current, [name]: previewMode }));
     setIsPlaying(name);
+    setPlayingVoiceId(voiceId);
     setError(null);
     try {
       const previewText = previewTextByCharacter[name] || entry?.sampleText || `${name} is ready for the adventure.`;
@@ -342,15 +406,15 @@ export function MultiVoiceCharacterModal({
         const body = await response.json().catch(() => ({})) as { error?: string };
         throw new Error(body.error || 'Voice preview failed.');
       }
-      if (audioUrl.current) URL.revokeObjectURL(audioUrl.current);
       audioUrl.current = URL.createObjectURL(await response.blob());
       const audio = new Audio(audioUrl.current);
-      audio.onended = () => setIsPlaying(null);
-      audio.onerror = () => setIsPlaying(null);
+      audioPlayer.current = audio;
+      audio.onended = stopPreview;
+      audio.onerror = stopPreview;
       await audio.play();
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : 'Voice preview failed.');
-      setIsPlaying(null);
+      stopPreview();
     }
   };
 
@@ -467,23 +531,40 @@ export function MultiVoiceCharacterModal({
           {error && <div className="rounded-xl border border-danger bg-danger-wash p-4 text-sm text-danger">{error}</div>}
           {isCloudDrama && (
             <div className="rounded-xl border border-line bg-surface p-4">
+              {geminiVoiceSource === 'legacy-fallback' && (
+                <div role="alert" className="mb-3 rounded-lg border border-warning bg-warning-wash p-3 text-xs text-warning">
+                  Google's live Gemini Voice Library could not be verified. Showing the emergency featured voice list; existing saved voice assignments are preserved.
+                </div>
+              )}
+              {geminiVoiceSource === 'snapshot' && <p className="mb-3 text-xs text-text-soft">Showing the last verified Gemini Voice Library snapshot.</p>}
+              {geminiVoiceSource === 'cache' && <p className="mb-3 text-xs text-text-soft">Showing a recently verified Gemini Voice Library cache.</p>}
               <div className="flex flex-wrap items-end gap-3">
                 <label className="min-w-52 flex-1 text-xs text-text-soft">Search Gemini Voice Library
                   <input value={voiceSearch} onChange={(event) => setVoiceSearch(event.target.value)} placeholder="Name, ID, accent, persona?" className="mt-1 w-full rounded-lg border border-line bg-background p-2 text-sm text-foreground" />
                 </label>
                 <label className="text-xs text-text-soft">Gender
-                  <select value={voiceGenderFilter} onChange={(event) => setVoiceGenderFilter(event.target.value as typeof voiceGenderFilter)} className="mt-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground">
-                    <option value="all">All</option><option value="female">Female</option><option value="male">Male</option><option value="neutral">Neutral</option><option value="unknown">Unknown</option>
+                  <select aria-label="Voice gender filter" value={voiceGenderFilter} onChange={(event) => setVoiceGenderFilter(event.target.value as GeminiVoiceGenderFilter)} className="mt-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground">
+                    <option value="all">All genders</option><option value="female">Female</option><option value="male">Male</option><option value="neutral">Neutral</option><option value="unknown">Unknown</option>
+                  </select>
+                </label>
+                <label className="text-xs text-text-soft">Pitch
+                  <select aria-label="Voice pitch filter" value={voicePitchFilter} onChange={(event) => setVoicePitchFilter(event.target.value as GeminiVoicePitchFilter)} className="mt-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground">
+                    <option value="all">All pitches</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="unknown">Unknown</option>
                   </select>
                 </label>
                 <label className="text-xs text-text-soft">Accent
-                  <select value={voiceAccentFilter} onChange={(event) => setVoiceAccentFilter(event.target.value)} className="mt-1 max-w-44 rounded-lg border border-line bg-background p-2 text-sm text-foreground">
+                  <select aria-label="Voice accent filter" value={voiceAccentFilter} onChange={(event) => setVoiceAccentFilter(event.target.value)} className="mt-1 max-w-44 rounded-lg border border-line bg-background p-2 text-sm text-foreground">
                     <option value="all">All accents</option>{geminiAccents.map((accent) => <option key={accent} value={accent}>{accent}</option>)}
                   </select>
                 </label>
-                <label className="flex items-center gap-2 pb-2 text-xs text-text-soft"><input type="checkbox" checked={hideUsedVoices} onChange={(event) => setHideUsedVoices(event.target.checked)} /> Hide voices in use</label>
+                <label className="text-xs text-text-soft">Context
+                  <select aria-label="Voice context filter" value={voiceContextFilter} onChange={(event) => setVoiceContextFilter(event.target.value)} className="mt-1 max-w-44 rounded-lg border border-line bg-background p-2 text-sm text-foreground">
+                    <option value="all">All contexts</option>{geminiContexts.map((context) => <option key={context} value={context}>{context}</option>)}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 pb-2 text-xs text-text-soft"><input aria-label="Hide voices already in use" type="checkbox" checked={hideUsedVoices} onChange={(event) => setHideUsedVoices(event.target.checked)} /> Hide voices in use</label>
               </div>
-              <p className="mt-2 text-xs text-text-soft">Showing {filteredVoiceIds?.size ?? 0} of {geminiVoices.length} Gemini prebuilt voices. A currently selected voice always remains visible.</p>
+              <p className="mt-2 text-xs text-text-soft">Showing {visibleGeminiVoices().length} of {geminiVoices.length} Gemini prebuilt voices. A currently selected voice always remains visible.</p>
             </div>
           )}
 
@@ -549,6 +630,33 @@ export function MultiVoiceCharacterModal({
                   </div>
                   <p className="mt-1 text-sm text-text-soft">{character.description || 'No description supplied.'}</p>
                   <p className="mt-2 rounded-lg bg-surface-sunken p-3 text-sm italic text-text-soft">“{character.sampleText || 'No sample quote was found.'}”</p>
+                  {isCloudDrama && !character.aliasFor && (character.name.toLocaleLowerCase() === 'narrator' || character.importance === 'main') && (() => {
+                    const recommendation = recommendedVoices.get(character.name);
+                    if (!recommendation) return null;
+                    const voice = recommendation.voice;
+                    return (
+                      <section className="mt-3 rounded-lg border border-accent-line bg-accent-wash p-3" aria-label={`Recommended voice for ${character.name}`}>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-accent">Recommended voice</p>
+                        <p className="mt-1 font-semibold text-text-strong">{voice.displayName}</p>
+                        <p className="text-xs text-text-soft">{formatGeminiVoiceMetadata(voice)}</p>
+                        {voice.description && <p className="mt-1 text-xs text-text-soft">{voice.description}</p>}
+                        <p className="mt-2 text-xs font-medium text-text-strong">Why Narratum recommends it:</p>
+                        <ul className="mt-1 list-inside list-disc text-xs text-text-soft">
+                          {recommendation.reasons.length ? recommendation.reasons.map((reason) => <li key={reason}>{reason}</li>) : <li>Best available catalog match for this character.</li>}
+                        </ul>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button type="button" onClick={() => void handlePreview(character.name, 'voice-only', voice.id)} className="rounded border border-accent px-2 py-1 text-xs text-accent">
+                            {isPlaying === character.name && playingVoiceId === voice.id ? 'Stop preview' : 'Preview'}
+                          </button>
+                          <button type="button" onClick={() => applyGeminiVoice(character.name, voice)} className="rounded bg-accent px-2 py-1 text-xs font-medium text-background">Use this voice</button>
+                          {character.voiceAssignment?.assignmentSource !== 'user' && <button type="button" onClick={() => handleRecommendAnother(character.name)} className="rounded border border-line px-2 py-1 text-xs text-text-strong">Recommend another</button>}
+                        </div>
+                      </section>
+                    );
+                  })()}
+                  {isCloudDrama && character.voiceAssignment && (
+                    <p className="mt-2 text-xs text-text-soft"><span className="font-medium text-text-strong">{character.voiceAssignment.assignmentSource === 'user' ? 'Selection:' : 'Recommended because:'}</span> {formatGeminiAssignmentReason(character.voiceAssignment)}</p>
+                  )}
                 </div>
                 <div className="w-full space-y-2 md:w-72">
                   <select
@@ -596,7 +704,7 @@ export function MultiVoiceCharacterModal({
                           className="min-w-0 flex-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground"
                         >
                           <option value="">Select a {isCloudDrama ? 'Gemini' : 'Kokoro'} voice</option>
-                          {voiceOptions.filter((voice) => !filteredVoiceIds || filteredVoiceIds.has(voice.id) || voice.id === character.voiceId).map((voice) => {
+                          {(isCloudDrama ? visibleGeminiVoices(character.voiceId) : voiceOptions).map((voice) => {
                             const assignedNames = charactersByVoice.get(voice.id) || [];
                             const assignedToCurrent = assignedNames.includes(character.name);
                             const assignedToOthers = assignedNames.filter((name) => name !== character.name);
@@ -612,6 +720,29 @@ export function MultiVoiceCharacterModal({
                       <p className="text-[11px] text-text-soft">
                         {isCloudDrama ? `Gemini Voice Library${geminiVoiceSource ? ` (${geminiVoiceSource})` : ''}. ` : ''}Voices marked “chosen by” are already in use but remain selectable for intentional sharing.
                       </p>
+                      {isCloudDrama && (
+                        <details className="rounded-lg border border-line bg-surface-sunken p-2">
+                          <summary className="cursor-pointer text-xs font-semibold text-text-strong">Browse Voice Library</summary>
+                          <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1" aria-label={`Voice Library results for ${character.name}`}>
+                            {visibleGeminiVoices(character.voiceId).map((voice) => {
+                              const users = (charactersByVoice.get(voice.id) || []).filter((name) => name !== character.name);
+                              const isPreviewing = isPlaying === character.name && playingVoiceId === voice.id;
+                              const isRecommended = recommendedVoices.get(character.name)?.voice.id === voice.id;
+                              return (
+                                <article key={voice.id} className={`rounded border p-2 ${isRecommended ? 'border-accent-line bg-accent-wash' : 'border-line bg-surface'}`}>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0"><p className="text-xs font-semibold text-text-strong">{isRecommended && 'Recommended: '}{voice.displayName}</p><p className="text-[11px] text-text-soft">{formatGeminiVoiceMetadata(voice)}</p></div>
+                                    <div className="flex shrink-0 gap-1"><button type="button" onClick={() => void handlePreview(character.name, 'voice-only', voice.id)} className="rounded border border-accent px-2 py-1 text-[11px] text-accent">{isPreviewing ? 'Stop' : 'Preview'}</button><button type="button" onClick={() => applyGeminiVoice(character.name, voice)} className="rounded bg-accent px-2 py-1 text-[11px] font-medium text-background">Use voice</button></div>
+                                  </div>
+                                  {voice.description && <p className="mt-1 text-[11px] text-text-soft">{voice.description}</p>}
+                                  {users.length > 0 && <p className="mt-1 text-[11px] text-warning">In use by: {users.join(', ')}</p>}
+                                </article>
+                              );
+                            })}
+                            {visibleGeminiVoices(character.voiceId).length === 0 && <p className="p-2 text-xs text-text-soft">No Gemini voices match these filters.</p>}
+                          </div>
+                        </details>
+                      )}
                       {isCloudDrama && character.voiceAssignment?.assignmentSource !== 'user' && (
                         <button type="button" onClick={() => handleRecommendAnother(character.name)} disabled={geminiVoices.length === 0 || isPlaying === character.name} className="text-xs font-medium text-accent hover:underline disabled:opacity-50">
                           Recommend another voice

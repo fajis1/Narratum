@@ -1780,7 +1780,6 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               geminiApiKey: selectedProfile.geminiApiKey || '',
               backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
               directorModel: resolveDramaDirectorModel(selectedProfile),
-              serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
               dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
               priorContinuityState: continuityState,
               ttsModel: GEMINI_TTS_MODEL,

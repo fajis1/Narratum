@@ -16,7 +16,7 @@ Narratum was previously named OpenReader; paths and historical comments may stil
 Run these checks from the project root before merging a staging change:
 
 ```bash
-pnpm exec vitest run tests/unit/gemini-voice-catalog-client.vitest.spec.ts tests/unit/gemini-voice-catalog-cache.vitest.spec.ts tests/unit/gemini-cast-helpers.vitest.spec.ts tests/unit/gemini-voice-matching.vitest.spec.ts tests/unit/gemini-tts-client.vitest.spec.ts tests/unit/drama-cloud-request.vitest.spec.ts --testTimeout=15000
+pnpm exec vitest run tests/unit/gemini-voice-catalog-client.vitest.spec.ts tests/unit/gemini-voice-catalog-cache.vitest.spec.ts tests/unit/gemini-cast-helpers.vitest.spec.ts tests/unit/gemini-voice-matching.vitest.spec.ts tests/unit/gemini-tts-client.vitest.spec.ts tests/unit/drama-cloud-request.vitest.spec.ts tests/unit/gemini-voice-library-ui.vitest.spec.ts --testTimeout=15000
 pnpm tsc --noEmit
 git diff --check
 ```
@@ -24,8 +24,10 @@ git diff --check
 The existing Playwright suite is intentionally safe for this feature: it runs with test credentials and does not make a live Gemini Voice or TTS request. Run it after producing the standalone app build:
 
 ```bash
-pnpm exec playwright test --project=chromium
+PLAYWRIGHT_WORKERS=1 pnpm exec playwright test tests/gemini-voice-library.spec.ts --project=chromium
 ```
+
+`gemini-voice-library.spec.ts` is a browser-level mocked workflow. It intercepts the Narratum preview route and does not contact Gemini. It covers metadata filters (including pitch and dynamic context), recommendation display and explicit acceptance, voice-only preview initiation, saved in-use state, and the emergency fallback retaining an extended saved ID.
 
 ## Manual staging smoke test
 

@@ -1105,7 +1105,6 @@ export async function POST(request: NextRequest) {
             geminiApiKey: selectedProfile.geminiApiKey || '',
             backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
             directorModel: resolveDramaDirectorModel(selectedProfile),
-            serviceAccountJson: selectedProfile.googleCloudServiceAccountJson,
             dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
             signal: request.signal,
           });
