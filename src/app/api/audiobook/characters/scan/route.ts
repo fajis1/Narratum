@@ -28,11 +28,7 @@ import {
 } from '@/lib/shared/multi-voice';
 import { resolveCleanupAiModel, resolveCleanupAiModels } from '@/lib/shared/smart-audio-models';
 import { DEFAULT_DOCUMENT_SETTINGS, type SmartAudioCharacterMap } from '@/types/document-settings';
-import {
-  getCloudTtsCharacterMapReadiness,
-  normalizeCloudTtsCharacterMap,
-} from '@/lib/server/smart-audio/google-cloud-cast-helpers';
-import { CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
+import { getGeminiTtsCharacterMapReadiness, normalizeGeminiTtsCharacterMap } from '@/lib/server/smart-audio/gemini-cast-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,7 +46,7 @@ function parseStoredSettings(value: unknown, isCloudDrama: boolean) {
   }
   const settings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, raw);
   if (isCloudDrama && raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    settings.smartAudioCharacters = normalizeCloudTtsCharacterMap((raw as Record<string, unknown>).smartAudioCharacters) || undefined;
+    settings.smartAudioCharacters = normalizeGeminiTtsCharacterMap((raw as Record<string, unknown>).smartAudioCharacters) || undefined;
   }
   return settings;
 }
@@ -136,7 +132,7 @@ export async function GET(request: NextRequest) {
     const scope = await loadScope(request, documentId, profileId);
     if (scope instanceof Response) return scope;
     const readiness = scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
-      ? getCloudTtsCharacterMapReadiness(scope.settings.smartAudioCharacters)
+      ? await getGeminiTtsCharacterMapReadiness({ value: scope.settings.smartAudioCharacters, apiKey: (scope.profile.geminiApiKey || '').trim() })
       : getCharacterMapReadiness(scope.settings.smartAudioCharacters);
     return NextResponse.json({
       characterMap: readiness.map,
@@ -226,7 +222,7 @@ export async function POST(request: NextRequest) {
         profileId,
         sourceFingerprint: source.sourceFingerprint,
         ...(scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
-          ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET }
+          ? { preserveSafeVoiceIds: true }
           : {}),
       });
       await saveCharacterMap({
@@ -266,14 +262,14 @@ export async function PUT(request: NextRequest) {
     const scope = await loadScope(request, documentId, profileId);
     if (scope instanceof Response) return scope;
     const characterMap = scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
-      ? normalizeCloudTtsCharacterMap(body.characterMap)
+      ? normalizeGeminiTtsCharacterMap(body.characterMap)
       : finalizeSmartAudioCharacterMap(body.characterMap);
     if (!characterMap) return NextResponse.json({ error: 'Invalid character cast.' }, { status: 400 });
     if (scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
       characterMap.status = 'complete';
-      const readiness = getCloudTtsCharacterMapReadiness(characterMap);
+      const readiness = await getGeminiTtsCharacterMapReadiness({ value: characterMap, apiKey: (scope.profile.geminiApiKey || '').trim() });
       if (!readiness.ready) return NextResponse.json({
-        error: 'Assign a valid Cloud voice to every primary character before saving.',
+        error: 'Assign a valid Gemini voice to every primary character before saving.',
         unassigned: readiness.unassigned,
       }, { status: 400 });
     }

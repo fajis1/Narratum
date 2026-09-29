@@ -15,6 +15,7 @@ import {
 } from '@/lib/shared/google-cloud-tts-voices';
 import toast from 'react-hot-toast';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
+import type { GeminiVoiceCatalogEntry } from '@/lib/shared/gemini-voice-catalog';
 
 interface MultiVoiceCharacterModalProps {
   documentId: string;
@@ -26,6 +27,8 @@ interface MultiVoiceCharacterModalProps {
   onClose: () => void;
   onComplete: (characterMap: SmartAudioCharacterMap, startGeneration?: boolean) => void | Promise<void>;
 }
+
+type GeminiVoiceLibraryResponse = { voices?: GeminiVoiceCatalogEntry[]; source?: string; error?: string };
 
 type CastResponse = {
   characterMap?: SmartAudioCharacterMap | null;
@@ -46,6 +49,8 @@ export function MultiVoiceCharacterModal({
   onComplete,
 }: MultiVoiceCharacterModalProps) {
   const [characterMap, setCharacterMap] = useState<SmartAudioCharacterMap | null>(null);
+  const [geminiVoices, setGeminiVoices] = useState<GeminiVoiceCatalogEntry[]>([]);
+  const [geminiVoiceSource, setGeminiVoiceSource] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -62,7 +67,7 @@ export function MultiVoiceCharacterModal({
   const scanInFlight = useRef(false);
   const isCloudDrama = workerMode === 'drama-gemini-tts';
   const normalizeCast = useCallback((value: unknown) => normalizeSmartAudioCharacterMap(
-    value, isCloudDrama ? { validVoiceSet: CLOUD_TTS_CHARACTER_VOICE_SET } : {},
+    value, isCloudDrama ? { preserveSafeVoiceIds: true } : {},
   ), [isCloudDrama]);
 
   const clearTransientResources = useCallback(() => {
@@ -145,6 +150,26 @@ export function MultiVoiceCharacterModal({
       clearTransientResources();
     };
   }, [clearTransientResources, documentId, isOpen, normalizeCast, profileId, scanCharacters]);
+
+  useEffect(() => {
+    if (!isOpen || !isCloudDrama) return;
+    let cancelled = false;
+    void fetch(`/api/audiobook/voices/gemini?profileId=${encodeURIComponent(profileId)}`, { cache: 'no-store' })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({})) as GeminiVoiceLibraryResponse;
+        if (!response.ok) throw new Error(body.error || 'Failed to load the Gemini Voice Library.');
+        if (!cancelled) {
+          setGeminiVoices(Array.isArray(body.voices) ? body.voices : []);
+          setGeminiVoiceSource(body.source || null);
+        }
+      })
+      .catch((voiceError) => { if (!cancelled) setError(voiceError instanceof Error ? voiceError.message : 'Failed to load the Gemini Voice Library.'); });
+    return () => { cancelled = true; };
+  }, [isCloudDrama, isOpen, profileId]);
+
+  const voiceOptions = useMemo(() => isCloudDrama
+    ? (geminiVoices.length ? geminiVoices : CLOUD_TTS_ALL_VOICES.map((id) => ({ id, displayName: id, languageCode: 'en-US', accent: null, gender: 'unknown', pitch: 'unknown', context: null })))
+    : KOKORO_CHARACTER_VOICES.map((id) => ({ id, displayName: id, languageCode: 'en-US', accent: null, gender: 'unknown', pitch: 'unknown', context: null })), [geminiVoices, isCloudDrama]);
 
   const entries = useMemo(() => Object.values(characterMap?.entries || {}), [characterMap]);
   const primaryCharacters = entries.filter((entry) => !entry.aliasFor);
@@ -368,7 +393,7 @@ export function MultiVoiceCharacterModal({
       <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-line p-5">
           <div>
-            <h2 className="text-xl font-bold text-text-strong">{isCloudDrama ? 'Google Cloud Drama Cast' : 'Audio Drama Character Pre-Scan'}</h2>
+            <h2 className="text-xl font-bold text-text-strong">{isCloudDrama ? 'Gemini Drama Cast' : 'Audio Drama Character Pre-Scan'}</h2>
             <p className="mt-1 text-sm text-text-soft">Find and review the speaking cast before Audio Drama generation.</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-full p-2 text-text-soft hover:bg-surface-raised hover:text-text-strong" aria-label="Close casting dialog">✕</button>
@@ -474,25 +499,14 @@ export function MultiVoiceCharacterModal({
                           }}
                           className="min-w-0 flex-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground"
                         >
-                          <option value="">Select a {isCloudDrama ? 'Cloud' : 'Kokoro'} voice</option>
-                          {(isCloudDrama ? CLOUD_TTS_ALL_VOICES : KOKORO_CHARACTER_VOICES).map((voice) => {
-                            const assignedNames = charactersByVoice.get(voice) || [];
+                          <option value="">Select a {isCloudDrama ? 'Gemini' : 'Kokoro'} voice</option>
+                          {voiceOptions.map((voice) => {
+                            const assignedNames = charactersByVoice.get(voice.id) || [];
                             const assignedToCurrent = assignedNames.includes(character.name);
                             const assignedToOthers = assignedNames.filter((name) => name !== character.name);
-                            const suffix = assignedToCurrent
-                              ? ' — current'
-                              : assignedToOthers.length > 0
-                                ? ` — chosen by ${assignedToOthers.join(', ')}`
-                                : '';
-                            return (
-                              <option
-                                key={voice}
-                                value={voice}
-                                className={assignedToOthers.length > 0 && !assignedToCurrent ? 'text-text-soft' : ''}
-                              >
-                                {voice}{suffix}
-                              </option>
-                            );
+                            const suffix = assignedToCurrent ? ' — current' : assignedToOthers.length > 0 ? ` — chosen by ${assignedToOthers.join(', ')}` : '';
+                            const metadata = isCloudDrama ? [voice.languageCode, voice.accent, voice.gender !== 'unknown' ? voice.gender : null, voice.pitch !== 'unknown' ? voice.pitch : null].filter(Boolean).join(' · ') : '';
+                            return <option key={voice.id} value={voice.id} className={assignedToOthers.length > 0 && !assignedToCurrent ? 'text-text-soft' : ''}>{voice.displayName}{metadata ? ` — ${metadata}` : ''}{suffix}</option>;
                           })}
                         </select>
                         <button type="button" onClick={() => void handlePreview(character.name, isCloudDrama ? 'voice-only' : undefined)} disabled={!character.voiceId || isPlaying === character.name} className="rounded-lg border border-accent px-3 text-accent disabled:opacity-50" title="Preview this character voice">
@@ -500,7 +514,7 @@ export function MultiVoiceCharacterModal({
                         </button>
                       </div>
                       <p className="text-[11px] text-text-soft">
-                        Voices marked “chosen by” are already in use but remain selectable for intentional sharing.
+                        {isCloudDrama ? `Gemini Voice Library${geminiVoiceSource ? ` (${geminiVoiceSource})` : ''}. ` : ''}Voices marked “chosen by” are already in use but remain selectable for intentional sharing.
                       </p>
                       {duplicateVoiceByCharacter.has(character.name) && (() => {
                         const assignment = duplicateVoiceByCharacter.get(character.name)!;
@@ -557,7 +571,7 @@ export function MultiVoiceCharacterModal({
                         className="mt-1 w-full rounded border border-line bg-background p-2 text-sm text-foreground"
                       />
                     </label>
-                    <p className="text-[11px] text-text-soft">Previews use Google Cloud Text-to-Speech and may incur usage charges. Preview text is not saved to the manuscript.</p>
+                    <p className="text-[11px] text-text-soft">Previews use Gemini Text-to-Speech and may incur usage charges. Preview text is not saved to the manuscript.</p>
                   </div>
                 </details>
               )}
@@ -682,7 +696,7 @@ export function MultiVoiceCharacterModal({
                 className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-5 py-2 text-sm font-semibold text-white disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
                 title={unassignedMain.length > 0 ? `Assign voices to main characters: ${unassignedMain.join(', ')}` : unassignedMinor.length > 0 ? `Assign voices to ${unassignedMinor.length} minor character(s) or click Auto-Assign` : undefined}
               >
-                {isSaving ? 'Saving…' : isCloudDrama ? '✨ Save & Generate Google Drama' : '✨ Save & Generate Audio Drama'}
+                {isSaving ? 'Saving…' : isCloudDrama ? '✨ Save & Generate Gemini Drama' : '✨ Save & Generate Audio Drama'}
               </button>
             )}
             <button

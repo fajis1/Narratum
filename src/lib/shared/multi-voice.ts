@@ -379,7 +379,7 @@ export function mergeExtractedCharacters(input: {
   /** Preserve syntactically safe provider voice IDs until a live catalog is available. */
   preserveSafeVoiceIds?: boolean;
 }): SmartAudioCharacterMap {
-  const previous = normalizeSmartAudioCharacterMap(input.previous, { validVoiceSet: input.validVoiceSet });
+  const previous = normalizeSmartAudioCharacterMap(input.previous, { validVoiceSet: input.validVoiceSet, preserveSafeVoiceIds: input.preserveSafeVoiceIds });
   const previousByName = new Map(
     Object.values(previous?.entries || {}).map((entry) => [entry.name.toLocaleLowerCase(), entry]),
   );
