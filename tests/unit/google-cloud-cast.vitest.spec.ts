@@ -426,7 +426,7 @@ describe('Google Cloud Drama Generation Pipeline in Generation UI', () => {
 
   it('wires Save & Generate Google Drama into MultiVoiceCharacterModal', () => {
     const modalContent = fs.readFileSync(path.join(process.cwd(), 'src/components/doclist/MultiVoiceCharacterModal.tsx'), 'utf8');
-    expect(modalContent).toContain('✨ Save & Generate Google Drama');
+    expect(modalContent).toContain('✨ Save & Generate Gemini Drama');
     expect(modalContent).toContain('handleSave(true)');
     expect(modalContent).toContain('handleSave(false)');
     expect(modalContent).toContain('onComplete: (characterMap: SmartAudioCharacterMap, startGeneration?: boolean) => void | Promise<void>');

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
-  auth: vi.fn(), profiles: vi.fn(), synthesize: vi.fn(), rows: [] as unknown[][],
+  auth: vi.fn(), profiles: vi.fn(), synthesize: vi.fn(), catalog: vi.fn(), rows: [] as unknown[][],
 }));
 
 vi.mock('@/lib/server/auth/auth', () => ({ requireAuthContext: mocks.auth }));
@@ -18,6 +18,9 @@ vi.mock('@/lib/server/smart-audio/gemini-tts-client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/server/smart-audio/gemini-tts-client')>('@/lib/server/smart-audio/gemini-tts-client');
   return { ...actual, synthesizeWithGeminiTts: mocks.synthesize };
 });
+vi.mock('@/lib/server/smart-audio/gemini-voice-catalog-cache', () => ({
+  resolveGeminiPrebuiltVoiceCatalog: mocks.catalog,
+}));
 vi.mock('@/db', () => ({
   db: {
     select: () => ({
@@ -39,7 +42,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.mockResolvedValue({ userId: 'user-1' });
   mocks.profiles.mockResolvedValue([profile]);
-  mocks.synthesize.mockResolvedValue({ audioBuffer: Buffer.from('wav') });
+  mocks.synthesize.mockResolvedValue({ audioBuffer: Buffer.from('wav'), mimeType: 'audio/wav' });
+  mocks.catalog.mockResolvedValue({ source: 'live', fetchedAt: 1, catalogVersion: 'test', languageCodes: ['en-US'], voices: [{ id: 'Kore' }] });
   mocks.rows = [];
 });
 
@@ -67,7 +71,7 @@ describe('Gemini Audio Drama connection route', () => {
     expect(JSON.stringify(body)).not.toContain('bearer token');
   });
 });
-describe('Cloud character preview route', () => {
+describe('Gemini character preview route', () => {
   const request = (extra: Record<string, unknown> = {}) => new NextRequest('http://localhost/api/audiobook/characters/preview', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ documentId: 'doc-1', profileId: 'profile-1', voiceName: 'Kore', text: 'Hello there.', ...extra }),
@@ -84,30 +88,29 @@ describe('Cloud character preview route', () => {
     ];
   });
 
-  it('keeps voice-only previews neutral and reaches Cloud with the profile language', async () => {
+  it('keeps voice-only previews neutral and reaches Gemini with the profile API key', async () => {
     const { POST } = await import('@/app/api/audiobook/characters/preview/route');
     const response = await POST(request({ previewMode: 'voice-only' }));
     expect(response.status).toBe(200);
-    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({ languageCode: 'en-GB' }));
-    expect(mocks.synthesize.mock.calls[0][0].stylePrompt).toContain('neutral audiobook voice comparison');
+    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({ apiKey: profile.geminiApiKey, voiceName: 'Kore' }));
+    expect(mocks.synthesize.mock.calls[0][0].style).toContain('audiobook voice comparison');
   });
 
-  it('uses saved direction and Stage 11 policy for character previews', async () => {
+  it('uses saved direction for character previews', async () => {
     const { POST } = await import('@/app/api/audiobook/characters/preview/route');
     const response = await POST(request({ previewMode: 'character', characterName: 'Rina' }));
     expect(response.status).toBe(200);
-    const prompt = mocks.synthesize.mock.calls[0][0].stylePrompt as string;
-    expect(prompt).toContain('Quiet and controlled.');
-    expect(prompt).toContain('overall style cinematic');
-    expect(prompt).toContain('Character expressiveness: expressive.');
+    const style = mocks.synthesize.mock.calls[0][0].style as string;
+    expect(style).toContain('Quiet and controlled.');
+    expect(style).toContain('concise audiobook performance');
   });
 
   it('bounds scene input and does not expose or persist manuscript content', async () => {
     const { POST } = await import('@/app/api/audiobook/characters/preview/route');
     const response = await POST(request({ previewMode: 'scene', characterName: 'Rina', sceneContext: 'x'.repeat(2_000), text: 'y'.repeat(500) }));
     expect(response.status).toBe(200);
-    const prompt = mocks.synthesize.mock.calls[0][0].stylePrompt as string;
-    expect(prompt).not.toContain('x'.repeat(501));
+    const style = mocks.synthesize.mock.calls[0][0].style as string;
+    expect(style).not.toContain('x'.repeat(501));
     expect(mocks.synthesize.mock.calls[0][0].text).toHaveLength(300);
   });
 
