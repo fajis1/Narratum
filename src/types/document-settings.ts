@@ -84,6 +84,39 @@ export interface DramaCharacterDirection {
   };
 }
 
+export type SmartAudioGenderPresentation = 'female' | 'male' | 'neutral' | 'unknown';
+export type SmartAudioAgeBand = 'child' | 'teen' | 'young_adult' | 'adult' | 'middle_aged' | 'older_adult' | 'unknown';
+export type SmartAudioPitchPreference = 'low' | 'medium' | 'high' | 'unknown';
+
+/** Prescan-derived hints. Unknown means the source did not support a confident classification. */
+export interface SmartAudioCastingTraits {
+  genderPresentation?: SmartAudioGenderPresentation;
+  ageBand?: SmartAudioAgeBand;
+  pitchPreference?: SmartAudioPitchPreference;
+  temperament?: string[];
+  vocalTraits?: string[];
+  accentHint?: string | null;
+}
+
+/** Public voice metadata preserved with an assignment for offline catalog display. */
+export interface SavedGeminiVoiceAssignment {
+  provider: 'gemini';
+  voiceId: string;
+  assignedAt: number;
+  assignmentSource: 'user' | 'prescan-recommendation' | 'auto-assignment';
+  catalogSnapshot?: {
+    displayName?: string;
+    languageCode?: string;
+    accent?: string;
+    gender?: SmartAudioGenderPresentation;
+    pitch?: SmartAudioPitchPreference;
+    persona?: string;
+    context?: string;
+    description?: string;
+  };
+  reason?: string;
+}
+
 export interface SmartAudioCharacterEntry {
   name: string;
   description: string;
@@ -100,6 +133,10 @@ export interface SmartAudioCharacterEntry {
    * Not present on Kokoro Drama cast entries — the Kokoro path ignores this field.
    */
   cloudDirection?: DramaCharacterDirection | null;
+  /** Prescan traits are distinct from scene/performance direction. */
+  castingTraits?: SmartAudioCastingTraits;
+  /** Assignment provenance and public catalog metadata; voiceId remains the compatibility field. */
+  voiceAssignment?: SavedGeminiVoiceAssignment;
 }
 
 export interface SmartAudioCharacterMap {

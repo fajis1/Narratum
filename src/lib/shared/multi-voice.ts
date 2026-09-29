@@ -5,9 +5,11 @@ import {
 } from '@/lib/shared/smart-audio-cleanup';
 import { KOKORO_DEFAULT_VOICES } from '@/lib/shared/tts-provider-catalog';
 import type {
+  DramaCharacterDirection,
+  SavedGeminiVoiceAssignment,
+  SmartAudioCastingTraits,
   SmartAudioCharacterEntry,
   SmartAudioCharacterMap,
-  DramaCharacterDirection,
 } from '@/types/document-settings';
 import {
   CLOUD_TTS_FEMALE_VOICE_SET,
@@ -62,6 +64,39 @@ function normalizedDescription(value: unknown): string {
 
 function normalizedSample(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 2_000) : '';
+}
+
+const CASTING_GENDERS = new Set(['female', 'male', 'neutral', 'unknown']);
+const CASTING_AGES = new Set(['child', 'teen', 'young_adult', 'adult', 'middle_aged', 'older_adult', 'unknown']);
+const CASTING_PITCHES = new Set(['low', 'medium', 'high', 'unknown']);
+
+function normalizedTraits(value: unknown): SmartAudioCastingTraits | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const enumValue = (raw: unknown, allowed: ReadonlySet<string>) => (
+    typeof raw === 'string' && allowed.has(raw.trim().toLowerCase()) ? raw.trim().toLowerCase() : undefined
+  );
+  const words = (raw: unknown) => Array.isArray(raw)
+    ? raw.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim().slice(0, 80)).slice(0, 8)
+    : undefined;
+  const genderPresentation = enumValue(source.genderPresentation ?? source.gender_presentation, CASTING_GENDERS) as SmartAudioCastingTraits['genderPresentation'];
+  const ageBand = enumValue(source.ageBand ?? source.age_band, CASTING_AGES) as SmartAudioCastingTraits['ageBand'];
+  const pitchPreference = enumValue(source.pitchPreference ?? source.pitch_preference, CASTING_PITCHES) as SmartAudioCastingTraits['pitchPreference'];
+  const temperament = words(source.temperament);
+  const vocalTraits = words(source.vocalTraits ?? source.vocal_traits);
+  const hasAccentHint = Object.hasOwn(source, 'accentHint') || Object.hasOwn(source, 'accent_hint');
+  const accentRaw = Object.hasOwn(source, 'accentHint') ? source.accentHint : source.accent_hint;
+  const accentHint = hasAccentHint ? (typeof accentRaw === 'string' ? accentRaw.trim().slice(0, 120) || null : null) : undefined;
+  if (!genderPresentation && !ageBand && !pitchPreference && !temperament?.length && !vocalTraits?.length && accentHint === undefined) return null;
+  return { ...(genderPresentation ? { genderPresentation } : {}), ...(ageBand ? { ageBand } : {}), ...(pitchPreference ? { pitchPreference } : {}), ...(temperament?.length ? { temperament } : {}), ...(vocalTraits?.length ? { vocalTraits } : {}), ...(accentHint !== undefined ? { accentHint } : {}) };
+}
+
+function normalizedVoiceAssignment(value: unknown, voiceId: string | null): SavedGeminiVoiceAssignment | null {
+  if (!voiceId || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (source.provider !== 'gemini' || source.voiceId !== voiceId || typeof source.assignedAt !== 'number' || !Number.isFinite(source.assignedAt)) return null;
+  if (source.assignmentSource !== 'user' && source.assignmentSource !== 'prescan-recommendation' && source.assignmentSource !== 'auto-assignment') return null;
+  return { provider: 'gemini', voiceId, assignedAt: source.assignedAt, assignmentSource: source.assignmentSource, ...(typeof source.reason === 'string' && source.reason.trim() ? { reason: source.reason.trim().slice(0, 500) } : {}) };
 }
 
 /**
@@ -134,18 +169,21 @@ function characterEntry(
     : null;
   const aliasFor = normalizedName(source.aliasFor) || null;
   const cloudDirection = normalizeCloudDirection(source.cloudDirection);
+  const castingTraits = normalizedTraits(source.castingTraits ?? source.casting_traits);
+  const voiceAssignment = normalizedVoiceAssignment(source.voiceAssignment ?? source.voice_assignment, voiceId);
   const importance: 'main' | 'minor' = (source.importance === 'main' || source.importance === 'minor')
     ? source.importance
     : (name.toLocaleLowerCase() === 'narrator' ? 'main' : 'minor');
   return {
     name,
     description: normalizedDescription(source.description),
-    sampleText: normalizedSample(source.sampleText),
+    sampleText: normalizedSample(source.sampleText ?? source.sample_text),
     voiceId,
     aliasFor,
     importance,
-    // Only include cloudDirection when present; keeps Kokoro entries clean
     ...(cloudDirection !== null ? { cloudDirection } : {}),
+    ...(castingTraits ? { castingTraits } : {}),
+    ...(voiceAssignment ? { voiceAssignment } : {}),
   };
 }
 
@@ -353,6 +391,7 @@ export function mergeExtractedCharacters(input: {
     const importance: 'main' | 'minor' = (rawImportance === 'main' || rawImportance === 'minor')
       ? rawImportance
       : (existing?.importance || (canonicalName === 'narrator' ? 'main' : 'minor'));
+    const castingTraits = normalizedTraits(source.castingTraits ?? source.casting_traits) ?? existing?.castingTraits;
     entries[name] = {
       name,
       description: normalizedDescription(source.description) || existing?.description || '',
@@ -360,6 +399,8 @@ export function mergeExtractedCharacters(input: {
       voiceId: existing?.voiceId || null,
       importance,
       ...(existing?.cloudDirection ? { cloudDirection: existing.cloudDirection } : {}),
+      ...(castingTraits ? { castingTraits } : {}),
+      ...(existing?.voiceAssignment ? { voiceAssignment: existing.voiceAssignment } : {}),
       aliasFor: existing?.aliasFor && previous?.entries[existing.aliasFor]
         ? existing.aliasFor
         : null,
@@ -374,6 +415,8 @@ export function mergeExtractedCharacters(input: {
       description: existingNarrator?.description || 'Primary audiobook narrator.',
       sampleText: existingNarrator?.sampleText || '',
       voiceId: existingNarrator?.voiceId || null,
+      ...(existingNarrator?.castingTraits ? { castingTraits: existingNarrator.castingTraits } : {}),
+      ...(existingNarrator?.voiceAssignment ? { voiceAssignment: existingNarrator.voiceAssignment } : {}),
       importance: 'main',
       ...(existingNarrator?.cloudDirection ? { cloudDirection: existingNarrator.cloudDirection } : {}),
       aliasFor: null,

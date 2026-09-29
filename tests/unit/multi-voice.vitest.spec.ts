@@ -749,3 +749,31 @@ describe('Stage 1 — autoAssignMinorCharacterVoices with alternate voicePool (C
     expect(updatedMap.entries['Narrator'].voiceId).toBe('Orus');
   });
 });
+
+describe('Dynamic Voice Library Part 3 casting metadata', () => {
+  test('preserves bounded structured traits and valid saved Gemini assignment metadata', () => {
+    const map = normalizeSmartAudioCharacterMap({
+      schemaVersion: 1, status: 'partial', scannedAt: 123, entries: {
+        Narrator: {
+          name: 'Narrator', description: 'Narration', sampleText: 'A quiet evening.', voiceId: 'Kore', aliasFor: null,
+          casting_traits: { gender_presentation: 'neutral', age_band: 'unknown', pitch_preference: 'medium', temperament: ['calm'], vocal_traits: ['clear'], accent_hint: null },
+          voice_assignment: { provider: 'gemini', voiceId: 'Kore', assignedAt: 456, assignmentSource: 'user', reason: 'Narrator choice' },
+        },
+      },
+    }, { validVoiceSet: new Set(['Kore']) });
+
+    expect(map?.entries.Narrator.castingTraits).toEqual({ genderPresentation: 'neutral', ageBand: 'unknown', pitchPreference: 'medium', temperament: ['calm'], vocalTraits: ['clear'], accentHint: null });
+    expect(map?.entries.Narrator.voiceAssignment).toMatchObject({ provider: 'gemini', voiceId: 'Kore', assignmentSource: 'user' });
+  });
+
+  test('keeps v1 maps valid and carries saved traits and manual assignments through a rescan', () => {
+    const previous = {
+      schemaVersion: 1, status: 'complete', scannedAt: 1, entries: {
+        Narrator: { name: 'Narrator', description: 'Narration', sampleText: '', voiceId: 'Kore', aliasFor: null, castingTraits: { pitchPreference: 'low' }, voiceAssignment: { provider: 'gemini', voiceId: 'Kore', assignedAt: 2, assignmentSource: 'user' } },
+      },
+    };
+    const result = mergeExtractedCharacters({ previous, characters: [{ name: 'Narrator', description: 'Narration', sample_text: '', importance: 'main' }], profileId: 'gemini', sourceFingerprint: 'source', validVoiceSet: new Set(['Kore']) });
+    expect(result.entries.Narrator.castingTraits).toEqual({ pitchPreference: 'low' });
+    expect(result.entries.Narrator.voiceAssignment?.assignmentSource).toBe('user');
+  });
+});

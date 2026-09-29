@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import os
+from typing import Literal
 from nats.aio.client import Client as NATS
 from google import genai
 from pydantic import BaseModel, Field
@@ -203,15 +204,24 @@ async def process_message(msg):
         await msg.respond(json.dumps({"status": "error", "message": str(e)}).encode())
 
 
+class CharacterCastingTraits(BaseModel):
+    gender_presentation: Literal['female', 'male', 'neutral', 'unknown'] = Field(default='unknown', description="Perceived presentation only when supported by textual evidence; otherwise 'unknown'")
+    age_band: Literal['child', 'teen', 'young_adult', 'adult', 'middle_aged', 'older_adult', 'unknown'] = Field(default='unknown', description="Broad textual age evidence only; otherwise 'unknown'")
+    pitch_preference: Literal['low', 'medium', 'high', 'unknown'] = Field(default='unknown', description="Conservative baseline pitch preference; otherwise 'unknown'")
+    temperament: list[str] = Field(default_factory=list, description="Short personality descriptors evidenced by the excerpts")
+    vocal_traits: list[str] = Field(default_factory=list, description="Short baseline vocal descriptors evidenced by the excerpts")
+    accent_hint: str | None = Field(default=None, description="Only an explicit accent or dialect hint, otherwise null")
+
+
 class Character(BaseModel):
     name: str = Field(description="Exact character name, or Narrator")
     description: str = Field(description="Brief age, personality, and speaking-style description")
     sample_text: str = Field(description="A short direct quote spoken by this character")
+    casting_traits: CharacterCastingTraits = Field(default_factory=CharacterCastingTraits, description="Structured, evidence-aware casting guidance; use unknown when ambiguous")
     importance: str = Field(
         default="minor",
         description="'main' if this character is a primary protagonist, central antagonist, or frequent core speaker (Narrator is always main); 'minor' if they are secondary, incidental, or background speakers"
     )
-
 
 class CharacterExtractionResult(BaseModel):
     characters: list[Character]
@@ -299,7 +309,9 @@ async def process_multivoice_extract(msg):
             "Do not treat chapter headings, stat names, classes, skills, monsters without dialogue, footnotes, authors, "
             "or publishers as speakers. Preserve exact character-name spelling and provide one real short quote when available. "
             "Classify each character's importance as 'main' (for central protagonists, major antagonists, Narrator, or frequent core speakers) "
-            "or 'minor' (for secondary, incidental, single-scene, or background speakers).\n\n"
+            "or 'minor' (for secondary, incidental, single-scene, or background speakers). Return structured casting_traits for each character. "
+            "Use only explicit textual evidence or cautious inference; never force gender, age, pitch, or accent. Use 'unknown' or null when ambiguous. "
+            "Treat gender_presentation as perceived voice-presentation guidance, not biological sex.\n\n"
             f"BOOK EXCERPTS:\n{raw_text}"
         )
         generated = await generate_multivoice_content(
