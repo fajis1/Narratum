@@ -315,7 +315,7 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
           <p className="text-[11px] uppercase tracking-wider font-medium text-soft">TTS Provider</p>
           <p className="text-sm text-primary truncate">
             {isDramaProfile && isCloudDrama
-              ? 'Google Cloud Gemini-TTS'
+              ? 'Gemini 3.8 Text-to-Speech'
               : providerLabel}
           </p>
           {(isDramaProfile && isCloudDrama ? CLOUD_TTS_MODEL : ttsModel) && (
@@ -458,7 +458,7 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
               </p>
               <p className="text-xs text-soft">
                 {isCloudDrama
-                  ? 'Narration and character dialogue use Google Cloud Gemini-TTS voices from that book’s reviewed cast. Books without a completed cast will prompt for cast assignment before queueing.'
+                  ? 'Narration and character dialogue use Gemini 3.8 Text-to-Speech voices from that book’s reviewed cast. Books without a completed cast will prompt for cast assignment before queueing.'
                   : 'Narration and each character use the voices from that book’s reviewed cast. Books without a completed cast will pause for review before they are queued.'}
               </p>
             </div>
@@ -534,7 +534,7 @@ export function BatchAudiobookSidebar({ isOpen, setIsOpen, selectedDocs }: Batch
               ? `Queueing ${selectedDocs.length} book${selectedDocs.length !== 1 ? 's' : ''}…`
               : isDramaProfile
                 ? isCloudDrama
-                  ? `Generate Google Cloud Drama Audiobook${selectedDocs.length > 1 ? 's' : ''}`
+                  ? `Generate Gemini 3.8 Drama Audiobook${selectedDocs.length > 1 ? 's' : ''}`
                   : `Generate Audio Drama Audiobook${selectedDocs.length > 1 ? 's' : ''}`
                 : `Queue ${selectedDocs.length} Audiobook${selectedDocs.length !== 1 ? 's' : ''}`}
           </Button>

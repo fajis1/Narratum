@@ -116,6 +116,7 @@ export function AudiobookExportModal({
   const [pendingScholarRegeneration, setPendingScholarRegeneration] = useState<TTSAudiobookChapter | null>(null);
   const [pendingCloseAction, setPendingCloseAction] = useState<'close_modal' | 'navigate' | null>(null);
   const [showAudiobookshelfModal, setShowAudiobookshelfModal] = useState(false);
+  const [targetAbsChapter, setTargetAbsChapter] = useState<number | null>(null);
 
   const formatSpeed = useCallback((speed: number) => {
     return Number.isInteger(speed) ? speed.toString() : speed.toFixed(1);
@@ -1135,7 +1136,7 @@ export function AudiobookExportModal({
 			                                  >
 			                                    {isDramaProfile
 			                                      ? isCloudDrama
-			                                        ? 'Generate Google Cloud Drama Audiobook'
+			                                        ? 'Generate Gemini 3.8 Drama Audiobook'
 			                                        : 'Generate Audio Drama Audiobook'
 			                                      : 'Start Generation'}
 			                                  </Button>
@@ -1291,6 +1292,18 @@ export function AudiobookExportModal({
                                                 <MenuActionItem onClick={() => handleDownloadChapter(chapter)}>
                                                   <DownloadIcon className="h-4 w-4" />
                                                   <span>Download</span>
+                                                </MenuActionItem>
+                                                <MenuActionItem
+                                                  onClick={() => {
+                                                    setTargetAbsChapter(chapter.index);
+                                                    setShowAudiobookshelfModal(true);
+                                                  }}
+                                                  title="Append this chapter to Audiobookshelf"
+                                                >
+                                                  <svg className="h-4 w-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                                                  </svg>
+                                                  <span>Add to Audiobookshelf</span>
                                                 </MenuActionItem>
                                               </>
                                             )}
@@ -1493,9 +1506,15 @@ export function AudiobookExportModal({
       {bookId && (
         <AudiobookshelfModal
           open={showAudiobookshelfModal}
-          onClose={() => setShowAudiobookshelfModal(false)}
+          onClose={() => {
+            setShowAudiobookshelfModal(false);
+            setTargetAbsChapter(null);
+          }}
           bookId={bookId}
           documentType={documentType}
+          chapters={chapters}
+          initialUploadMode={targetAbsChapter !== null ? 'chapters' : undefined}
+          initialSelectedChapterIndices={targetAbsChapter !== null ? [targetAbsChapter] : undefined}
         />
       )}
     </>

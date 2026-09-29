@@ -45,10 +45,10 @@ const WORKER_MODES = [
   {
     id: 'drama-gemini-tts' as const,
     icon: '🎙️',
-    label: 'Google Cloud Audio Drama',
+    label: 'Gemini 3.8 Audio Drama',
     badge: 'Expressive character voices',
-    description: 'Uses a reviewed character cast and Google Cloud Gemini-TTS to direct and record expressive dialogue and narration.',
-    features: ['Persistent character voices', 'Scene-aware performance direction', 'Google Cloud Gemini-TTS audio', 'Failed lines kept for review'],
+    description: 'Uses a reviewed character cast and Gemini 3.8 Text-to-Speech to direct and record expressive dialogue and narration.',
+    features: ['Persistent character voices', 'Scene-aware performance direction', 'Gemini 3.8 Text-to-Speech audio', 'Failed lines kept for review'],
     presetName: 'Standard Audiobook Cleaner',
   },
   {
@@ -920,7 +920,7 @@ export function SmartAudioSettings() {
       ...(apiKey.trim() ? { geminiApiKey: apiKey.trim() } : {}),
       ...(backupApiKey.trim() ? { backupGeminiApiKey: backupApiKey.trim() } : {}),
       ...(groqApiKey.trim() ? { groqApiKey: groqApiKey.trim() } : {}),
-      ...(googleCloudServiceAccountJson.trim()
+      ...(workerMode !== 'drama-gemini-tts' && googleCloudServiceAccountJson.trim()
         ? { googleCloudServiceAccountJson: googleCloudServiceAccountJson.trim() }
         : {}),
       providerOrder,
@@ -1014,7 +1014,7 @@ export function SmartAudioSettings() {
       alert('Please enter a profile name before saving.');
       return;
     }
-    if (current.googleCloudServiceAccountJson) {
+    if (current.workerMode !== 'drama-gemini-tts' && current.googleCloudServiceAccountJson) {
       try {
         const credential = JSON.parse(current.googleCloudServiceAccountJson) as Record<string, unknown>;
         if (credential.type !== 'service_account'
@@ -1540,55 +1540,8 @@ export function SmartAudioSettings() {
 
           {workerMode === 'drama-gemini-tts' && (
             <div className="space-y-2 rounded-xl border border-blue-200 bg-blue-50/60 p-4 dark:border-blue-800 dark:bg-blue-950/20">
-              <label htmlFor="cloud-drama-service-account" className="block text-sm font-semibold">
-                Google Cloud service-account JSON
-              </label>
-              <p className="text-xs text-gray-600 dark:text-gray-300">
-                Used for Gemini-TTS recording. The account needs Cloud Text-to-Speech access and
-                the <code>aiplatform.endpoints.predict</code> permission. Leave blank to keep the saved credential,
-                or use server-managed Application Default Credentials when no key is stored.
-              </p>
-              {activeProfile?.googleCloudServiceAccountConfigured && (
-                <p className="text-xs text-green-700 dark:text-green-300" role="status">
-                  Configured account: {activeProfile.googleCloudServiceAccountEmail || 'email unavailable'}
-                </p>
-              )}
-              <textarea
-                id="cloud-drama-service-account"
-                rows={4}
-                spellCheck={false}
-                autoComplete="off"
-                className="w-full rounded border border-gray-300 bg-white p-2 font-mono text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                placeholder={activeProfile?.googleCloudServiceAccountConfigured
-                  ? 'Paste replacement service-account JSON, or leave blank to keep the saved credential'
-                  : 'Paste service-account JSON, or leave blank to use server-managed credentials'}
-                value={googleCloudServiceAccountJson}
-                onChange={(event) => setGoogleCloudServiceAccountJson(event.target.value)}
-              />
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                This value is write-only; after saving, only the configured account email is shown.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleTestCloudConnection()}
-                  disabled={isTestingCloudConnection}
-                  className="rounded border border-blue-700 px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-50 dark:text-blue-200 dark:hover:bg-blue-900/30"
-                >
-                  {isTestingCloudConnection ? 'Testing…' : 'Test connection'}
-                </button>
-                {activeProfile?.googleCloudServiceAccountConfigured && (
-                  <button
-                    type="button"
-                    onClick={() => void handleRemoveCloudCredential()}
-                    className="rounded border border-red-700/60 px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-100 dark:text-red-200 dark:hover:bg-red-900/30"
-                  >
-                    Remove credentials
-                  </button>
-                )}
-                {cloudConnectionStatus && <span className="text-xs" role="status">{cloudConnectionStatus}</span>}
-              </div>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Testing contacts Google Cloud and may use a small amount of billable TTS usage.</p>
+              <p className="text-sm font-semibold">Gemini 3.8 Audio Drama uses this profile’s Gemini API key.</p>
+              <p className="text-xs text-gray-600 dark:text-gray-300">A Google Cloud service account is no longer required for Gemini 3.8 casting, previews, or recording. Any previously stored Cloud credential is retained server-side for legacy compatibility but is not sent with this profile update.</p>
             </div>
           )}
 

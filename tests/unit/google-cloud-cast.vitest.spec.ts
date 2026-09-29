@@ -409,7 +409,7 @@ describe('Google Cloud Drama Generation Pipeline in Generation UI', () => {
   it('wires Google Cloud Drama pipeline into BatchAudiobookSidebar', () => {
     const batchContent = fs.readFileSync(path.join(process.cwd(), 'src/components/doclist/BatchAudiobookSidebar.tsx'), 'utf8');
     expect(batchContent).toContain('DRAMA_GEMINI_TTS_WORKER_MODE');
-    expect(batchContent).toContain('Generate Google Cloud Drama Audiobook');
+    expect(batchContent).toContain('Generate Gemini 3.8 Drama Audiobook');
     expect(batchContent).toContain("workerMode={isCloudDrama ? 'drama-gemini-tts' : 'multi-voice'}");
     expect(batchContent).toContain("CLOUD_TTS_CHARACTER_VOICE_SET");
     expect(batchContent).toContain("CLOUD_TTS_MODEL");
@@ -418,7 +418,7 @@ describe('Google Cloud Drama Generation Pipeline in Generation UI', () => {
 
   it('wires Google Cloud Drama pipeline into AudiobookExportModal', () => {
     const exportContent = fs.readFileSync(path.join(process.cwd(), 'src/components/AudiobookExportModal.tsx'), 'utf8');
-    expect(exportContent).toContain('Generate Google Cloud Drama Audiobook');
+    expect(exportContent).toContain('Generate Gemini 3.8 Drama Audiobook');
     expect(exportContent).toContain("providerRef: isCloudDrama ? 'google-cloud' : providerRef");
     expect(exportContent).toContain("ttsModel: isCloudDrama ? CLOUD_TTS_MODEL : ttsModel");
     expect(exportContent).toContain("selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? 'drama-gemini-tts' : 'multi-voice'");
