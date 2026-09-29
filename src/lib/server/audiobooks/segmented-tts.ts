@@ -171,3 +171,69 @@ export async function generateSegmentedAudiobookTtsBuffer(
 
   return concatenateMp3Segments(audioSegments, signal);
 }
+
+/** Decode/concatenate unary Gemini WAV segments and encode the chapter once as MP3. */
+export async function concatenateWavSegmentsToMp3(
+  segments: readonly Buffer[],
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  if (segments.length === 0) throw new Error('No WAV segments to concatenate.');
+  const workDir = await mkdtemp(join(tmpdir(), 'narratum-gemini-wav-'));
+  try {
+    const paths: string[] = [];
+    for (const [index, segment] of segments.entries()) {
+      const path = join(workDir, `${String(index).padStart(4, '0')}.wav`);
+      await writeFile(path, segment);
+      paths.push(path);
+    }
+    const listPath = join(workDir, 'segments.txt');
+    const outputPath = join(workDir, 'combined.mp3');
+    await writeFile(listPath, paths.map((path) => `file '${path}'`).join('\n'), 'utf8');
+    await new Promise<void>((resolve, reject) => {
+      const ffmpeg = spawn(getFFmpegPath(), [
+        '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
+        '-c:a', 'libmp3lame', '-b:a', '64k', outputPath,
+      ]);
+      let stderr = '';
+      const onAbort = () => ffmpeg.kill('SIGKILL');
+      signal?.addEventListener('abort', onAbort, { once: true });
+      ffmpeg.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      ffmpeg.on('error', (error) => { signal?.removeEventListener('abort', onAbort); reject(error); });
+      ffmpeg.on('close', (code) => {
+        signal?.removeEventListener('abort', onAbort);
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg failed to concatenate Gemini WAV segments (code ${code}): ${stderr.slice(-500)}`));
+      });
+      if (signal?.aborted) onAbort();
+    });
+    return await readFile(outputPath);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/** Short 24 kHz mono PCM WAV placeholder for a failed Gemini Drama line. */
+export async function generateSilentWavSegment(signal?: AbortSignal): Promise<Buffer> {
+  const workDir = await mkdtemp(join(tmpdir(), 'narratum-gemini-silence-'));
+  const outputPath = join(workDir, 'silence.wav');
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const ffmpeg = spawn(getFFmpegPath(), [
+        '-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono',
+        '-t', '0.4', '-c:a', 'pcm_s16le', outputPath,
+      ]);
+      const onAbort = () => ffmpeg.kill('SIGKILL');
+      signal?.addEventListener('abort', onAbort, { once: true });
+      ffmpeg.on('error', (error) => { signal?.removeEventListener('abort', onAbort); reject(error); });
+      ffmpeg.on('close', (code) => {
+        signal?.removeEventListener('abort', onAbort);
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg failed to create WAV silence (code ${code}).`));
+      });
+      if (signal?.aborted) onAbort();
+    });
+    return await readFile(outputPath);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}

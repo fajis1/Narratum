@@ -8,11 +8,11 @@
 [![GitHub Forks](https://img.shields.io/github/forks/richardr1126/openreader)](https://github.com/richardr1126/openreader/network/members)
 [![Discussions](https://img.shields.io/badge/Discussions-Ask%20a%20Question-blue)](https://github.com/richardr1126/openreader/discussions)
 
-# 📄🔊 OpenReader
+# 📄🔊 Narratum
 
-OpenReader is an open-source, self-host-friendly text-to-speech document reader built with Next.js for **EPUB, PDF, TXT, MD, and DOCX** with multilingual, synchronized read-along playback.
+> **Narratum was previously named OpenReader.** The deployed checkout may retain the historical `/home/cisco/openreader` directory name, but the canonical source repository is [fajis1/Narratum](https://github.com/fajis1/Narratum). New work, issues, and releases target Narratum.
 
-> Previously named **OpenReader-WebUI**.
+Narratum is an open-source, self-host-friendly text-to-speech document reader built with Next.js for **EPUB, PDF, TXT, MD, and DOCX** with multilingual, synchronized read-along playback.
 
 > **Get started in the [docs](https://docs.openreader.richardr.dev/)**.
 

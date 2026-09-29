@@ -99,3 +99,23 @@ When a chapter fails validation (such as `DramaDirectorValidationError` caused b
 - Browser smoke tests were not run in this environment.
 - Stage 14 verifies code and migration readiness; operational Cloud quota,
   IAM, latency, and audio quality still require deployment-specific testing.
+
+## Gemini 3.8 migration status (2026-09-29)
+
+Drama TTS now uses the Gemini Interactions API with `gemini-3.8-flash-tts`,
+`x-goog-api-key` authentication, structured `speech_metadata.style`, approved
+angle-bracket point events, and unary 24 kHz WAV output. The chapter pipeline
+concatenates WAV chunks and encodes the final chapter MP3 once with ffmpeg.
+
+The only automatic model fallback is `gemini-3.8-flash-lite-tts`. Legacy 3.7,
+3.6, and Cloud Text-to-Speech request shapes are not accepted by the new path.
+A Drama profile requires a Gemini API key; stored Cloud service-account data is
+preserved only for legacy compatibility and is not required for Gemini 3.8.
+
+### Remaining live gate
+
+Before release, use a staging Gemini API key to run the plain narration,
+emotion, whisper-style, inline-event, fallback, and short multi-segment chapter
+smoke tests described in the migration plan. Verify that unary audio starts with
+`RIFF`, tags are not spoken literally, and the final MP3/M4B plays correctly.
+No live credential or staging execution was used for this code-only migration.

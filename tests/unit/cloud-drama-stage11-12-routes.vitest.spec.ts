@@ -14,6 +14,10 @@ vi.mock('@/lib/server/smart-audio/google-cloud-tts-client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/server/smart-audio/google-cloud-tts-client')>('@/lib/server/smart-audio/google-cloud-tts-client');
   return { ...actual, synthesizeWithCloudTts: mocks.synthesize };
 });
+vi.mock('@/lib/server/smart-audio/gemini-tts-client', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/server/smart-audio/gemini-tts-client')>('@/lib/server/smart-audio/gemini-tts-client');
+  return { ...actual, synthesizeWithGeminiTts: mocks.synthesize };
+});
 vi.mock('@/db', () => ({
   db: {
     select: () => ({
@@ -26,6 +30,7 @@ vi.mock('@/db', () => ({
 
 const profile = {
   id: 'profile-1', workerMode: 'drama-gemini-tts',
+  geminiApiKey: 'test-gemini-key',
   googleCloudServiceAccountJson: '{"project_id":"private"}',
   dramaGeminiTtsSettings: { languageCode: 'en-GB', dramaStyle: 'cinematic' },
 };
@@ -34,19 +39,19 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.mockResolvedValue({ userId: 'user-1' });
   mocks.profiles.mockResolvedValue([profile]);
-  mocks.synthesize.mockResolvedValue({ audioBuffer: Buffer.from('mp3') });
+  mocks.synthesize.mockResolvedValue({ audioBuffer: Buffer.from('wav') });
   mocks.rows = [];
 });
 
-describe('Google Cloud Drama connection route', () => {
-  it('performs a real synthesis-path check with normalized language and never returns credentials', async () => {
+describe('Gemini Audio Drama connection route', () => {
+  it('performs a minimal Gemini connection test without exposing profile secrets', async () => {
     const { POST } = await import('@/app/api/tts-settings/google-cloud/test/route');
     const response = await POST(new NextRequest('http://localhost/api/tts-settings/google-cloud/test', {
       method: 'POST', body: JSON.stringify({ profileId: 'profile-1' }),
     }));
     expect(response.status).toBe(200);
     expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({
-      languageCode: 'en-GB', serviceAccountJson: profile.googleCloudServiceAccountJson,
+      apiKey: profile.geminiApiKey, text: 'This is a Narratum Gemini connection test.',
     }));
     expect(JSON.stringify(await response.json())).not.toContain('private');
   });
@@ -57,12 +62,11 @@ describe('Google Cloud Drama connection route', () => {
     const body = await (await POST(new NextRequest('http://localhost/api/tts-settings/google-cloud/test', {
       method: 'POST', body: JSON.stringify({ profileId: 'profile-1' }),
     }))).json();
-    expect(body.error).toContain('Authentication failed');
+    expect(body.error).toContain('Gemini 3.8 TTS connection failed');
     expect(JSON.stringify(body)).not.toContain('private key');
     expect(JSON.stringify(body)).not.toContain('bearer token');
   });
 });
-
 describe('Cloud character preview route', () => {
   const request = (extra: Record<string, unknown> = {}) => new NextRequest('http://localhost/api/audiobook/characters/preview', {
     method: 'POST', headers: { 'content-type': 'application/json' },

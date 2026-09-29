@@ -1,4 +1,7 @@
 import type { DramaDirectorSegment, DramaAudioTag } from '@/lib/shared/drama-director-schema';
+import { buildGeminiDramaTtsRequest } from './drama-cloud-request';
+import { GEMINI_TTS_FALLBACK_MODELS, GEMINI_TTS_MODEL, GeminiTtsApiError, GeminiTtsTransportError, isGeminiTtsModel, synthesizeWithGeminiTts } from './gemini-tts-client';
+import type { GeminiTtsModel, GeminiTtsSynthesisOptions, GeminiTtsSynthesisResult } from './gemini-tts-client';
 import { DRAMA_ONE_SHOT_TAGS, DRAMA_PAUSE_TAGS, DRAMA_STYLE_TAGS } from '@/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { buildDramaCloudTtsRequest } from './drama-cloud-request';
@@ -295,6 +298,85 @@ export async function synthesizeDramaSegment(input: {
         attempts: usedAttempts,
         reason: failureReason(lastError),
       });
+    }
+  }
+  return { chunks, reviewFlags };
+}
+
+function isGeminiRetryable(error: unknown): boolean {
+  return error instanceof GeminiTtsTransportError ||
+    (error instanceof GeminiTtsApiError && RETRYABLE_STATUSES.has(error.statusCode));
+}
+
+/** Gemini 3.8 synthesis path. WAV aggregation is handled by the audiobook layer. */
+export async function synthesizeGeminiDramaSegment(input: {
+  segment: DramaDirectorSegment;
+  characterMap: SmartAudioCharacterMap;
+  apiKey: string;
+  policy?: DramaDirectorPolicy;
+  maxAttempts?: number;
+  modelName?: GeminiTtsModel;
+  fallbackModels?: readonly GeminiTtsModel[];
+  synthesize?: (options: GeminiTtsSynthesisOptions) => Promise<GeminiTtsSynthesisResult>;
+  wait?: (milliseconds: number) => Promise<void>;
+}): Promise<DramaSynthesisResult> {
+  if (input.segment.omit_from_audio) {
+    return { chunks: [{ sourceText: input.segment.text, requestText: '', audioBuffer: null, needsPlaceholder: false, omitted: true }], reviewFlags: [] };
+  }
+  const sourceChunks = splitDramaTextByUtf8(input.segment.text, CLOUD_TTS_SAFE_TEXT_BYTES - 128);
+  const chunks: DramaSynthesisChunk[] = [];
+  const reviewFlags: DramaSynthesisReviewFlag[] = [];
+  const synthesize = input.synthesize ?? synthesizeWithGeminiTts;
+  const wait = input.wait ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const requestedModel = input.modelName && isGeminiTtsModel(input.modelName)
+    ? input.modelName
+    : GEMINI_TTS_MODEL;
+  const fallbackModels = (input.fallbackModels ?? GEMINI_TTS_FALLBACK_MODELS)
+    .filter((model): model is GeminiTtsModel => isGeminiTtsModel(model));
+  const models = [requestedModel, ...fallbackModels]
+    .filter((model, index, all) => all.indexOf(model) === index);
+  const attemptsLimit = Math.min(Math.max(input.maxAttempts ?? 3, 1), 5);
+
+  for (const [index, sourceText] of sourceChunks.entries()) {
+    let lastError: unknown;
+    let attempts = 0;
+    let succeeded = false;
+    for (const [modelIndex, modelName] of models.entries()) {
+      const built = buildGeminiDramaTtsRequest({
+        segment: { ...input.segment, text: sourceText, performance: {
+          ...input.segment.performance,
+          tags: index === 0 ? input.segment.performance.tags : [],
+        } },
+        characterMap: input.characterMap,
+        policy: input.policy,
+        modelName,
+      });
+      for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
+        attempts += 1;
+        try {
+          const result = await synthesize({
+            apiKey: input.apiKey,
+            text: built.requestText,
+            style: built.style,
+            voiceName: built.voiceName,
+            modelName,
+          });
+          chunks.push({ sourceText, requestText: built.requestText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
+          if (modelIndex > 0) reviewFlags.push({ kind: 'tts-fallback-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts, reason: `Gemini TTS fell back to model ${modelName}.` });
+          else if (attempt > 1) reviewFlags.push({ kind: 'tts-retry-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts: attempt, reason: 'Gemini TTS succeeded after a transient retry.' });
+          succeeded = true;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!isGeminiRetryable(error) || attempt === attemptsLimit) break;
+          await wait(250 * 2 ** (attempt - 1));
+        }
+      }
+      if (succeeded) break;
+    }
+    if (!succeeded) {
+      chunks.push({ sourceText, requestText: sourceText, audioBuffer: null, needsPlaceholder: true, omitted: false });
+      reviewFlags.push({ kind: 'cloud-tts-failed', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts, reason: lastError instanceof GeminiTtsApiError ? `Gemini TTS HTTP ${lastError.statusCode}` : lastError instanceof Error ? lastError.name : 'Unknown synthesis error' });
     }
   }
   return { chunks, reviewFlags };

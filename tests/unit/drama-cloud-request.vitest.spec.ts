@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDramaCloudTtsRequest } from '../../src/lib/server/smart-audio/drama-cloud-request';
+import { buildDramaCloudTtsRequest, buildGemini38SpeechStyle, buildGeminiDramaTtsRequest, renderGeminiInlineEvents, stripGeneratedGeminiInlineEvents } from '../../src/lib/server/smart-audio/drama-cloud-request';
 import type { DramaDirectorSegment } from '../../src/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '../../src/types/document-settings';
 import { buildDramaDirectorPolicy } from '../../src/lib/shared/drama-profile-settings';
@@ -82,5 +82,41 @@ describe('Drama Cloud TTS request builder', () => {
     const badMap = structuredClone(characterMap);
     badMap.entries.Bethany.cloudDirection!.technicalOverrides!.speakingRate = 4;
     expect(() => buildDramaCloudTtsRequest({ segment, characterMap: badMap })).toThrow(/0.25 and 2.0/);
+  });
+});
+
+describe('Gemini 3.8 Drama request compiler', () => {
+  it('keeps sustained direction in compact style metadata and source text verbatim', () => {
+    const result = buildGeminiDramaTtsRequest({ segment, characterMap });
+
+    expect(result.sourceText).toBe(segment.text);
+    expect(result.requestText).toBe('<sigh>We should go.');
+    expect(stripGeneratedGeminiInlineEvents(result.requestText)).toBe(segment.text);
+    expect(result.style).toContain('determined');
+    expect(result.style).toContain('restrained');
+    expect(result.style).toContain('pace measured');
+    expect(result.style).toContain('lower pitch');
+    expect(result.request.input[0].content[0].annotations?.[0]).toMatchObject({
+      type: 'speech_metadata',
+      style: result.style,
+    });
+    expect(JSON.stringify(result.request)).not.toContain('prompt');
+    expect(JSON.stringify(result.request)).not.toContain('audioConfig');
+  });
+
+  it('allows only documented angle-bracket point events and never serializes styles as tags', () => {
+    const rendered = renderGeminiInlineEvents('Careful.', ['sigh', 'whispering', 'short pause']);
+    expect(rendered).toBe('<sigh><short pause>Careful.');
+    expect(rendered).not.toContain('whispering');
+    expect(stripGeneratedGeminiInlineEvents(rendered)).toBe('Careful.');
+  });
+
+  it('caps style metadata and lets Director pace win over technical rate wording', () => {
+    const verboseMap = structuredClone(characterMap);
+    verboseMap.entries.Bethany.cloudDirection!.audioProfile = 'Identity '.repeat(500);
+    const slowSegment = { ...segment, performance: { ...segment.performance, pace: 'slow' as const } };
+    const style = buildGemini38SpeechStyle(slowSegment, verboseMap.entries.Bethany);
+    expect(Buffer.byteLength(style, 'utf8')).toBeLessThanOrEqual(600);
+    expect(style).not.toContain('speaking slightly slowly');
   });
 });

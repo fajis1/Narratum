@@ -1169,7 +1169,7 @@
     },
     {
       "id": "profile-google-cloud-drama",
-      "name": "Google Cloud TTS Audio Drama",
+      "name": "Google Gemini 3.8 Audio Drama",
       "aiModel": "gemini-3.1-flash-lite",
       "pronunciationAiModel": "gemini-3.8-flash",
       "workerMode": "drama-gemini-tts",

@@ -6,12 +6,12 @@ const { direct, synthesize, concatenate, silence } = vi.hoisted(() => ({
 
 vi.mock('../../src/lib/server/smart-audio/drama-director', () => ({ directDramaWithGemini: direct }));
 vi.mock('../../src/lib/server/smart-audio/drama-cloud-synthesis', () => ({
-  synthesizeDramaSegment: synthesize,
+  synthesizeGeminiDramaSegment: synthesize,
   splitDramaTextByUtf8: (text: string) => [text],
 }));
 vi.mock('../../src/lib/server/audiobooks/segmented-tts', () => ({
-  concatenateMp3Segments: concatenate,
-  generateSilentMp3Segment: silence,
+  concatenateWavSegmentsToMp3: concatenate,
+  generateSilentWavSegment: silence,
 }));
 
 import { generateCloudDramaAudiobook } from '../../src/lib/server/audiobooks/cloud-drama';

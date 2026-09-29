@@ -1,10 +1,9 @@
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { directDramaWithGemini } from '@/lib/server/smart-audio/drama-director';
-import { synthesizeDramaSegment } from '@/lib/server/smart-audio/drama-cloud-synthesis';
+import { splitDramaTextByUtf8, synthesizeGeminiDramaSegment } from '@/lib/server/smart-audio/drama-cloud-synthesis';
 import type { DramaSynthesisReviewFlag } from '@/lib/server/smart-audio/drama-cloud-synthesis';
 import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
-import { splitDramaTextByUtf8 } from '@/lib/server/smart-audio/drama-cloud-synthesis';
-import { concatenateMp3Segments, generateSilentMp3Segment } from './segmented-tts';
+import { concatenateWavSegmentsToMp3, generateSilentWavSegment } from './segmented-tts';
 import { buildDramaDirectorPolicy, normalizeDramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
 
 export interface CloudDramaAudiobookResult {
@@ -62,14 +61,12 @@ export async function generateCloudDramaAudiobook(input: {
     continuityState = directed.at(-1)?.sceneContext || continuityState;
     for (const segment of directed) {
       if (input.signal?.aborted) throw new Error('ABORTED');
-      const result = await synthesizeDramaSegment({
+      const result = await synthesizeGeminiDramaSegment({
         segment, characterMap: readiness.map,
-        serviceAccountJson: input.serviceAccountJson,
-        languageCode: profileSettings.languageCode,
+        apiKey: input.geminiApiKey,
         policy,
-        modelName: input.ttsModel,
-        fallbackModels: input.ttsModelFallbacks,
-        onModelFallback: input.onModelFallback,
+        modelName: input.ttsModel as import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel | undefined,
+        fallbackModels: input.ttsModelFallbacks as readonly import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel[] | undefined,
       });
       reviewFlags.push(...result.reviewFlags);
       const failures = result.reviewFlags.filter((flag) => flag.kind === 'cloud-tts-failed');
@@ -83,7 +80,7 @@ export async function generateCloudDramaAudiobook(input: {
         if (chunk.omitted) continue;
         if (chunk.audioBuffer) audioSegments.push(chunk.audioBuffer);
         else if (chunk.needsPlaceholder) {
-          silentSegment ??= await generateSilentMp3Segment(input.signal);
+          silentSegment ??= await generateSilentWavSegment(input.signal);
           audioSegments.push(silentSegment);
         }
       }
@@ -91,7 +88,7 @@ export async function generateCloudDramaAudiobook(input: {
   }
   if (!audioSegments.length) throw new Error('Cloud Drama produced no audio segments.');
   return {
-    audioBuffer: await concatenateMp3Segments(audioSegments, input.signal),
+    audioBuffer: await concatenateWavSegmentsToMp3(audioSegments, input.signal),
     reviewFlags,
   };
 }

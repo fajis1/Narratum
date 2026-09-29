@@ -17,7 +17,7 @@ const output = {
       pace: 'normal',
       energy: 'low',
       intensity: 'controlled',
-      tags: ['shouting', 'long pause'],
+      tags: ['sigh', 'long pause'],
     },
   }],
 };
@@ -40,7 +40,7 @@ describe('Drama profile policy enforcement', () => {
       output,
       policy: buildDramaDirectorPolicy({ audioTagUsage: 'conservative' }),
     });
-    expect(result[0].performance.tags).toEqual(['shouting']);
+    expect(result[0].performance.tags).toEqual(['sigh']);
   });
 
   test('natural pause policy removes long pauses while preserving source text', () => {

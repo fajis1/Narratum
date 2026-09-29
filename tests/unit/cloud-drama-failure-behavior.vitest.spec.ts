@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({ direct: vi.fn(), synthesize: vi.fn(), concat: vi.fn(), silent: vi.fn() }));
 vi.mock('@/lib/server/smart-audio/drama-director', () => ({ directDramaWithGemini: mocks.direct }));
 vi.mock('@/lib/server/smart-audio/drama-cloud-synthesis', () => ({
-  synthesizeDramaSegment: mocks.synthesize,
+  synthesizeGeminiDramaSegment: mocks.synthesize,
   splitDramaTextByUtf8: (text: string) => [text],
 }));
 vi.mock('@/lib/server/audiobooks/segmented-tts', () => ({
-  concatenateMp3Segments: mocks.concat,
-  generateSilentMp3Segment: mocks.silent,
+  concatenateWavSegmentsToMp3: mocks.concat,
+  generateSilentWavSegment: mocks.silent,
 }));
 
 const cast = { schemaVersion: 1, status: 'complete', entries: {

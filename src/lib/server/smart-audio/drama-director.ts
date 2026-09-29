@@ -1,9 +1,8 @@
 import examples from './drama-director-examples.json';
 import {
-  DRAMA_AUDIO_TAG_ALLOWLIST, DRAMA_DELIVERY_STYLES, DRAMA_ENERGY,
+  DRAMA_DELIVERY_STYLES, DRAMA_ENERGY, DRAMA_INLINE_VOCAL_EVENTS,
   DRAMA_INTENSITY, DRAMA_PACING, DRAMA_PRIMARY_EMOTIONS,
   DRAMA_SECONDARY_EMOTIONS, DRAMA_SOCIAL_INTENTS, DRAMA_UTTERANCE_TYPES,
-  DRAMA_PAUSE_TAGS,
 } from '@/lib/shared/drama-director-schema';
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import type { DramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
@@ -26,12 +25,12 @@ function applyPolicyToTags(
   tags: readonly string[],
   policy: DramaDirectorPolicy | undefined,
 ): DramaDirectorSegment['performance']['tags'] {
-  if (!policy || policy.tags.usage === 'expressive') return tags.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_AUDIO_TAG_ALLOWLIST.includes(tag as never));
+  if (!policy || policy.tags.usage === 'expressive') return tags.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_INLINE_VOCAL_EVENTS.includes(tag as never));
   if (policy.tags.usage === 'off') return [];
-  const pauseTags = new Set<string>(DRAMA_PAUSE_TAGS);
+  const pauseTags = new Set<string>(DRAMA_INLINE_VOCAL_EVENTS);
   const filtered = tags.filter((tag) => policy.tags.pauseStyle === 'cinematic' || !pauseTags.has(tag) || policy.tags.pauseStyle === 'natural' && tag !== 'long pause');
   const limit = policy.tags.usage === 'conservative' ? 1 : 2;
-  return filtered.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_AUDIO_TAG_ALLOWLIST.includes(tag as never)).slice(0, limit);
+  return filtered.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_INLINE_VOCAL_EVENTS.includes(tag as never)).slice(0, limit);
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -57,7 +56,7 @@ export function validateDramaDirectorOutput(input: {
     throw new DramaDirectorValidationError(['Expected a non-empty segments array.']);
   }
   const cast = new Set(input.castNames);
-  const tagSet = new Set<string>(DRAMA_AUDIO_TAG_ALLOWLIST);
+  const tagSet = new Set<string>(DRAMA_INLINE_VOCAL_EVENTS);
   const segments: DramaDirectorSegment[] = [];
   for (const [index, raw] of rawSegments.entries()) {
     const issueCount = issues.length;
@@ -127,7 +126,7 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
     `socialIntent: ${JSON.stringify(DRAMA_SOCIAL_INTENTS)}`,
     `delivery: ${JSON.stringify(DRAMA_DELIVERY_STYLES)}`,
     `pace: ${JSON.stringify(DRAMA_PACING)}; energy: ${JSON.stringify(DRAMA_ENERGY)}; intensity: ${JSON.stringify(DRAMA_INTENSITY)}`,
-    `Allowed tags only: ${JSON.stringify(DRAMA_AUDIO_TAG_ALLOWLIST)}. Do not put markup into text.`,
+    `Allowed tags only: ${JSON.stringify(DRAMA_INLINE_VOCAL_EVENTS)}. Do not put markup into text.`,
     'Every segment needs speaker, utteranceType, text, sceneContext (1–3 sentences), performance with all required fields, and omit_from_audio: false. Source cleanup already decided what to narrate. Use 0–2 secondary emotions, 1–2 delivery styles, and 0–2 safe tags.',
     ...(input.priorContinuityState ? [`Previous scene context: ${JSON.stringify(input.priorContinuityState)}`] : []),
     'Author examples (text is exact; direction illustrates context and performance):',

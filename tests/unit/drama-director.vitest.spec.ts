@@ -55,7 +55,7 @@ describe('Drama Director prompt and validation', () => {
       { performance: { ...valid.segments[0].performance, secondaryEmotions: ['calm', 'sad', 'angry'] } },
       { performance: { ...valid.segments[0].performance, delivery: [] } },
       { performance: { ...valid.segments[0].performance, delivery: ['natural', 'soft', 'urgent'] } },
-      { performance: { ...valid.segments[0].performance, tags: ['sigh', 'laughing', 'long pause'] } },
+      { performance: { ...valid.segments[0].performance, tags: ['sigh', 'laugh', 'long pause'] } },
     ]) {
       expect(() => validateDramaDirectorOutput({
         ...input, output: { segments: [{ ...valid.segments[0], ...changes }] },

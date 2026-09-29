@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuthContext } from '@/lib/server/auth/auth';
 import { findSmartAudioProfileById, readSmartAudioProfilesDocument } from '@/lib/server/smart-audio-profiles';
-import { synthesizeWithCloudTts, CloudTtsApiError } from '@/lib/server/smart-audio/google-cloud-tts-client';
+import { synthesizeWithGeminiTts, GeminiTtsApiError } from '@/lib/server/smart-audio/gemini-tts-client';
 import { CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
-import { normalizeDramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,23 +14,23 @@ export async function POST(request: NextRequest) {
   if (!profileId) return NextResponse.json({ error: 'A Smart Audio profile is required.' }, { status: 400 });
   const profile = findSmartAudioProfileById(await readSmartAudioProfilesDocument(context.userId), profileId);
   if (!profile || profile.workerMode !== 'drama-gemini-tts') {
-    return NextResponse.json({ error: 'A Google Cloud Drama profile is required.' }, { status: 400 });
+    return NextResponse.json({ error: 'A Gemini Audio Drama profile is required.' }, { status: 400 });
+  }
+  if (!profile.geminiApiKey?.trim()) {
+    return NextResponse.json({ error: 'A Gemini API key is required.' }, { status: 400 });
   }
   try {
-    const settings = normalizeDramaGeminiTtsProfileSettings(profile.dramaGeminiTtsSettings);
-    await synthesizeWithCloudTts({
-      text: 'This is a Narratum Google Cloud connection test.',
-      stylePrompt: 'Speak naturally and clearly as a short connection test.',
+    await synthesizeWithGeminiTts({
+      text: 'This is a Narratum Gemini connection test.',
+      style: 'natural, clear, short connection test',
       voiceName: [...CLOUD_TTS_CHARACTER_VOICE_SET][0],
-      languageCode: settings.languageCode,
-      serviceAccountJson: profile.googleCloudServiceAccountJson,
+      apiKey: profile.geminiApiKey,
     });
-    return NextResponse.json({ success: true, message: 'Google Cloud connection successful.' });
+    return NextResponse.json({ success: true, message: 'Gemini 3.8 TTS connection successful.' });
   } catch (error) {
-    if (error instanceof CloudTtsApiError && (error.statusCode === 401 || error.statusCode === 403)) {
-      return NextResponse.json({ error: 'Authentication succeeded, but Gemini-TTS access was denied. Verify the required Google Cloud permissions.' }, { status: 403 });
+    if (error instanceof GeminiTtsApiError && (error.statusCode === 401 || error.statusCode === 403)) {
+      return NextResponse.json({ error: 'Gemini authentication succeeded, but TTS access was denied. Verify API-key access and billing.' }, { status: 403 });
     }
-    return NextResponse.json({ error: 'Authentication failed. Verify the service-account JSON, project configuration, and Cloud permissions.' }, { status: 502 });
+    return NextResponse.json({ error: 'Gemini 3.8 TTS connection failed. Verify the Gemini API key and billing.' }, { status: 502 });
   }
 }
-

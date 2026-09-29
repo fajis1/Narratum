@@ -104,3 +104,11 @@ export interface DramaDirectorSegment {
   performance: DramaDirectorPerformance;
   omit_from_audio: boolean;
 }
+
+/** Gemini 3.8 point-in-time vocal events. Sustained delivery belongs in style metadata. */
+export const DRAMA_INLINE_VOCAL_EVENTS = [
+  'sigh', 'laugh', 'chuckle', 'cough', 'breath', 'heavy breath', 'gasp',
+  'cry', 'groan', 'sob', 'short pause', 'long pause',
+] as const;
+export type DramaInlineVocalEvent = (typeof DRAMA_INLINE_VOCAL_EVENTS)[number];
+export const DRAMA_INLINE_VOCAL_EVENT_SET = new Set<string>(DRAMA_INLINE_VOCAL_EVENTS);
