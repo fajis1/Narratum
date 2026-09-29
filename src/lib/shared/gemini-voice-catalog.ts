@@ -25,8 +25,17 @@ export interface GeminiVoiceCatalogEntry {
   expireTime: string | null;
 }
 
-/** The initial public catalog scope. Callers may extend this deliberately. */
-export const DEFAULT_ENGLISH_GEMINI_VOICE_LANGUAGES = ['en-US', 'en-GB'] as const;
+/**
+ * An empty upstream language filter means ListVoices returns every prebuilt
+ * voice. The server then keeps all English variants locally (`en` / `en-*`),
+ * instead of silently limiting Narratum to two locales.
+ */
+export const DEFAULT_ENGLISH_GEMINI_VOICE_LANGUAGES: readonly string[] = [];
+
+export function isEnglishGeminiVoiceLanguage(languageCode: string | null): boolean {
+  const normalized = languageCode?.trim().toLowerCase();
+  return normalized === 'en' || Boolean(normalized?.startsWith('en-'));
+}
 
 export interface GeminiVoiceCatalogWireEntry {
   id?: unknown;

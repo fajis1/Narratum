@@ -31,7 +31,7 @@ import {
   WAITING_FOR_VOICES_STATUS,
 } from '@/lib/shared/multi-voice';
 import { isKokoroModel } from '@/lib/shared/kokoro';
-import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { DEFAULT_DOCUMENT_SETTINGS } from '@/types/document-settings';
 import { audiobookPrefix, deleteAudiobookPrefix } from '@/lib/server/audiobooks/blobstore';
 import { readAudiobookRuntimeStatus } from '@/lib/shared/audiobook-runtime-phase';
@@ -147,13 +147,16 @@ export async function POST(req: NextRequest) {
           parseJobSettings(settingRows[0]?.dataJson),
         );
         const readiness = isCloudDrama
-          ? getCloudTtsCharacterMapReadiness(parseJobSettings(settingRows[0]?.dataJson).smartAudioCharacters)
+          ? await getGeminiTtsCharacterMapReadiness({
+              value: parseJobSettings(settingRows[0]?.dataJson).smartAudioCharacters,
+              apiKey: (profile.geminiApiKey || '').trim(),
+            })
           : getCharacterMapReadiness(storedSettings.smartAudioCharacters);
         if (!readiness.ready || readiness.map?.profileId !== profile.id) {
           return NextResponse.json({
             code: 'CHARACTER_CAST_REQUIRED',
             error: isCloudDrama
-              ? 'Review and assign the Google Cloud Drama character voices before generation.'
+              ? 'Review and assign the Gemini Drama character voices before generation.'
               : 'Review and assign the LitRPG character voices before generation.',
             hasCharacterScan: Boolean(readiness.map),
             unassigned: readiness.unassigned,

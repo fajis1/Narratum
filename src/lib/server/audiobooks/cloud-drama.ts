@@ -2,7 +2,7 @@ import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { directDramaWithGemini } from '@/lib/server/smart-audio/drama-director';
 import { splitDramaTextByUtf8, synthesizeGeminiDramaSegment } from '@/lib/server/smart-audio/drama-cloud-synthesis';
 import type { DramaSynthesisReviewFlag } from '@/lib/server/smart-audio/drama-cloud-synthesis';
-import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { concatenateWavSegmentsToMp3, generateSilentWavSegment } from './segmented-tts';
 import { buildDramaDirectorPolicy, normalizeDramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
 
@@ -33,8 +33,11 @@ export async function generateCloudDramaAudiobook(input: {
   ttsModelFallbacks?: readonly string[];
   onModelFallback?: (fromModel: string, toModel: string, reason: string) => void;
 }): Promise<CloudDramaAudiobookResult> {
-  const readiness = getCloudTtsCharacterMapReadiness(input.characterMap);
-  if (!readiness.ready || !readiness.map) throw new Error('Cloud Drama cast is not ready.');
+  const readiness = await getGeminiTtsCharacterMapReadiness({
+    value: input.characterMap,
+    apiKey: input.geminiApiKey,
+  });
+  if (!readiness.ready || !readiness.map) throw new Error('Gemini Drama cast is not ready.')
   if (!input.geminiApiKey.trim()) throw new Error('A Gemini API key is required for the Drama Director.');
   const audioSegments: Buffer[] = [];
   const reviewFlags: DramaSynthesisReviewFlag[] = [];

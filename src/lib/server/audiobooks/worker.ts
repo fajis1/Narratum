@@ -74,10 +74,9 @@ import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/seg
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
 import { DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
-import {
-  autoAssignCloudTtsMinorVoices,
-  getCloudTtsCharacterMapReadiness,
-} from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
+import { resolveGeminiPrebuiltVoiceCatalog } from '@/lib/server/smart-audio/gemini-voice-catalog-cache';
+import { autoAssignGeminiMinorVoices } from '@/lib/shared/gemini-voice-matching';
 import {
   GEMINI_TTS_FALLBACK_MODELS,
   GEMINI_TTS_MODEL,
@@ -431,8 +430,15 @@ export async function resumeWaitingAudioDramaJobs(): Promise<number> {
         const profile = findSmartAudioProfileById(profiles, jobSettings.smartAudioProfileId || profiles.selectedProfileId);
         const isCloudDrama = profile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
 
+        const catalog = isCloudDrama
+          ? await resolveGeminiPrebuiltVoiceCatalog({ apiKey: (profile?.geminiApiKey || '').trim() })
+          : null;
         const readiness = isCloudDrama
-          ? getCloudTtsCharacterMapReadiness(charMap)
+          ? await getGeminiTtsCharacterMapReadiness({
+              value: charMap,
+              apiKey: (profile?.geminiApiKey || '').trim(),
+              resolveCatalog: async () => catalog!,
+            })
           : getCharacterMapReadiness(charMap);
         if (readiness.unassigned.length > 0 && readiness.map) {
           const metrics = isCloudDrama ? {} : await getDocumentCharacterUsageMetrics(
@@ -442,7 +448,7 @@ export async function resumeWaitingAudioDramaJobs(): Promise<number> {
             readiness.map,
           );
           const autoResult = isCloudDrama
-            ? autoAssignCloudTtsMinorVoices({ characterMap: readiness.map })
+            ? autoAssignGeminiMinorVoices({ characterMap: readiness.map, voices: catalog!.voices })
             : autoAssignMinorCharacterVoices({
                 characterMap: readiness.map,
                 characterUsageMetrics: metrics,
@@ -463,7 +469,11 @@ export async function resumeWaitingAudioDramaJobs(): Promise<number> {
           }
 
           const newReadiness = isCloudDrama
-            ? getCloudTtsCharacterMapReadiness(autoResult.updatedMap)
+            ? await getGeminiTtsCharacterMapReadiness({
+                value: autoResult.updatedMap,
+                apiKey: (profile?.geminiApiKey || '').trim(),
+                resolveCatalog: async () => catalog!,
+              })
             : getCharacterMapReadiness(autoResult.updatedMap);
           if (newReadiness.ready) {
             await db.update(audiobookJobs)
@@ -1178,10 +1188,18 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       const storedCast = rawDocumentSettings && typeof rawDocumentSettings === 'object' && !Array.isArray(rawDocumentSettings)
         ? (rawDocumentSettings as Record<string, unknown>).smartAudioCharacters
         : null;
-      let readiness = getCloudTtsCharacterMapReadiness(storedCast);
+      const catalog = await resolveGeminiPrebuiltVoiceCatalog({
+        apiKey: (selectedProfile.geminiApiKey || '').trim(),
+      });
+      let readiness = await getGeminiTtsCharacterMapReadiness({
+        value: storedCast,
+        apiKey: (selectedProfile.geminiApiKey || '').trim(),
+        resolveCatalog: async () => catalog,
+      });
       if (!readiness.ready && readiness.unassigned.length > 0 && readiness.map) {
-        const autoResult = autoAssignCloudTtsMinorVoices({
+        const autoResult = autoAssignGeminiMinorVoices({
           characterMap: readiness.map,
+          voices: catalog.voices,
         });
         if (autoResult.assigned.length > 0) {
           serverLogger.info({
@@ -1203,14 +1221,18 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
             .set({ dataJson: JSON.stringify(currentSettings) })
             .where(and(eq(documentSettings.documentId, job.documentId), eq(documentSettings.userId, userId)));
           resolvedDocumentSettings.smartAudioCharacters = autoResult.updatedMap;
-          readiness = getCloudTtsCharacterMapReadiness(autoResult.updatedMap);
+          readiness = await getGeminiTtsCharacterMapReadiness({
+            value: autoResult.updatedMap,
+            apiKey: (selectedProfile.geminiApiKey || '').trim(),
+            resolveCatalog: async () => catalog,
+          });
         }
       }
 
       if (!readiness.ready || readiness.map?.profileId !== selectedProfile.id) {
         await updateClaimedAudiobookJob(job.id, 'running', {
           status: WAITING_FOR_VOICES_STATUS,
-          error: 'Review and assign the Google Cloud Drama character voices to continue.',
+          error: 'Review and assign the Gemini Drama character voices to continue.',
           updatedAt: Date.now(),
         });
         return;

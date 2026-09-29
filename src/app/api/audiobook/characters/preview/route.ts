@@ -10,6 +10,12 @@ import { resolveGeminiPrebuiltVoiceCatalog } from '@/lib/server/smart-audio/gemi
 import { normalizeGeminiTtsCharacterMap } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { synthesizeWithGeminiTts, GEMINI_TTS_AUDIO_MIME_TYPE } from '@/lib/server/smart-audio/gemini-tts-client';
 import { errorToLog, serverLogger } from '@/lib/server/logger';
+import {
+  GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION,
+  GEMINI_VOICE_ONLY_PREVIEW_MODEL,
+  GEMINI_VOICE_ONLY_PREVIEW_STYLE,
+  GEMINI_VOICE_ONLY_PREVIEW_TEXT,
+} from '@/lib/shared/gemini-voice-preview';
 
 export const dynamic = 'force-dynamic';
 const PREVIEW_TTL_MS = 30 * 60 * 1_000;
@@ -17,7 +23,7 @@ const MAX_PREVIEW_CACHE_ENTRIES = 80;
 const previewCache = new Map<string, { expiresAt: number; audio: Buffer }>();
 
 function previewStyle(input: { mode: 'voice-only' | 'character' | 'scene'; description: string; sceneContext: string }): string {
-  if (input.mode === 'voice-only') return 'Speak naturally, clearly, and warmly for an audiobook voice comparison.';
+  if (input.mode === 'voice-only') return GEMINI_VOICE_ONLY_PREVIEW_STYLE;
   const parts = [input.description || 'Use the selected voice naturally and consistently.'];
   if (input.mode === 'scene') parts.push(`Scene context: ${input.sceneContext || 'A short dramatic audiobook scene.'}`);
   parts.push('Deliver this as a concise audiobook performance. Speak the supplied text faithfully.');
@@ -50,11 +56,12 @@ export async function POST(request: NextRequest) {
   const documentId = typeof body.documentId === 'string' ? body.documentId.trim().toLowerCase() : '';
   const profileId = typeof body.profileId === 'string' ? body.profileId.trim() : '';
   const voiceName = typeof body.voiceName === 'string' ? body.voiceName.trim() : '';
-  const text = typeof body.text === 'string' ? body.text.trim().slice(0, 300) : '';
+  const requestedText = typeof body.text === 'string' ? body.text.trim().slice(0, 300) : '';
   const previewMode = body.previewMode === 'voice-only' || body.previewMode === 'scene' ? body.previewMode : 'character';
+  const text = previewMode === 'voice-only' ? GEMINI_VOICE_ONLY_PREVIEW_TEXT : requestedText;
   const characterName = typeof body.characterName === 'string' ? body.characterName.trim() : '';
   const sceneContext = typeof body.sceneContext === 'string' ? body.sceneContext.trim().slice(0, 500) : '';
-  if (!documentId || !profileId || !voiceName || !text) {
+  if (!documentId || !profileId || !voiceName || (previewMode !== 'voice-only' && !text)) {
     return NextResponse.json({ error: 'A valid document, profile, voice, and sample text are required.' }, { status: 400 });
   }
   const [document] = await db.select({ id: documents.id }).from(documents).where(and(
@@ -83,13 +90,16 @@ export async function POST(request: NextRequest) {
     if (previewMode !== 'voice-only' && !entry) {
       return NextResponse.json({ error: 'Select a saved character before using this preview mode.' }, { status: 400 });
     }
-    const key = cacheKey({ userId: context.userId, documentId, profileId, voiceName, text, previewMode, characterName, sceneContext });
+    const key = previewMode === 'voice-only'
+      ? cacheKey({ kind: 'gemini-voice-only', version: GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION, voiceName, model: GEMINI_VOICE_ONLY_PREVIEW_MODEL })
+      : cacheKey({ userId: context.userId, documentId, profileId, voiceName, text, previewMode, characterName, sceneContext });
     const cached = readCachedPreview(key);
     if (cached) return new NextResponse(new Uint8Array(cached), { headers: { 'Content-Type': GEMINI_TTS_AUDIO_MIME_TYPE, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'HIT' } });
 
     const result = await synthesizeWithGeminiTts({
       text, voiceName, apiKey,
       style: previewStyle({ mode: previewMode, description: entry?.cloudDirection?.audioProfile || entry?.description || '', sceneContext }),
+      ...(previewMode === 'voice-only' ? { modelName: GEMINI_VOICE_ONLY_PREVIEW_MODEL } : {}),
     });
     writeCachedPreview(key, result.audioBuffer);
     return new NextResponse(new Uint8Array(result.audioBuffer), { headers: { 'Content-Type': result.mimeType, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'MISS' } });

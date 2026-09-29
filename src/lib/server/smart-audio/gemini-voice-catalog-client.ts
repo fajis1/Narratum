@@ -1,5 +1,6 @@
 import {
   DEFAULT_ENGLISH_GEMINI_VOICE_LANGUAGES,
+  isEnglishGeminiVoiceLanguage,
   normalizeGeminiVoiceCatalogEntry,
 } from '@/lib/shared/gemini-voice-catalog';
 import type {
@@ -16,7 +17,11 @@ export const GEMINI_VOICE_CATALOG_MAX_PAGES = 10;
 export interface GeminiVoiceCatalogFetchOptions {
   /** Server-resolved profile key. It must never be passed from browser JSON. */
   apiKey: string;
-  /** Initial scope is English prebuilt voices; callers can extend deliberately. */
+  /**
+   * Retained for source compatibility and validation only. The Gemini endpoint
+   * must never receive a locale filter: Narratum retrieves the complete
+   * prebuilt catalog and applies its English filter locally.
+   */
   languageCodes?: readonly string[];
   /** Testable safeguard against an upstream pagination loop. */
   maxPages?: number;
@@ -101,7 +106,6 @@ function normalizeLanguageCodes(languageCodes: readonly string[]): string[] {
       result.push(normalized);
     }
   }
-  if (!result.length) throw new GeminiVoiceCatalogInputError('At least one Gemini voice language code is required.');
   return result;
 }
 
@@ -113,7 +117,10 @@ export function buildGeminiVoiceCatalogUrl(input: {
   const url = new URL(GEMINI_VOICE_CATALOG_ENDPOINT);
   url.searchParams.set('page_size', String(GEMINI_VOICE_CATALOG_PAGE_SIZE));
   url.searchParams.append('type', 'prebuilt');
-  for (const languageCode of input.languageCodes) url.searchParams.append('language_code', languageCode);
+  // Deliberately do not append `language_code`. Gemini's catalogue is larger
+  // than the historic en-US/en-GB subset, and local filtering is stable across
+  // pages and provider locale behaviour.
+  void input.languageCodes;
   if (input.pageToken) url.searchParams.set('page_token', input.pageToken);
   return url.toString();
 }
@@ -134,7 +141,10 @@ export async function fetchGeminiPrebuiltVoiceCatalog(
   options: GeminiVoiceCatalogFetchOptions,
 ): Promise<GeminiVoiceCatalogFetchResult> {
   if (!options.apiKey.trim()) throw new GeminiVoiceCatalogInputError('Gemini API key must not be empty.');
-  const languageCodes = normalizeLanguageCodes(options.languageCodes ?? DEFAULT_ENGLISH_GEMINI_VOICE_LANGUAGES);
+  // Validate legacy caller input, but never use it to narrow the upstream
+  // request. Keeping the result empty also makes snapshot scope unambiguous.
+  normalizeLanguageCodes(options.languageCodes ?? DEFAULT_ENGLISH_GEMINI_VOICE_LANGUAGES);
+  const languageCodes: string[] = [];
   const maxPages = options.maxPages ?? GEMINI_VOICE_CATALOG_MAX_PAGES;
   if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > GEMINI_VOICE_CATALOG_MAX_PAGES) {
     throw new GeminiVoiceCatalogInputError(`maxPages must be between 1 and ${GEMINI_VOICE_CATALOG_MAX_PAGES}.`);
@@ -178,7 +188,7 @@ export async function fetchGeminiPrebuiltVoiceCatalog(
       const voice = wireVoice && typeof wireVoice === 'object'
         ? normalizeGeminiVoiceCatalogEntry(wireVoice)
         : null;
-      if (voice?.type === 'prebuilt' && !voices.has(voice.id)) voices.set(voice.id, voice);
+      if (voice?.type === 'prebuilt' && isEnglishGeminiVoiceLanguage(voice.languageCode) && !voices.has(voice.id)) voices.set(voice.id, voice);
     }
 
     pageCount += 1;

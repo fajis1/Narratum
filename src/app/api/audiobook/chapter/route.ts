@@ -35,7 +35,7 @@ import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/seg
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
 import { DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
-import { getCloudTtsCharacterMapReadiness } from '@/lib/server/smart-audio/google-cloud-cast-helpers';
+import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
 import { resolveTtsCredentials } from '@/lib/server/admin/resolve-credentials';
 import { resolveEffectiveTtsInstructions } from '@/lib/server/admin/tts-instructions';
@@ -624,17 +624,18 @@ export async function POST(request: NextRequest) {
       }
       const resolvedSettings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, storedSettings);
       const readiness = isCloudDrama
-        ? getCloudTtsCharacterMapReadiness(
-          storedSettings && typeof storedSettings === 'object' && !Array.isArray(storedSettings)
-            ? (storedSettings as Record<string, unknown>).smartAudioCharacters
-            : null,
-        )
+        ? await getGeminiTtsCharacterMapReadiness({
+            value: storedSettings && typeof storedSettings === 'object' && !Array.isArray(storedSettings)
+              ? (storedSettings as Record<string, unknown>).smartAudioCharacters
+              : null,
+            apiKey: (selectedProfile.geminiApiKey || '').trim(),
+          })
         : getCharacterMapReadiness(resolvedSettings.smartAudioCharacters);
       if (!readiness.ready || readiness.map?.profileId !== selectedProfile.id) {
         return NextResponse.json({
           code: 'CHARACTER_CAST_REQUIRED',
           error: isCloudDrama
-            ? 'Review and assign the Google Cloud Drama character voices before cleaning this chapter.'
+            ? 'Review and assign the Gemini Drama character voices before cleaning this chapter.'
             : 'Review and assign the LitRPG character voices before cleaning this chapter.',
         }, { status: 409 });
       }

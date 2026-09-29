@@ -35,6 +35,9 @@ export async function getGeminiTtsCharacterMapReadiness(input: {
   const catalog = await resolveCatalog({ apiKey: input.apiKey, languageCodes: input.languageCodes });
   const readiness = getCharacterMapReadiness(input.value, {
     validVoiceSet: new Set(catalog.voices.map((voice) => voice.id)),
+    // The emergency legacy fallback is intentionally not authoritative. Keep
+    // safe saved dynamic IDs usable until the next catalog refresh succeeds.
+    preserveSafeVoiceIds: catalog.source === 'legacy-fallback',
   });
   return {
     ...readiness,

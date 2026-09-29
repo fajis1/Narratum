@@ -92,8 +92,11 @@ describe('Gemini character preview route', () => {
     const { POST } = await import('@/app/api/audiobook/characters/preview/route');
     const response = await POST(request({ previewMode: 'voice-only' }));
     expect(response.status).toBe(200);
-    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({ apiKey: profile.geminiApiKey, voiceName: 'Kore' }));
-    expect(mocks.synthesize.mock.calls[0][0].style).toContain('audiobook voice comparison');
+    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: profile.geminiApiKey, voiceName: 'Kore', modelName: 'gemini-3.8-flash-lite-tts',
+      text: 'The lantern glowed softly as the evening train disappeared beyond the hills.',
+    }));
+    expect(mocks.synthesize.mock.calls[0][0].style).toContain('neutral audiobook voice comparison');
   });
 
   it('uses saved direction for character previews', async () => {

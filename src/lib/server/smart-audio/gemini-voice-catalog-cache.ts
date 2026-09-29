@@ -11,6 +11,7 @@ import type { GeminiVoiceCatalogEntry } from '@/lib/shared/gemini-voice-catalog'
 import {
   fetchGeminiPrebuiltVoiceCatalog,
 } from './gemini-voice-catalog-client';
+import { GeminiVoiceCatalogApiError } from './gemini-voice-catalog-client';
 import type { GeminiVoiceCatalogFetchResult } from './gemini-voice-catalog-client';
 
 export const GEMINI_VOICE_CATALOG_CACHE_TTL_MS = 12 * 60 * 60 * 1_000;
@@ -18,6 +19,12 @@ export const GEMINI_VOICE_CATALOG_SNAPSHOT_KEY = 'system:gemini-prebuilt-voice-c
 const SNAPSHOT_VERSION = 1;
 
 export type GeminiVoiceCatalogSource = 'live' | 'cache' | 'snapshot' | 'legacy-fallback';
+
+export interface GeminiVoiceCatalogStatusNotice {
+  code: 'authentication' | 'permission' | 'rate-limit' | 'unavailable';
+  message: string;
+  retryAfterMs?: number;
+}
 
 export interface GeminiVoiceCatalogSnapshot {
   version: typeof SNAPSHOT_VERSION;
@@ -33,6 +40,8 @@ export interface ResolvedGeminiVoiceCatalog {
   catalogVersion: string;
   voices: GeminiVoiceCatalogEntry[];
   languageCodes: string[];
+  /** A safe, non-secret notice when serving last-known-good data. */
+  statusNotice?: GeminiVoiceCatalogStatusNotice;
 }
 
 type FetchCatalog = (input: {
@@ -59,8 +68,12 @@ interface MemoryCatalogEntry {
 
 const processCache = new Map<string, MemoryCatalogEntry>();
 
-function cacheKey(languageCodes: readonly string[]): string {
-  return `gemini:prebuilt:${languageCodes.map((code) => code.toLowerCase()).sort().join(',')}`;
+function cacheKey(apiKey: string): string {
+  // Cache public catalog data per credential fingerprint. This keeps a valid
+  // profile's in-memory result from masking another profile's auth failure,
+  // while the raw API key never appears in memory keys or logs.
+  const fingerprint = createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
+  return `gemini:prebuilt:all-english:${fingerprint}`;
 }
 
 function isEntry(value: unknown): value is GeminiVoiceCatalogEntry {
@@ -89,7 +102,6 @@ function normalizeSnapshot(value: unknown): GeminiVoiceCatalogSnapshot | null {
   const voices = snapshot.voices.filter(isEntry);
   if (!voices.length) return null;
   const languageCodes = snapshot.languageCodes.filter((code): code is string => typeof code === 'string' && code.trim().length > 0);
-  if (!languageCodes.length) return null;
   return {
     version: SNAPSHOT_VERSION,
     catalogVersion: catalogVersionValue,
@@ -175,14 +187,28 @@ export function getLegacyGeminiFeaturedVoiceFallback(): GeminiVoiceCatalogEntry[
   }));
 }
 
-function resolvedFromSnapshot(snapshot: GeminiVoiceCatalogSnapshot, source: 'cache' | 'snapshot'): ResolvedGeminiVoiceCatalog {
+function resolvedFromSnapshot(
+  snapshot: GeminiVoiceCatalogSnapshot,
+  source: 'cache' | 'snapshot',
+  statusNotice?: GeminiVoiceCatalogStatusNotice,
+): ResolvedGeminiVoiceCatalog {
   return {
     source,
     fetchedAt: snapshot.fetchedAt,
     catalogVersion: snapshot.catalogVersion,
     voices: snapshot.voices,
     languageCodes: snapshot.languageCodes,
+    ...(statusNotice ? { statusNotice } : {}),
   };
+}
+
+function statusNoticeFor(error: unknown): GeminiVoiceCatalogStatusNotice {
+  if (error instanceof GeminiVoiceCatalogApiError) {
+    if (error.statusCode === 401) return { code: 'authentication', message: 'Gemini authentication failed. Check this profile?s API key.' };
+    if (error.statusCode === 403) return { code: 'permission', message: 'Gemini denied access to the Voice Library for this API key.' };
+    if (error.statusCode === 429) return { code: 'rate-limit', message: 'Gemini is rate-limiting Voice Library refreshes. Cached voices remain available.', ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}) };
+  }
+  return { code: 'unavailable', message: 'Gemini Voice Library refresh is temporarily unavailable. Cached voices remain available when possible.' };
 }
 
 /**
@@ -193,8 +219,10 @@ export async function resolveGeminiPrebuiltVoiceCatalog(
   options: ResolveGeminiVoiceCatalogOptions,
 ): Promise<ResolvedGeminiVoiceCatalog> {
   const now = options.now ?? Date.now;
-  const requestedLanguages = options.languageCodes ?? ['en-US', 'en-GB'];
-  const key = cacheKey(requestedLanguages);
+  // Voice retrieval is deliberately one all-English scope. Legacy locale
+  // options are ignored so separate callers cannot fragment the catalog.
+  const requestedLanguages: readonly string[] = [];
+  const key = cacheKey(options.apiKey);
   const cached = processCache.get(key);
   if (cached && cached.expiresAt > now()) return { ...cached.value, source: 'cache' };
 
@@ -215,11 +243,12 @@ export async function resolveGeminiPrebuiltVoiceCatalog(
       // A live catalog remains safe to serve if durable cache persistence is briefly unavailable.
     }
     return resolved;
-  } catch {
+  } catch (error) {
+    const statusNotice = statusNoticeFor(error);
     try {
       const snapshot = await readSnapshot();
       if (snapshot) {
-        const resolved = resolvedFromSnapshot(snapshot, 'snapshot');
+        const resolved = resolvedFromSnapshot(snapshot, 'snapshot', statusNotice);
         processCache.set(key, { expiresAt: now() + Math.min(GEMINI_VOICE_CATALOG_CACHE_TTL_MS, 5 * 60 * 1_000), value: resolved });
         return resolved;
       }
@@ -233,6 +262,7 @@ export async function resolveGeminiPrebuiltVoiceCatalog(
       catalogVersion: catalogVersion(voices),
       voices,
       languageCodes: [...requestedLanguages],
+      statusNotice,
     };
   }
 }

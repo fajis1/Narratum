@@ -4,6 +4,7 @@ import {
   validateSmartAudioOutput,
 } from '@/lib/shared/smart-audio-cleanup';
 import { KOKORO_DEFAULT_VOICES } from '@/lib/shared/tts-provider-catalog';
+import { isSafeGeminiVoiceId } from '@/lib/shared/gemini-voice-catalog';
 import type {
   DramaCharacterDirection,
   SavedGeminiVoiceAssignment,
@@ -91,12 +92,47 @@ function normalizedTraits(value: unknown): SmartAudioCastingTraits | null {
   return { ...(genderPresentation ? { genderPresentation } : {}), ...(ageBand ? { ageBand } : {}), ...(pitchPreference ? { pitchPreference } : {}), ...(temperament?.length ? { temperament } : {}), ...(vocalTraits?.length ? { vocalTraits } : {}), ...(accentHint !== undefined ? { accentHint } : {}) };
 }
 
+function normalizedCatalogSnapshot(value: unknown): SavedGeminiVoiceAssignment['catalogSnapshot'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const boundedText = (field: string, maximum = 240): string | undefined => (
+    typeof source[field] === 'string' && source[field].trim()
+      ? source[field].trim().slice(0, maximum)
+      : undefined
+  );
+  const gender = typeof source.gender === 'string' && CASTING_GENDERS.has(source.gender.trim().toLowerCase())
+    ? source.gender.trim().toLowerCase() as SmartAudioCastingTraits['genderPresentation']
+    : undefined;
+  const pitch = typeof source.pitch === 'string' && CASTING_PITCHES.has(source.pitch.trim().toLowerCase())
+    ? source.pitch.trim().toLowerCase() as SmartAudioCastingTraits['pitchPreference']
+    : undefined;
+  const snapshot = {
+    ...(boundedText('displayName') ? { displayName: boundedText('displayName') } : {}),
+    ...(boundedText('languageCode', 32) ? { languageCode: boundedText('languageCode', 32) } : {}),
+    ...(boundedText('accent') ? { accent: boundedText('accent') } : {}),
+    ...(gender ? { gender } : {}),
+    ...(pitch ? { pitch } : {}),
+    ...(boundedText('persona', 500) ? { persona: boundedText('persona', 500) } : {}),
+    ...(boundedText('context', 500) ? { context: boundedText('context', 500) } : {}),
+    ...(boundedText('description', 1_000) ? { description: boundedText('description', 1_000) } : {}),
+  };
+  return Object.keys(snapshot).length ? snapshot : undefined;
+}
+
 function normalizedVoiceAssignment(value: unknown, voiceId: string | null): SavedGeminiVoiceAssignment | null {
   if (!voiceId || !value || typeof value !== 'object' || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   if (source.provider !== 'gemini' || source.voiceId !== voiceId || typeof source.assignedAt !== 'number' || !Number.isFinite(source.assignedAt)) return null;
   if (source.assignmentSource !== 'user' && source.assignmentSource !== 'prescan-recommendation' && source.assignmentSource !== 'auto-assignment') return null;
-  return { provider: 'gemini', voiceId, assignedAt: source.assignedAt, assignmentSource: source.assignmentSource, ...(typeof source.reason === 'string' && source.reason.trim() ? { reason: source.reason.trim().slice(0, 500) } : {}) };
+  const catalogSnapshot = normalizedCatalogSnapshot(source.catalogSnapshot ?? source.catalog_snapshot);
+  return {
+    provider: 'gemini',
+    voiceId,
+    assignedAt: source.assignedAt,
+    assignmentSource: source.assignmentSource,
+    ...(catalogSnapshot ? { catalogSnapshot } : {}),
+    ...(typeof source.reason === 'string' && source.reason.trim() ? { reason: source.reason.trim().slice(0, 500) } : {}),
+  };
 }
 
 /**
@@ -168,7 +204,7 @@ function characterEntry(
   const name = normalizedName(source.name);
   if (!name) return null;
   const voiceId = typeof source.voiceId === 'string'
-    && (validVoiceSet.has(source.voiceId) || (preserveSafeVoiceIds && /^[A-Za-z0-9_.-]{1,128}$/u.test(source.voiceId)))
+    && (validVoiceSet.has(source.voiceId) || (preserveSafeVoiceIds && isSafeGeminiVoiceId(source.voiceId)))
     ? source.voiceId
     : null;
   const aliasFor = normalizedName(source.aliasFor) || null;
@@ -313,17 +349,23 @@ export function getCharacterMapReadiness(value: unknown, options: CharacterMapRe
   errors: string[];
 } {
   const voiceSet = options.validVoiceSet ?? KOKORO_CHARACTER_VOICE_SET;
-  const map = normalizeSmartAudioCharacterMap(value, { validVoiceSet: voiceSet });
+  const isAssignableVoice = (voiceId: string | null | undefined) => Boolean(voiceId && (
+    voiceSet.has(voiceId) || (options.preserveSafeVoiceIds && isSafeGeminiVoiceId(voiceId))
+  ));
+  const map = normalizeSmartAudioCharacterMap(value, {
+    validVoiceSet: voiceSet,
+    preserveSafeVoiceIds: options.preserveSafeVoiceIds,
+  });
   if (!map) return { ready: false, map: null, unassigned: [], unassignedMain: [], unassignedMinor: [], errors: ['No character scan is available.'] };
   const primary = Object.values(map.entries).filter((entry) => !entry.aliasFor);
   const unassigned = primary
-    .filter((entry) => !entry.voiceId || !voiceSet.has(entry.voiceId))
+    .filter((entry) => !isAssignableVoice(entry.voiceId))
     .map((entry) => entry.name);
   const unassignedMain = primary
-    .filter((entry) => (entry.name.toLocaleLowerCase() === 'narrator' || entry.importance === 'main') && (!entry.voiceId || !voiceSet.has(entry.voiceId)))
+    .filter((entry) => (entry.name.toLocaleLowerCase() === 'narrator' || entry.importance === 'main') && !isAssignableVoice(entry.voiceId))
     .map((entry) => entry.name);
   const unassignedMinor = primary
-    .filter((entry) => entry.name.toLocaleLowerCase() !== 'narrator' && entry.importance !== 'main' && (!entry.voiceId || !voiceSet.has(entry.voiceId)))
+    .filter((entry) => entry.name.toLocaleLowerCase() !== 'narrator' && entry.importance !== 'main' && !isAssignableVoice(entry.voiceId))
     .map((entry) => entry.name);
   const errors: string[] = [];
   if (!primary.some((entry) => entry.name.toLocaleLowerCase() === 'narrator')) {

@@ -19,8 +19,10 @@ const catalog = {
 };
 
 describe('Gemini catalog-aware cast helpers', () => {
-  it('preserves a safe stored dynamic voice ID while catalog availability is being resolved', () => {
+  it('preserves safe stored dynamic voice IDs while catalog availability is being resolved', () => {
+    const extendedId = `voice-${'x'.repeat(180)}`;
     expect(normalizeGeminiTtsCharacterMap(completeMap('new-gemini-voice'))?.entries.Narrator.voiceId).toBe('new-gemini-voice');
+    expect(normalizeGeminiTtsCharacterMap(completeMap(extendedId))?.entries.Narrator.voiceId).toBe(extendedId);
     expect(normalizeGeminiTtsCharacterMap(completeMap('bad voice id!'))?.entries.Narrator.voiceId).toBeNull();
   });
 
@@ -32,5 +34,13 @@ describe('Gemini catalog-aware cast helpers', () => {
     const invalid = await getGeminiTtsCharacterMapReadiness({ value: completeMap('unknown-voice'), apiKey: 'not-used', resolveCatalog: async () => catalog });
     expect(invalid.ready).toBe(false);
     expect(invalid.unassignedMain).toEqual(['Narrator']);
+
+    const fallback = await getGeminiTtsCharacterMapReadiness({
+      value: completeMap('saved-dynamic-voice'),
+      apiKey: 'not-used',
+      resolveCatalog: async () => ({ ...catalog, source: 'legacy-fallback' as const, voices: [] }),
+    });
+    expect(fallback.ready).toBe(true);
+    expect(fallback.map?.entries.Narrator.voiceId).toBe('saved-dynamic-voice');
   });
 });

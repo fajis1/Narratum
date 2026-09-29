@@ -61,7 +61,7 @@ describe('Gemini Voices API client', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  it('uses the fixed endpoint, prebuilt and English filters, and server API-key header', async () => {
+  it('uses the fixed endpoint and prebuilt upstream filter, then keeps all English variants locally', async () => {
     let capturedUrl = '';
     let capturedInit: RequestInit | undefined;
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init: RequestInit) => {
@@ -75,7 +75,7 @@ describe('Gemini Voices API client', () => {
     expect(`${url.origin}${url.pathname}`).toBe(GEMINI_VOICE_CATALOG_ENDPOINT);
     expect(url.searchParams.get('page_size')).toBe('1000');
     expect(url.searchParams.getAll('type')).toEqual(['prebuilt']);
-    expect(url.searchParams.getAll('language_code')).toEqual(['en-US', 'en-GB']);
+    expect(url.searchParams.getAll('language_code')).toEqual([]);
     expect(capturedInit).toMatchObject({ method: 'GET', headers: { 'x-goog-api-key': apiKey } });
     expect(result.voices.map((entry) => entry.id)).toEqual(['Kore']);
   });
@@ -85,17 +85,19 @@ describe('Gemini Voices API client', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
       urls.push(url);
       return Promise.resolve(urls.length === 1
-        ? response({ voices: [voice('Puck'), voice('Kore'), voice('Custom', { type: 'prompted' })], next_page_token: 'page-2' })
-        : response({ voices: [voice('Kore', { description: 'duplicate' }), voice('Charon')], next_page_token: '' }));
+        ? response({ voices: [voice('Puck', { language_code: 'en-AU' }), voice('Kore'), voice('French', { language_code: 'fr-FR' }), voice('Custom', { type: 'prompted' })], next_page_token: 'page-2' })
+        : response({ voices: [voice('Kore', { description: 'duplicate' }), voice('Charon', { language_code: 'en' }), { id: 'bad', type: 'prebuilt' }], next_page_token: '' }));
     }));
 
     const result = await fetchGeminiPrebuiltVoiceCatalog({ apiKey, languageCodes: ['en-GB', 'en-US'] });
     expect(result.pageCount).toBe(2);
     expect(result.voices.map((entry) => entry.id)).toEqual(['Charon', 'Kore', 'Puck']);
+    expect(result.voices.map((entry) => entry.languageCode)).toEqual(['en', 'en-US', 'en-AU']);
     const first = new URL(urls[0]);
     const second = new URL(urls[1]);
     expect(second.searchParams.get('page_token')).toBe('page-2');
-    expect(second.searchParams.getAll('language_code')).toEqual(first.searchParams.getAll('language_code'));
+    expect(second.searchParams.getAll('language_code')).toEqual([]);
+    expect(first.searchParams.getAll('language_code')).toEqual([]);
     expect(second.searchParams.getAll('type')).toEqual(first.searchParams.getAll('type'));
   });
 

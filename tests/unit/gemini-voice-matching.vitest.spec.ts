@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GeminiVoiceCatalogEntry } from '@/lib/shared/gemini-voice-catalog';
-import { recommendAnotherGeminiVoice, recommendGeminiVoices } from '@/lib/shared/gemini-voice-matching';
+import { autoAssignGeminiMinorVoices, recommendAnotherGeminiVoice, recommendGeminiVoices } from '@/lib/shared/gemini-voice-matching';
 
 const voice = (overrides: Partial<GeminiVoiceCatalogEntry>): GeminiVoiceCatalogEntry => ({
   id: 'default', displayName: 'Default', languageCode: 'en-US', regionCode: null,
@@ -47,5 +47,23 @@ describe('recommendGeminiVoices', () => {
     expect(recommendGeminiVoices({ character: { name: 'Alice', importance: 'main', description: '', voiceAssignment: { provider: 'gemini', voiceId: 'Deep', assignedAt: 0, assignmentSource: 'user' } }, voices: catalog })).toEqual([]);
     const result = recommendGeminiVoices({ character: { name: 'Unknown', importance: 'minor', description: '' }, voices: catalog });
     expect(result.map((candidate) => candidate.voice.displayName)).toEqual(['Deep', 'Narrator', 'Amber', 'Bright']);
+  });
+
+  it('uses metadata recommendations for unassigned minors without replacing manual choices', () => {
+    const result = autoAssignGeminiMinorVoices({
+      assignedAt: 123,
+      voices: catalog,
+      characterMap: {
+        schemaVersion: 1, status: 'partial', scannedAt: 1, entries: {
+          Narrator: { name: 'Narrator', description: '', sampleText: '', importance: 'main', aliasFor: null, voiceId: 'Narrator' },
+          Manual: { name: 'Manual', description: '', sampleText: '', importance: 'minor', aliasFor: null, voiceId: 'Deep', voiceAssignment: { provider: 'gemini', voiceId: 'Deep', assignedAt: 1, assignmentSource: 'user' } },
+          Alice: { name: 'Alice', description: '', sampleText: '', importance: 'minor', aliasFor: null, voiceId: null, castingTraits: { genderPresentation: 'female', pitchPreference: 'high' } },
+        },
+      },
+    });
+    expect(result.updatedMap.entries.Manual.voiceId).toBe('Deep');
+    expect(result.updatedMap.entries.Manual.voiceAssignment?.assignmentSource).toBe('user');
+    expect(result.updatedMap.entries.Alice.voiceId).toBe('Amber');
+    expect(result.updatedMap.entries.Alice.voiceAssignment).toMatchObject({ assignedAt: 123, assignmentSource: 'auto-assignment', catalogSnapshot: { displayName: 'Amber' } });
   });
 });

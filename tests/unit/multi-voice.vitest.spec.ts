@@ -757,13 +757,23 @@ describe('Dynamic Voice Library Part 3 casting metadata', () => {
         Narrator: {
           name: 'Narrator', description: 'Narration', sampleText: 'A quiet evening.', voiceId: 'Kore', aliasFor: null,
           casting_traits: { gender_presentation: 'neutral', age_band: 'unknown', pitch_preference: 'medium', temperament: ['calm'], vocal_traits: ['clear'], accent_hint: null },
-          voice_assignment: { provider: 'gemini', voiceId: 'Kore', assignedAt: 456, assignmentSource: 'user', reason: 'Narrator choice' },
+          voice_assignment: {
+            provider: 'gemini', voiceId: 'Kore', assignedAt: 456, assignmentSource: 'user', reason: 'Narrator choice',
+            catalog_snapshot: {
+              displayName: 'Kore', languageCode: 'en-US', accent: 'American', gender: 'neutral', pitch: 'medium',
+              persona: 'Narrator', context: 'Audiobook', description: 'Clear and warm.', privateProviderField: 'discard me',
+            },
+          },
         },
       },
     }, { validVoiceSet: new Set(['Kore']) });
 
     expect(map?.entries.Narrator.castingTraits).toEqual({ genderPresentation: 'neutral', ageBand: 'unknown', pitchPreference: 'medium', temperament: ['calm'], vocalTraits: ['clear'], accentHint: null });
-    expect(map?.entries.Narrator.voiceAssignment).toMatchObject({ provider: 'gemini', voiceId: 'Kore', assignmentSource: 'user' });
+    expect(map?.entries.Narrator.voiceAssignment).toMatchObject({
+      provider: 'gemini', voiceId: 'Kore', assignmentSource: 'user',
+      catalogSnapshot: { displayName: 'Kore', languageCode: 'en-US', gender: 'neutral', pitch: 'medium', persona: 'Narrator' },
+    });
+    expect(map?.entries.Narrator.voiceAssignment?.catalogSnapshot).not.toHaveProperty('privateProviderField');
   });
 
   test('keeps v1 maps valid and carries saved traits and manual assignments through a rescan', () => {

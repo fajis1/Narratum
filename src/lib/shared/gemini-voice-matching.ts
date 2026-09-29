@@ -1,5 +1,6 @@
 import type { GeminiVoiceCatalogEntry } from './gemini-voice-catalog';
-import type { SmartAudioCharacterEntry } from '@/types/document-settings';
+import type { SmartAudioCharacterEntry, SmartAudioCharacterMap } from '@/types/document-settings';
+import { getCharacterMapReadiness } from './multi-voice';
 
 export interface GeminiVoiceRecommendation {
   voice: GeminiVoiceCatalogEntry;
@@ -72,4 +73,112 @@ export function recommendGeminiVoices(input: RecommendGeminiVoicesInput): Gemini
 /** Returns the next best option after an already suggested or selected voice. */
 export function recommendAnotherGeminiVoice(input: RecommendGeminiVoicesInput, excludeVoiceIds: ReadonlySet<string>): GeminiVoiceRecommendation | null {
   return recommendGeminiVoices(input).find((candidate) => !excludeVoiceIds.has(candidate.voice.id)) ?? null;
+}
+
+
+export interface AutoAssignGeminiMinorVoicesInput {
+  characterMap: SmartAudioCharacterMap;
+  voices: readonly GeminiVoiceCatalogEntry[];
+  targetCharacters?: readonly string[];
+  assignedAt?: number;
+}
+
+export interface AutoAssignGeminiMinorVoicesResult {
+  updatedMap: SmartAudioCharacterMap;
+  assigned: Array<{ characterName: string; voiceId: string; reason: string }>;
+  protectedVoices: string[];
+}
+
+function catalogSnapshot(voice: GeminiVoiceCatalogEntry): NonNullable<SmartAudioCharacterEntry['voiceAssignment']>['catalogSnapshot'] {
+  return {
+    displayName: voice.displayName,
+    ...(voice.languageCode ? { languageCode: voice.languageCode } : {}),
+    ...(voice.accent ? { accent: voice.accent } : {}),
+    gender: voice.gender,
+    pitch: voice.pitch,
+    ...(voice.persona ? { persona: voice.persona } : {}),
+    ...(voice.context ? { context: voice.context } : {}),
+    ...(voice.description ? { description: voice.description } : {}),
+  };
+}
+
+/**
+ * Deterministically assigns only presently-unassigned minor roles from the
+ * live Gemini catalog. Existing manual/main assignments always win.
+ */
+export function autoAssignGeminiMinorVoices(
+  input: AutoAssignGeminiMinorVoicesInput,
+): AutoAssignGeminiMinorVoicesResult {
+  const catalog = input.voices.filter((voice) => voice.type === 'prebuilt');
+  const validVoiceSet = new Set(catalog.map((voice) => voice.id));
+  const entries = Object.fromEntries(
+    Object.entries(input.characterMap.entries).map(([name, entry]) => [name, { ...entry }]),
+  );
+  const targetNames = input.targetCharacters
+    ? new Set(input.targetCharacters.map((name) => name.toLocaleLowerCase()))
+    : null;
+  const narrator = Object.values(entries).find((entry) => !entry.aliasFor && entry.name.toLocaleLowerCase() === 'narrator');
+  const narratorVoiceId = narrator?.voiceId ?? null;
+  const usedVoiceIds = new Set(
+    Object.values(entries)
+      .filter((entry) => !entry.aliasFor && entry.voiceId && validVoiceSet.has(entry.voiceId))
+      .map((entry) => entry.voiceId as string),
+  );
+  const protectedVoices = new Set<string>();
+  for (const entry of Object.values(entries)) {
+    if (entry.aliasFor || !entry.voiceId || !validVoiceSet.has(entry.voiceId)) continue;
+    if (entry.name.toLocaleLowerCase() === 'narrator' || entry.importance === 'main' || entry.voiceAssignment?.assignmentSource === 'user') {
+      protectedVoices.add(entry.voiceId);
+    }
+  }
+
+  const assigned: Array<{ characterName: string; voiceId: string; reason: string }> = [];
+  for (const entry of Object.values(entries)) {
+    if (entry.aliasFor || entry.name.toLocaleLowerCase() === 'narrator' || entry.importance === 'main') continue;
+    if (targetNames && !targetNames.has(entry.name.toLocaleLowerCase())) continue;
+    if (entry.voiceId && validVoiceSet.has(entry.voiceId)) continue;
+
+    const recommendations = recommendGeminiVoices({
+      character: entry,
+      voices: catalog,
+      usedVoiceIds,
+      narratorVoiceId,
+    });
+    const choice = recommendations.find((candidate) => !usedVoiceIds.has(candidate.voice.id))
+      ?? recommendations[0];
+    if (!choice) continue;
+
+    entry.voiceId = choice.voice.id;
+    entry.voiceAssignment = {
+      provider: 'gemini',
+      voiceId: choice.voice.id,
+      assignedAt: input.assignedAt ?? Date.now(),
+      assignmentSource: 'auto-assignment',
+      catalogSnapshot: catalogSnapshot(choice.voice),
+      reason: choice.reasons.length
+        ? `Gemini catalog recommendation: ${choice.reasons.join('; ')}.`
+        : 'Gemini catalog recommendation with least-conflicting available voice.',
+    };
+    usedVoiceIds.add(choice.voice.id);
+    assigned.push({
+      characterName: entry.name,
+      voiceId: choice.voice.id,
+      reason: entry.voiceAssignment.reason || 'Gemini catalog recommendation.',
+    });
+  }
+
+  const candidateMap: SmartAudioCharacterMap = {
+    ...input.characterMap,
+    status: 'complete',
+    entries,
+  };
+  delete candidateMap.needsRescan;
+  const readiness = getCharacterMapReadiness(candidateMap, { validVoiceSet });
+  const updatedMap: SmartAudioCharacterMap = {
+    ...input.characterMap,
+    status: readiness.ready ? 'complete' : input.characterMap.status,
+    entries,
+  };
+  if (readiness.ready) delete updatedMap.needsRescan;
+  return { updatedMap, assigned, protectedVoices: [...protectedVoices] };
 }

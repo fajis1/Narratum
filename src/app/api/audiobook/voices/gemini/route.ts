@@ -36,6 +36,7 @@ export async function GET(request: NextRequest) {
       fetchedAt: catalog.fetchedAt,
       catalogVersion: catalog.catalogVersion,
       voices: catalog.voices,
+      ...(catalog.statusNotice ? { statusNotice: catalog.statusNotice } : {}),
     });
   } catch (error) {
     return errorResponse(error, {
