@@ -110,6 +110,8 @@ export interface NormalizeCharacterMapOptions {
    * Defaults to KOKORO_CHARACTER_VOICE_SET when not provided.
    */
   validVoiceSet?: ReadonlySet<string>;
+  /** Preserve syntactically safe provider voice IDs until a live catalog is available. */
+  preserveSafeVoiceIds?: boolean;
 }
 
 /**
@@ -159,12 +161,14 @@ function normalizeCloudDirection(value: unknown): DramaCharacterDirection | null
 function characterEntry(
   value: unknown,
   validVoiceSet: ReadonlySet<string>,
+  preserveSafeVoiceIds = false,
 ): SmartAudioCharacterEntry | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   const name = normalizedName(source.name);
   if (!name) return null;
-  const voiceId = typeof source.voiceId === 'string' && validVoiceSet.has(source.voiceId)
+  const voiceId = typeof source.voiceId === 'string'
+    && (validVoiceSet.has(source.voiceId) || (preserveSafeVoiceIds && /^[A-Za-z0-9_.-]{1,128}$/u.test(source.voiceId)))
     ? source.voiceId
     : null;
   const aliasFor = normalizedName(source.aliasFor) || null;
@@ -198,7 +202,7 @@ export function normalizeSmartAudioCharacterMap(
   const entries: Record<string, SmartAudioCharacterEntry> = {};
   const canonicalNames = new Set<string>();
   for (const rawEntry of Object.values(source.entries as Record<string, unknown>)) {
-    const entry = characterEntry(rawEntry, voiceSet);
+    const entry = characterEntry(rawEntry, voiceSet, options.preserveSafeVoiceIds);
     const canonicalName = entry?.name.toLocaleLowerCase() || '';
     if (!entry || canonicalNames.has(canonicalName)) continue;
     canonicalNames.add(canonicalName);
@@ -296,6 +300,8 @@ export function estimateSpeakerSegmentAtTime(
 export interface CharacterMapReadinessOptions {
   /** Voice set to validate assigned voiceIds against. Defaults to the Kokoro character voice set. */
   validVoiceSet?: ReadonlySet<string>;
+  /** Preserve syntactically safe provider voice IDs until a live catalog is available. */
+  preserveSafeVoiceIds?: boolean;
 }
 
 export function getCharacterMapReadiness(value: unknown, options: CharacterMapReadinessOptions = {}): {
@@ -370,6 +376,8 @@ export function mergeExtractedCharacters(input: {
   sourceFingerprint: string;
   scannedAt?: number;
   validVoiceSet?: ReadonlySet<string>;
+  /** Preserve syntactically safe provider voice IDs until a live catalog is available. */
+  preserveSafeVoiceIds?: boolean;
 }): SmartAudioCharacterMap {
   const previous = normalizeSmartAudioCharacterMap(input.previous, { validVoiceSet: input.validVoiceSet });
   const previousByName = new Map(
@@ -619,6 +627,8 @@ export interface AutoAssignMinorVoicesOptions {
    * Defaults to KOKORO_CHARACTER_VOICE_SET when not provided.
    */
   validVoiceSet?: ReadonlySet<string>;
+  /** Preserve syntactically safe provider voice IDs until a live catalog is available. */
+  preserveSafeVoiceIds?: boolean;
 }
 
 export interface AutoAssignMinorVoicesResult {
