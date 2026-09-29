@@ -1,4 +1,4 @@
-import type { DramaDirectorSegment, DramaAudioTag } from '@/lib/shared/drama-director-schema';
+import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import { buildGeminiDramaTtsRequest } from './drama-cloud-request';
 import { GEMINI_TTS_FALLBACK_MODELS, GEMINI_TTS_MODEL, GeminiTtsApiError, GeminiTtsQuotaExhaustedError, GeminiTtsTransportError, isGeminiTtsModel, synthesizeWithGeminiTts } from './gemini-tts-client';
 import type { GeminiTtsModel, GeminiTtsSynthesisOptions, GeminiTtsSynthesisResult } from './gemini-tts-client';
@@ -75,7 +75,7 @@ export function splitDramaTextByUtf8(text: string, maxBytes: number): string[] {
 }
 
 /** One-shot cues occur once; style affects each chunk; a pause ends the segment. */
-export function annotateDramaChunks(chunks: readonly string[], tags: readonly DramaAudioTag[]): string[] {
+export function annotateDramaChunks(chunks: readonly string[], tags: readonly string[]): string[] {
   const starts = tags.filter((tag) => oneShot.has(tag)).map((tag) => `[${tag}]`).join(' ');
   const styles = tags.filter((tag) => style.has(tag)).map((tag) => `[${tag}]`).join(' ');
   const ends = tags.filter((tag) => pause.has(tag)).map((tag) => `[${tag}]`).join(' ');
@@ -85,7 +85,7 @@ export function annotateDramaChunks(chunks: readonly string[], tags: readonly Dr
   ].filter(Boolean).join(' '));
 }
 
-function tagReserveBytes(tags: readonly DramaAudioTag[]): number {
+function tagReserveBytes(tags: readonly string[]): number {
   return tags.reduce((sum, tag) => sum + measureUtf8Bytes(`[${tag}] `), 0) + 4;
 }
 

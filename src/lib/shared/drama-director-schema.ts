@@ -91,7 +91,8 @@ export interface DramaDirectorPerformance {
   pace: DramaPace;
   energy: DramaEnergy;
   intensity: DramaIntensity;
-  tags: DramaAudioTag[];
+  /** Gemini 3.8 point events; sustained delivery belongs in style metadata. */
+  tags: DramaInlineVocalEvent[];
   nuance?: string;
 }
 
@@ -111,4 +112,7 @@ export const DRAMA_INLINE_VOCAL_EVENTS = [
   'cry', 'groan', 'sob', 'short pause', 'long pause',
 ] as const;
 export type DramaInlineVocalEvent = (typeof DRAMA_INLINE_VOCAL_EVENTS)[number];
+/** Only pauses are affected by pause-style policy; vocal cues remain expressive events. */
+export const DRAMA_INLINE_PAUSE_EVENTS = ['short pause', 'long pause'] as const;
+export const DRAMA_INLINE_PAUSE_EVENT_SET = new Set<string>(DRAMA_INLINE_PAUSE_EVENTS);
 export const DRAMA_INLINE_VOCAL_EVENT_SET = new Set<string>(DRAMA_INLINE_VOCAL_EVENTS);

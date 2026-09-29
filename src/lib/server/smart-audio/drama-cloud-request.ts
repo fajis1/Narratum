@@ -1,5 +1,5 @@
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
-import { DRAMA_INLINE_VOCAL_EVENT_SET } from '@/lib/shared/drama-director-schema';
+import { DRAMA_INLINE_PAUSE_EVENT_SET, DRAMA_INLINE_VOCAL_EVENT_SET } from '@/lib/shared/drama-director-schema';
 import { buildGeminiTtsRequest, GEMINI_TTS_MAX_STYLE_BYTES, GEMINI_TTS_MODEL } from './gemini-tts-client';
 import type { GeminiTtsModel } from './gemini-tts-client';
 import type { SmartAudioCharacterMap, SmartAudioCharacterEntry } from '@/types/document-settings';
@@ -176,7 +176,9 @@ export function buildGemini38SpeechStyle(
 /** Render only approved point events. Source text itself is never modified or persisted. */
 export function renderGeminiInlineEvents(sourceText: string, events: readonly string[]): string {
   const approved = events.filter((event) => DRAMA_INLINE_VOCAL_EVENT_SET.has(event));
-  return `${approved.map((event) => `<${event}>`).join('')}${sourceText}`;
+  const before = approved.filter((event) => !DRAMA_INLINE_PAUSE_EVENT_SET.has(event));
+  const after = approved.filter((event) => DRAMA_INLINE_PAUSE_EVENT_SET.has(event));
+  return `${before.map((event) => `<${event}>`).join('')}${sourceText}${after.map((event) => `<${event}>`).join('')}`;
 }
 
 /** Keeps source text unchanged for providers that do not support Gemini inline events. */

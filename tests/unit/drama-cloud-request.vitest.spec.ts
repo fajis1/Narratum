@@ -106,7 +106,7 @@ describe('Gemini 3.8 Drama request compiler', () => {
 
   it('allows only documented angle-bracket point events and never serializes styles as tags', () => {
     const rendered = renderGeminiInlineEvents('Careful.', ['sigh', 'whispering', 'short pause']);
-    expect(rendered).toBe('<sigh><short pause>Careful.');
+    expect(rendered).toBe('<sigh>Careful.<short pause>');
     expect(rendered).not.toContain('whispering');
     expect(stripGeneratedGeminiInlineEvents(rendered)).toBe('Careful.');
   });

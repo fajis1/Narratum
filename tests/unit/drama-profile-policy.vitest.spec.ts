@@ -43,6 +43,16 @@ describe('Drama profile policy enforcement', () => {
     expect(result[0].performance.tags).toEqual(['sigh']);
   });
 
+  test('minimal pause policy preserves vocal cues while removing pauses', () => {
+    const result = validateDramaDirectorOutput({
+      sourceText: output.segments[0].text,
+      castNames: ['Narrator'],
+      output: { segments: [{ ...output.segments[0], performance: { ...output.segments[0].performance, tags: ['sigh', 'short pause'] } }] },
+      policy: buildDramaDirectorPolicy({ audioTagUsage: 'balanced', dramaticPauses: 'minimal' }),
+    });
+    expect(result[0].performance.tags).toEqual(['sigh']);
+  });
+
   test('natural pause policy removes long pauses while preserving source text', () => {
     const result = validateDramaDirectorOutput({
       sourceText: 'A door opened.',

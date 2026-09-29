@@ -1,6 +1,6 @@
 import examples from './drama-director-examples.json';
 import {
-  DRAMA_DELIVERY_STYLES, DRAMA_ENERGY, DRAMA_INLINE_VOCAL_EVENTS,
+  DRAMA_DELIVERY_STYLES, DRAMA_ENERGY, DRAMA_INLINE_PAUSE_EVENT_SET, DRAMA_INLINE_VOCAL_EVENTS,
   DRAMA_INTENSITY, DRAMA_PACING, DRAMA_PRIMARY_EMOTIONS,
   DRAMA_SECONDARY_EMOTIONS, DRAMA_SOCIAL_INTENTS, DRAMA_UTTERANCE_TYPES,
 } from '@/lib/shared/drama-director-schema';
@@ -27,7 +27,7 @@ function applyPolicyToTags(
 ): DramaDirectorSegment['performance']['tags'] {
   if (!policy || policy.tags.usage === 'expressive') return tags.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_INLINE_VOCAL_EVENTS.includes(tag as never));
   if (policy.tags.usage === 'off') return [];
-  const pauseTags = new Set<string>(DRAMA_INLINE_VOCAL_EVENTS);
+  const pauseTags = DRAMA_INLINE_PAUSE_EVENT_SET;
   const filtered = tags.filter((tag) => policy.tags.pauseStyle === 'cinematic' || !pauseTags.has(tag) || policy.tags.pauseStyle === 'natural' && tag !== 'long pause');
   const limit = policy.tags.usage === 'conservative' ? 1 : 2;
   return filtered.filter((tag): tag is DramaDirectorSegment['performance']['tags'][number] => DRAMA_INLINE_VOCAL_EVENTS.includes(tag as never)).slice(0, limit);
@@ -120,7 +120,7 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
     'Partition the entire source text into ordered, contiguous segments. The concatenation of every segment.text must equal the source exactly, including spaces, punctuation, and newlines. Never rewrite, add, omit, or normalize spoken text.',
     'Use only cast names supplied below for speaker. Never choose or emit a voiceId.',
     'Formatting is evidence, not proof of utterance type. Internal thought and squad-link may both be italicized; use narrative context. Squad-link uses the character’s natural voice, never an automatic whisper.',
-    'Authority is not loudness. High intensity can be quiet and low energy. Performance can change within a thought; split at the exact source boundary when needed. Default to tags: []; use tags only for localized effects.',
+    'Authority is not loudness. High intensity can be quiet and low energy. Performance can change within a thought; split at the exact source boundary when needed. Default to tags: []; use vocal cues only for localized effects. A pause applies after its segment text; split at the intended boundary for a pause inside a line.',
     `utteranceType: ${JSON.stringify(DRAMA_UTTERANCE_TYPES)}`,
     `primaryEmotion/secondaryEmotions: ${JSON.stringify(DRAMA_PRIMARY_EMOTIONS)}`,
     `socialIntent: ${JSON.stringify(DRAMA_SOCIAL_INTENTS)}`,
