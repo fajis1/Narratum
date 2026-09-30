@@ -163,6 +163,29 @@ describe('pronunciation repair service', () => {
     expect(mocks.insert.mock.calls[0][0].proposedText).toBe('Read [τὸ](/toʊ/) [θεῷ](/θeɪoʊ/).');
   });
 
+  test('accepts a malformed transliteration repair in round one without a correction retry', async () => {
+    const onDiagnostics = vi.fn();
+    const original = '[ha[b\u011bh\u0113m\u0101h](/b\u0259he\u026am\u0251/)';
+    const replacement = '[hab\u011bh\u0113m\u0101h](/h\u0251b\u0259he\u026am\u0251/)';
+    mocks.fetch.mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ patches: [{ id: '0', replacement }] }) }] } }],
+    }));
+
+    const result = await proposePronunciationRepair({ ...seed('Read ' + original + '.'), onDiagnostics });
+    const diagnostics = onDiagnostics.mock.calls[0][0];
+
+    expect(result.unresolvedCount).toBe(0);
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+    expect(mocks.insert.mock.calls[0][0].proposedText).toBe('Read ' + replacement + '.');
+    expect(diagnostics.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: '0', outcome: 'resolved' }),
+    ]));
+    expect(diagnostics.candidateChecks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: '0', selected: true, reasons: [], round: 1 }),
+    ]));
+    expect(diagnostics.rounds).toHaveLength(1);
+  });
+
   test('retries invalid JSON once and preserves valid dictionary patches on exhausted API failure', async () => {
     mocks.profile.pronunciations = { 'τὸ': '/toʊ/' };
     mocks.fetch.mockResolvedValue(new Response('<html>private upstream body</html>'));

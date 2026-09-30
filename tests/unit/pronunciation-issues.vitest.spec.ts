@@ -365,6 +365,30 @@ describe('targeted pronunciation scan and patches', () => {
       expect(() => applyPronunciationPatches(text, [issue], [{ id: issue.id, replacement: '[h\u0101reme\u015b-extra](/r\u025bm\u025bs/)' }])).toThrow('English');
       expect(() => assertPronunciationRepair(text, 'Changed [h\u0101reme\u015b](/h\u0251r\u025bm\u025bs/) after.')).toThrow('outside');
     });
+
+    test('preserves real manuscript whitespace when pronunciation markup is restructured', () => {
+      // Real whitespace is manuscript content. The malformed-markup path must
+      // never turn “I live” into “Ilive” while repairing pronunciation tags.
+      const live = '[I live](/la\u026av/)';
+      const liveIssue = scanPronunciationIssues(live);
+      expect(() => applyPronunciationPatches(live, liveIssue, [{ id: liveIssue[0].id, replacement: 'I [live](!/l\u026av/)' }])).not.toThrow();
+      expect(() => applyPronunciationPatches(live, liveIssue, [{ id: liveIssue[0].id, replacement: '[Ilive](/l\u026av/)' }])).toThrow('English');
+
+      const homo = '[Homo sapiens](/ho\u028amo\u028a s\u00e6pi\u025bnz/)';
+      const homoIssue = scanPronunciationIssues(homo);
+      expect(() => applyPronunciationPatches(homo, homoIssue, [{ id: homoIssue[0].id, replacement: '[Homo](/ho\u028amo\u028a/) [sapiens](/s\u00e6pi\u025bnz/)' }])).not.toThrow();
+      expect(() => applyPronunciationPatches(homo, homoIssue, [{ id: homoIssue[0].id, replacement: '[Homosapiens](/ho\u028amo\u028as\u00e6pi\u025bnz/)' }])).toThrow('English');
+    });
+
+    test('preserves hyphens and apostrophes in malformed lexical repairs', () => {
+      const hyphen = '[kol-[nepe\u0161](/n\u025bp\u025b\u0283/)';
+      const hyphenIssue = scanPronunciationIssues(hyphen);
+      expect(() => applyPronunciationPatches(hyphen, hyphenIssue, [{ id: hyphenIssue[0].id, replacement: '[kolnepe\u0161](/ko\u028aln\u025bp\u025b\u0283/)' }])).toThrow('English');
+
+      const apostrophe = "[hayt\u00f4-'[ere\u015f](/\u025br\u025bts/)";
+      const apostropheIssue = scanPronunciationIssues(apostrophe);
+      expect(() => applyPronunciationPatches(apostrophe, apostropheIssue, [{ id: apostropheIssue[0].id, replacement: '[hayt\u00f4ere\u015f](/x\u0251jto\u028a\u025br\u025bts/)' }])).toThrow('English');
+    });
   });
 
 });

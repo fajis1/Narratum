@@ -208,17 +208,17 @@ function malformedMarkupLexicalMaterial(text: string): string {
 
   // At this point only syntax belonging to an incomplete outer pronunciation
   // wrapper may remain. Keep every other character significant, including
-  // hyphens, apostrophes, elision marks, diacritics, and numbers. Whitespace
-  // is deliberately ignored because the malformed bracket can manufacture an
-  // artificial lexical boundary.
+  // hyphens, apostrophes, elision marks, diacritics, numbers, and whitespace.
+  // A malformed bracket can manufacture a parser boundary, but never a real
+  // manuscript word separator.
   return material
     .replace(/\]\(\/[^\r\n]*(?:\)|$)/gu, '')
     .replace(/[\[\]]/gu, '')
-    .replace(/\s+/gu, '')
     .normalize('NFC');
 }
 
 function isMalformedMarkupLexicallyEquivalent(issue: PronunciationIssue, replacement: string): boolean {
+  if (issue.kind !== 'formatting') return false;
   if (!MALFORMED_MARKUP_EQUIVALENCE_REASONS.test(issue.reason)) return false;
   const originalLexical = malformedMarkupLexicalMaterial(issue.text);
   // This is specifically the Latin-script transliteration case. Foreign-script
