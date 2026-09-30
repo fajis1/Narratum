@@ -193,6 +193,41 @@ function visibleEnglish(text: string): string {
   return normalizeRepairMarkup(text).replace(TAG, '$1').replace(/\[([^\]\r\n]+)\]\(!?\/[^\r\n)]*(?:\)|$)/gu, '$1').replace(/<[^>]*>/gu, '').match(/\p{Script=Latin}[\p{Script=Latin}\p{Mark}'’ʾʿʼʽʻ-]*|\p{Number}+/gu)?.join(' ') || '';
 }
 
+const MALFORMED_MARKUP_EQUIVALENCE_REASONS = /Malformed pronunciation markup|Nested pronunciation markup|Dictionary word contains markup or digits|Pronunciation markup cannot be aligned safely|Malformed pronunciation closing delimiter/iu;
+
+function malformedMarkupLexicalMaterial(text: string): string {
+  // Unwrap complete inner tags first. Broken outer brackets can make one
+  // lexical label look like several visible Latin words, but they never alter
+  // its underlying character sequence.
+  let material = normalizeRepairMarkup(text);
+  let previous: string;
+  do {
+    previous = material;
+    material = material.replace(TAG, '$1');
+  } while (material !== previous);
+
+  // At this point only syntax belonging to an incomplete outer pronunciation
+  // wrapper may remain. Keep every other character significant, including
+  // hyphens, apostrophes, elision marks, diacritics, and numbers. Whitespace
+  // is deliberately ignored because the malformed bracket can manufacture an
+  // artificial lexical boundary.
+  return material
+    .replace(/\]\(\/[^\r\n]*(?:\)|$)/gu, '')
+    .replace(/[\[\]]/gu, '')
+    .replace(/\s+/gu, '')
+    .normalize('NFC');
+}
+
+function isMalformedMarkupLexicallyEquivalent(issue: PronunciationIssue, replacement: string): boolean {
+  if (!MALFORMED_MARKUP_EQUIVALENCE_REASONS.test(issue.reason)) return false;
+  const originalLexical = malformedMarkupLexicalMaterial(issue.text);
+  // This is specifically the Latin-script transliteration case. Foreign-script
+  // nested repairs continue through source-evidence validation.
+  if (!/\p{Script=Latin}/u.test(originalLexical)) return false;
+  const replacementLexical = malformedMarkupLexicalMaterial(replacement);
+  return Boolean(originalLexical) && originalLexical === replacementLexical;
+}
+
 export type RepairValidationOptions = { sourceText?: string; allowRemaining?: boolean; allowSourceEvidenceOverride?: boolean | ((issue: PronunciationIssue) => boolean) };
 
 function visibleForeign(text: string): string {
@@ -221,9 +256,10 @@ function nestedSourceReconstruction(original: string, replacement: string, sourc
     .some(passage => ` ${words(passage).join(' ')} `.includes(` ${intended} `));
 }
 
-function assertSourceWords(original: string, replacement: string, sourceText?: string, allowSourceEvidenceOverride = false): void {
+function assertSourceWords(original: string, replacement: string, sourceText?: string, allowSourceEvidenceOverride = false, malformedMarkupEquivalent = false): void {
   if (original === replacement) return;
   if (allowSourceEvidenceOverride) return;
+  if (malformedMarkupEquivalent) return;
   // A malformed outer payload can contain more narrated words than its label.
   // Never compare just that label and accidentally authorize dropping the tail.
   if (pronunciationMarkupRegions(normalizeRepairMarkup(original)).some(region => region.nested)) {
@@ -258,8 +294,9 @@ export function applyPronunciationPatches(text: string, issues: PronunciationIss
     if (!issue || ids.has(patch.id) || typeof patch.replacement !== 'string' || patch.replacement.length > 12000) throw new Error('Invalid or duplicate repair patch.');
     ids.add(patch.id);
     if (/[<>]/u.test(patch.replacement) || /\[(?:SYSTEM|LAYOUT|OMIT|CHAPTER_TITLE)/iu.test(patch.replacement)) throw new Error('Repair must not introduce voice or processing markup.');
-    if (visibleEnglish(issue.text) !== visibleEnglish(patch.replacement) && !sourceSupportedReconstruction(issue.text, patch.replacement, options.sourceText) && !nestedSourceReconstruction(issue.text, patch.replacement, options.sourceText)) throw new Error('Repair changed unrelated English text.');
-    assertSourceWords(issue.text, patch.replacement, options.sourceText);
+    const malformedMarkupEquivalent = isMalformedMarkupLexicallyEquivalent(issue, patch.replacement);
+    if (visibleEnglish(issue.text) !== visibleEnglish(patch.replacement) && !malformedMarkupEquivalent && !sourceSupportedReconstruction(issue.text, patch.replacement, options.sourceText) && !nestedSourceReconstruction(issue.text, patch.replacement, options.sourceText)) throw new Error('Repair changed unrelated English text.');
+    assertSourceWords(issue.text, patch.replacement, options.sourceText, false, malformedMarkupEquivalent);
     if (text.slice(issue.start, issue.end) !== issue.text) throw new Error('Chapter text changed after scanning.');
     return { ...issue, replacement: patch.replacement };
   }).sort((a, b) => b.start - a.start);
@@ -291,11 +328,12 @@ export function assertPronunciationRepair(previous: string, proposed: string, op
     }
     if (end < 0) throw new Error('Repair changed surrounding chapter text.');
     const replacement = proposed.slice(proposedCursor, end);
-    if ((visibleEnglish(issue.text) !== visibleEnglish(replacement) && !sourceSupportedReconstruction(issue.text, replacement, options.sourceText) && !nestedSourceReconstruction(issue.text, replacement, options.sourceText)) || /[<>]/u.test(replacement)) throw new Error('Repair changed English text or speaker assignments.');
+    const malformedMarkupEquivalent = isMalformedMarkupLexicallyEquivalent(issue, replacement);
+    if ((visibleEnglish(issue.text) !== visibleEnglish(replacement) && !malformedMarkupEquivalent && !sourceSupportedReconstruction(issue.text, replacement, options.sourceText) && !nestedSourceReconstruction(issue.text, replacement, options.sourceText)) || /[<>]/u.test(replacement)) throw new Error('Repair changed English text or speaker assignments.');
     const override = typeof options.allowSourceEvidenceOverride === 'function'
       ? options.allowSourceEvidenceOverride(issue)
       : options.allowSourceEvidenceOverride === true;
-    assertSourceWords(issue.text, replacement, options.sourceText, override);
+    assertSourceWords(issue.text, replacement, options.sourceText, override, malformedMarkupEquivalent);
     proposedCursor = end;
   }
   if (previous.slice(cursor) !== proposed.slice(proposedCursor)) throw new Error('Repair changed the end of the chapter.');

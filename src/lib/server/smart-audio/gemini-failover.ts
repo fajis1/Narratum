@@ -225,15 +225,16 @@ export async function isGeminiModelUnavailableResponse(response: Response): Prom
     || /models?\/[\w.-]+[^\n]{0,120}(?:not found|not supported|not available)/i.test(body);
 }
 
-type GeminiModelFallbackReason = 'unavailable' | 'overloaded';
+type GeminiModelFallbackReason = 'unavailable' | 'overloaded' | 'rate-limited' | 'transient';
 
 async function getGeminiModelFallbackReason(
   response: Response,
 ): Promise<GeminiModelFallbackReason | null> {
-  // A 503 only reaches this point after the retry and backup-key policy for the
-  // current model has been exhausted, so it represents sustained overload for
-  // this request rather than a single transient response.
+  // A response reaches this point only after the configured retry policy for
+  // its current key/model pair has been exhausted.
   if (response.status === 503) return 'overloaded';
+  if ([429, 402, 403].includes(response.status)) return 'rate-limited';
+  if ([500, 502, 504].includes(response.status)) return 'transient';
   if (await isGeminiModelUnavailableResponse(response)) return 'unavailable';
   return null;
 }
@@ -255,7 +256,7 @@ export async function fetchGeminiWithRateLimitFallback(
   const effectiveMaxOverloadAttempts = input.maxOverloadAttempts
     ?? (input.maxAttempts !== undefined ? input.maxAttempts : (hasFallback ? 2 : undefined));
   let lastResult: { response: Response; usedBackup: boolean } | null = null;
-  let backupBlocked = false;
+  let lastError: unknown;
   let nextDelayMs = Math.min(input.initialDelayMs ?? INITIAL_DELAY_MS, MAX_DELAY_MS);
   let pendingDelayMs = 0;
   const pacedRequest = async (apiKey: string, model?: string) => {
@@ -281,63 +282,93 @@ export async function fetchGeminiWithRateLimitFallback(
     }
   };
 
-  for (const candidateModel of models) {
-    input.signal?.throwIfAborted();
-    const result = await fetchGeminiWithKeyFallback({
-      ...input,
-      maxOverloadAttempts: effectiveMaxOverloadAttempts,
-      backupApiKey: backupBlocked ? undefined : input.backupApiKey,
-      request: (apiKey) => input.retryRateLimitedModels ? pacedRequest(apiKey, candidateModel) : candidateModel
-        ? input.request(apiKey, candidateModel)
-        : input.request(apiKey),
-    });
-    lastResult = result;
-    // A rate-limited backup must not erase evidence that the primary model
-    // exhausted its overload retries. Try the next configured model on the
-    // primary, without retrying that blocked backup again in this call.
-    if (result.usedBackup && [429, 402, 403].includes(result.response.status) && input.primaryApiKey.trim()) backupBlocked = true;
-    const fallbackReason = input.retryRateLimitedModels && [429, 402, 403].includes(result.response.status)
-      ? 'rate-limited' : result.primaryStatus === 503 && [429, 402, 403].includes(result.response.status)
-      ? 'overloaded' : await getGeminiModelFallbackReason(result.response);
-    if (!fallbackReason) {
-      return {
-        ...result,
-        requestedModel,
-        usedModel: candidateModel,
-        usedModelFallback: Boolean(requestedModel && candidateModel !== requestedModel),
-      };
-    }
-
-    const nextIndex = models.indexOf(candidateModel) + 1;
-    const nextModel = models[nextIndex];
-    if (!nextModel) break;
-    const statusMessage = fallbackReason === 'rate-limited'
-      ? `${candidateModel} remained rate-limited after retries. Trying ${nextModel} after the recovery cooldown.`
-      : fallbackReason === 'overloaded'
-      ? `${candidateModel} remained overloaded after retries. Using ${nextModel} for this request.`
-      : `${candidateModel} is unavailable for this Gemini API project. Using ${nextModel} for this request.`;
-    if (fallbackReason === 'overloaded') {
-      serverLogger.warn({
-        event: 'gemini.model.fallback',
-        requestedModel,
-        overloadedModel: candidateModel,
-        fallbackModel: nextModel,
-        httpStatus: result.response.status,
-        reason: fallbackReason,
-      }, 'Falling back from an overloaded Gemini model');
-    } else {
-      serverLogger.warn({
-        event: 'gemini.model.fallback',
-        requestedModel,
-        unavailableModel: candidateModel,
-        fallbackModel: nextModel,
-        httpStatus: result.response.status,
-        reason: fallbackReason,
-      }, 'Falling back from an unavailable or rate-limited Gemini model');
-    }
-    await input.onStatusUpdate?.(statusMessage);
+  const primaryApiKey = input.primaryApiKey.trim();
+  const backupApiKey = (input.backupApiKey || '').trim();
+  const keyChains: Array<{ apiKey: string; keyType: 'primary' | 'backup' }> = primaryApiKey
+    ? [{ apiKey: primaryApiKey, keyType: 'primary' as const }]
+    : backupApiKey
+      ? [{ apiKey: backupApiKey, keyType: 'backup' as const }]
+      : [{ apiKey: primaryApiKey, keyType: 'primary' as const }];
+  if (primaryApiKey && backupApiKey && backupApiKey !== primaryApiKey) {
+    keyChains.push({ apiKey: backupApiKey, keyType: 'backup' });
   }
 
+  // Key is deliberately the outer loop. A backup credential must not be used
+  // until every configured model has been attempted with the primary key.
+  for (const [keyIndex, keyChain] of keyChains.entries()) {
+    for (const [modelIndex, candidateModel] of models.entries()) {
+      input.signal?.throwIfAborted();
+      let result: { response: Response; usedBackup: boolean };
+      try {
+        const keyResult = await fetchGeminiWithKeyFallback({
+          ...input,
+          primaryApiKey: keyChain.apiKey,
+          backupApiKey: undefined,
+          maxOverloadAttempts: effectiveMaxOverloadAttempts,
+          request: (apiKey) => input.retryRateLimitedModels ? pacedRequest(apiKey, candidateModel) : candidateModel
+            ? input.request(apiKey, candidateModel)
+            : input.request(apiKey),
+        });
+        result = { ...keyResult, usedBackup: keyChain.keyType === 'backup' };
+      } catch (error) {
+        input.signal?.throwIfAborted();
+        if (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name)) throw error;
+        lastError = error;
+        const nextModel = models[modelIndex + 1];
+        if (nextModel) {
+          await input.onStatusUpdate?.(`Gemini network retries exhausted for ${candidateModel} on the ${keyChain.keyType} key. Trying ${nextModel} on the ${keyChain.keyType} key.`);
+          continue;
+        }
+        break;
+      }
+
+      lastResult = result;
+      const fallbackReason = await getGeminiModelFallbackReason(result.response);
+      if (!fallbackReason) {
+        return {
+          ...result,
+          requestedModel,
+          usedModel: candidateModel,
+          usedModelFallback: Boolean(requestedModel && candidateModel !== requestedModel),
+        };
+      }
+
+      const nextModel = models[modelIndex + 1];
+      if (!nextModel) break;
+      const reasonText = fallbackReason === 'rate-limited'
+        ? 'rate-limited after retries'
+        : fallbackReason === 'overloaded'
+          ? 'overloaded after retries'
+          : fallbackReason === 'transient'
+            ? 'temporarily unavailable after retries'
+            : 'unavailable for this Gemini API project';
+      const statusMessage = `${candidateModel} remained ${reasonText} on the ${keyChain.keyType} key. Trying ${nextModel} on the ${keyChain.keyType} key.`;
+      serverLogger.warn({
+        event: 'gemini.model.fallback',
+        requestedModel,
+        keyType: keyChain.keyType,
+        currentModel: candidateModel,
+        fallbackModel: nextModel,
+        httpStatus: result.response.status,
+        reason: fallbackReason,
+      }, 'Falling back within a Gemini credential model chain');
+      await input.onStatusUpdate?.(statusMessage);
+    }
+
+    const backupChain = keyChains[keyIndex + 1];
+    if (keyChain.keyType === 'primary' && backupChain) {
+      const startingModel = models[0] || 'the requested model';
+      const backupMasked = backupChain.apiKey.length >= 4 ? `...${backupChain.apiKey.slice(-4)}` : 'Key';
+      serverLogger.warn({
+        event: 'gemini.failover.backup_key',
+        backupMasked,
+        requestedModel,
+      }, 'Primary Gemini model chain exhausted; switching to the backup Gemini API key');
+      await input.onStatusUpdate?.(`Primary Gemini model chain exhausted. Switching to the backup API key (${backupMasked}) and restarting with ${startingModel}.`);
+    }
+  }
+
+  if (!lastResult && lastError) throw lastError;
   return {
     response: lastResult?.response || new Response(null, { status: 502 }),
     usedBackup: lastResult?.usedBackup || false,

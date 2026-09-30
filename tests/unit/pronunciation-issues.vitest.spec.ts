@@ -321,5 +321,50 @@ describe('targeted pronunciation scan and patches', () => {
     expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
   });
 
-});
+  describe('malformed transliteration markup lexical equivalence', () => {
+    test.each([
+      [
+        '[kol-[nepe\u0161](/n\u025bp\u025b\u0283/)',
+        '[kol](/ko\u028al/)-[nepe\u0161](/n\u025bp\u025b\u0283/)',
+      ],
+      [
+        '[ha[b\u011bh\u0113m\u0101h](/b\u0259he\u026am\u0251/)',
+        '[hab\u011bh\u0113m\u0101h](/h\u0251b\u0259he\u026am\u0251/)',
+      ],
+      [
+        "[hayt\u00f4-'[ere\u015f](/\u025br\u025bts/)",
+        "[hayt\u00f4](/x\u0251jto\u028a/)-['ere\u015f](/\u025br\u025bts/)",
+      ],
+      [
+        '[h\u0101[reme\u015b](/r\u025bm\u025bs/)',
+        '[h\u0101reme\u015b](/h\u0251r\u025bm\u025bs/)',
+      ],
+      [
+        '[[h\u0101\u02be[\u0101d\u0101m](/\u0251d\u0251m/)',
+        '[h\u0101\u02be\u0101d\u0101m](/h\u0251\u0251d\u0251m/)',
+      ],
+    ])('accepts a structural repair without changing lexical material: %s', (original, replacement) => {
+      const text = 'Before ' + original + ' after.';
+      const issues = scanPronunciationIssues(text);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].text).toBe(original);
 
+      const proposed = applyPronunciationPatches(text, issues, [{ id: issues[0].id, replacement }]);
+      expect(proposed).toBe('Before ' + replacement + ' after.');
+      expect(scanPronunciationIssues(proposed)).toEqual([]);
+      expect(() => assertPronunciationRepair(text, proposed)).not.toThrow();
+    });
+
+    test('rejects source changes, reordering, deletion, and added material inside malformed markup', () => {
+      const original = '[h\u0101[reme\u015b](/r\u025bm\u025bs/)';
+      const text = 'Before ' + original + ' after.';
+      const [issue] = scanPronunciationIssues(text);
+      expect(() => applyPronunciationPatches(text, [issue], [{ id: issue.id, replacement: '[differentword](/r\u025bm\u025bs/)' }])).toThrow('English');
+      expect(() => applyPronunciationPatches(text, [issue], [{ id: issue.id, replacement: '[reme\u015bh\u0101](/r\u025bm\u025bs/)' }])).toThrow('English');
+      expect(() => applyPronunciationPatches(text, [issue], [{ id: issue.id, replacement: '[reme\u015b](/r\u025bm\u025bs/)' }])).toThrow('English');
+      expect(() => applyPronunciationPatches(text, [issue], [{ id: issue.id, replacement: '[h\u0101reme\u015b-extra](/r\u025bm\u025bs/)' }])).toThrow('English');
+      expect(() => assertPronunciationRepair(text, 'Changed [h\u0101reme\u015b](/h\u0251r\u025bm\u025bs/) after.')).toThrow('outside');
+    });
+  });
+
+});

@@ -11,15 +11,17 @@ describe('Gemini key failover', () => {
     const result = await fetchGeminiWithRateLimitFallback({ primaryApiKey: 'primary-fixture', backupApiKey: 'backup-fixture',
       requestedModel: 'gemini-3.8-flash', maxAttempts: 3, retryRateLimitedModels: true, request, onStatusUpdate });
     expect(result.usedModel).toBe('gemini-3.6-flash');
-    expect(request).toHaveBeenCalledTimes(12);
+    expect(request).toHaveBeenCalledTimes(18);
     expect(request.mock.calls).toEqual([
       ...Array(3).fill(['primary-fixture', 'gemini-3.8-flash']),
-      ...Array(3).fill(['backup-fixture', 'gemini-3.8-flash']),
       ...Array(3).fill(['primary-fixture', 'gemini-3.7-flash']),
       ...Array(3).fill(['primary-fixture', 'gemini-3.6-flash']),
+      ...Array(3).fill(['backup-fixture', 'gemini-3.8-flash']),
+      ...Array(3).fill(['backup-fixture', 'gemini-3.7-flash']),
+      ...Array(3).fill(['backup-fixture', 'gemini-3.6-flash']),
     ]);
     expect(onStatusUpdate.mock.calls.map(([message]) => message).filter(message => message.startsWith('Gemini recovery cooldown:')))
-      .toEqual([4, 8, 16, 32, 64, 128, 256, 300, 300, 300, 300].map(seconds => `Gemini recovery cooldown: waiting ${seconds}s before the next request.`));
+      .toEqual([4, 8, 16, 32, 64, 128, 256, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300].map(seconds => `Gemini recovery cooldown: waiting ${seconds}s before the next request.`));
   });
 
   test('opt-in fallback honors server cooldowns and retains backup-only credentials', async () => {
@@ -60,17 +62,43 @@ describe('Gemini key failover', () => {
     const result = await fetchGeminiWithRateLimitFallback({ primaryApiKey: 'primary-fixture', backupApiKey: 'backup-fixture',
       requestedModel: 'gemini-3.8-flash', maxAttempts: 3, initialDelayMs: 0, request });
     expect(result).toMatchObject({ usedModel: 'gemini-3.6-flash', usedBackup: false, usedModelFallback: true });
-    expect(request.mock.calls.filter(([key]) => key === 'backup-fixture')).toHaveLength(3);
+    expect(request.mock.calls.filter(([key]) => key === 'backup-fixture')).toHaveLength(0);
     expect(request.mock.calls.filter(([, model]) => model === 'gemini-3.7-flash')).toHaveLength(3);
     expect(request.mock.calls.at(-1)).toEqual(['primary-fixture', 'gemini-3.6-flash']);
   });
 
-  test('pure rate limits do not trigger model hopping', async () => {
+  test('rate limits exhaust the primary model chain before touching backup', async () => {
     const request = vi.fn(async () => new Response(null, { status: 429 }));
     const result = await fetchGeminiWithRateLimitFallback({ primaryApiKey: 'primary-fixture', backupApiKey: 'backup-fixture',
       requestedModel: 'gemini-3.8-flash', maxAttempts: 1, request });
-    expect(result.usedModelFallback).toBe(false);
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(result.usedModelFallback).toBe(true);
+    expect(request.mock.calls).toEqual([
+      ['primary-fixture', 'gemini-3.8-flash'],
+      ['primary-fixture', 'gemini-3.7-flash'],
+      ['primary-fixture', 'gemini-3.6-flash'],
+      ['backup-fixture', 'gemini-3.8-flash'],
+      ['backup-fixture', 'gemini-3.7-flash'],
+      ['backup-fixture', 'gemini-3.6-flash'],
+    ]);
+  });
+
+  test('does not touch backup when a primary fallback model succeeds', async () => {
+    const request = vi.fn(async (key: string, model?: string) => {
+      if (key === 'backup-fixture') throw new Error('backup must remain untouched');
+      return new Response(null, { status: model === 'gemini-3.7-flash' ? 200 : 503 });
+    });
+    const result = await fetchGeminiWithRateLimitFallback({
+      primaryApiKey: 'primary-fixture',
+      backupApiKey: 'backup-fixture',
+      requestedModel: 'gemini-3.8-flash',
+      maxAttempts: 1,
+      request,
+    });
+    expect(result).toMatchObject({ usedBackup: false, usedModel: 'gemini-3.7-flash', usedModelFallback: true });
+    expect(request.mock.calls).toEqual([
+      ['primary-fixture', 'gemini-3.8-flash'],
+      ['primary-fixture', 'gemini-3.7-flash'],
+    ]);
   });
   test('uses backup after bounded network retries but does not fail over cancellation', async () => {
     const request = vi.fn().mockRejectedValueOnce(new TypeError('network')).mockRejectedValueOnce(new TypeError('network')).mockResolvedValue(new Response('ok'));
@@ -145,14 +173,14 @@ describe('Gemini key failover', () => {
     expect(request).toHaveBeenNthCalledWith(1, 'primary-placeholder', 'gemini-3.7-flash');
     expect(request).toHaveBeenNthCalledWith(2, 'primary-placeholder', 'gemini-3.6-flash');
     expect(onStatusUpdate).toHaveBeenCalledWith(
-      'gemini-3.7-flash is unavailable for this Gemini API project. Using gemini-3.6-flash for this request.',
+      'gemini-3.7-flash remained unavailable for this Gemini API project on the primary key. Trying gemini-3.6-flash on the primary key.',
     );
   });
 
   test('falls back to the next model after sustained HTTP 503 overload (fast failover within 2 attempts per key)', async () => {
     const request = vi.fn();
-    // 2 attempts on primary key, 2 attempts on backup key, then 5th call on fallback model succeeds
-    for (let i = 0; i < 4; i += 1) {
+    // The primary key tries the requested model before moving to its fallback.
+    for (let i = 0; i < 2; i += 1) {
       request.mockResolvedValueOnce(new Response('model is overloaded', { status: 503 }));
     }
     request.mockResolvedValueOnce(new Response('ok', { status: 200 }));
@@ -174,11 +202,9 @@ describe('Gemini key failover', () => {
     expect(result.usedModelFallback).toBe(true);
     expect(request).toHaveBeenNthCalledWith(1, 'primary-placeholder', 'gemini-3.7-flash');
     expect(request).toHaveBeenNthCalledWith(2, 'primary-placeholder', 'gemini-3.7-flash');
-    expect(request).toHaveBeenNthCalledWith(3, 'backup-placeholder', 'gemini-3.7-flash');
-    expect(request).toHaveBeenNthCalledWith(4, 'backup-placeholder', 'gemini-3.7-flash');
-    expect(request).toHaveBeenNthCalledWith(5, 'primary-placeholder', 'gemini-3.6-flash');
+    expect(request).toHaveBeenNthCalledWith(3, 'primary-placeholder', 'gemini-3.6-flash');
     expect(onStatusUpdate).toHaveBeenCalledWith(
-      'gemini-3.7-flash remained overloaded after retries. Using gemini-3.6-flash for this request.',
+      'gemini-3.7-flash remained overloaded after retries on the primary key. Trying gemini-3.6-flash on the primary key.',
     );
   });
 
@@ -218,7 +244,7 @@ describe('Gemini key failover', () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  test('does not change models after HTTP 429 quota exhaustion', async () => {
+  test('changes models before backup after HTTP 429 quota exhaustion', async () => {
     const request = vi.fn().mockResolvedValue(new Response('quota exceeded', { status: 429 }));
 
     const result = await fetchGeminiWithRateLimitFallback({
@@ -229,10 +255,13 @@ describe('Gemini key failover', () => {
     });
 
     expect(result.response.status).toBe(429);
-    expect(result.usedModel).toBe('gemini-3.7-flash');
-    expect(result.usedModelFallback).toBe(false);
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(request).toHaveBeenCalledWith('primary-placeholder', 'gemini-3.7-flash');
+    expect(result.usedModel).toBe('gemini-3.5-flash');
+    expect(result.usedModelFallback).toBe(true);
+    expect(request.mock.calls).toEqual([
+      ['primary-placeholder', 'gemini-3.7-flash'],
+      ['primary-placeholder', 'gemini-3.6-flash'],
+      ['primary-placeholder', 'gemini-3.5-flash'],
+    ]);
   });
 
   test('never retries an aborted request or switches to a backup after cancellation', async () => {
