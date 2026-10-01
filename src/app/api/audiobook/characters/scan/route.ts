@@ -29,6 +29,7 @@ import {
 import { resolveCleanupAiModel, resolveCleanupAiModels } from '@/lib/shared/smart-audio-models';
 import { DEFAULT_DOCUMENT_SETTINGS, type SmartAudioCharacterMap } from '@/types/document-settings';
 import { getGeminiTtsCharacterMapReadiness, normalizeGeminiTtsCharacterMap } from '@/lib/server/smart-audio/gemini-cast-helpers';
+import { explainCharacterScanFailure } from '@/lib/server/audiobooks/character-scan-error';
 
 export const dynamic = 'force-dynamic';
 
@@ -205,16 +206,17 @@ export async function POST(request: NextRequest) {
         { timeout: 300_000 },
       );
       const workerResult = JSON.parse(codec.decode(response.data)) as Record<string, unknown>;
+      const failure = explainCharacterScanFailure(workerResult.message);
       if (workerResult.status === 'rate_limit') {
         return NextResponse.json({
-          code: 'GEMINI_RATE_LIMITED',
-          error: 'Gemini temporarily paused character scanning. Try again shortly.',
-        }, { status: 429 });
+          code: failure.code === 'CHARACTER_SCAN_FAILED' ? 'GEMINI_RATE_LIMITED' : failure.code,
+          error: failure.code === 'CHARACTER_SCAN_FAILED'
+            ? 'Gemini temporarily rate-limited this character scan. Wait a few minutes and retry; your document has not been changed.'
+            : failure.error,
+        }, { status: failure.code === 'CHARACTER_SCAN_FAILED' ? 429 : failure.status });
       }
       if (workerResult.status !== 'success') {
-        throw new Error(typeof workerResult.message === 'string'
-          ? workerResult.message
-          : 'Character extraction failed.');
+        return NextResponse.json(failure, { status: failure.status });
       }
       const characterMap = mergeExtractedCharacters({
         previous: scope.settings.smartAudioCharacters,
