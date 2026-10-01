@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { userPreferences } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import type { SmartAudioProfile, ScanProvider } from '@/types/client';
+import type { ReusableDramaCastEntry } from '@/types/document-settings';
 import { DEFAULT_PROVIDER_ORDER } from '@/types/client';
 import {
   DEFAULT_DRAMA_GEMINI_TTS_SETTINGS,
@@ -124,6 +125,7 @@ export function redactSmartAudioProfileSecrets(profile: SmartAudioProfile): Smar
       ? googleCloudServiceAccountEmail
       : null,
     dramaGeminiTtsSettings: normalizeDramaGeminiTtsProfileSettings(profile.dramaGeminiTtsSettings),
+    dramaCastLibrary: profile.dramaCastLibrary,
   };
 }
 
@@ -172,8 +174,30 @@ export function mergeStoredSmartAudioProfileSecrets(
       backupGeminiApiKey: suppliedBackupKey || backupSourceProfile?.backupGeminiApiKey,
       groqApiKey: suppliedGroqKey || storedProfile?.groqApiKey,
       googleCloudServiceAccountJson: suppliedSaJson || storedProfile?.googleCloudServiceAccountJson,
+      dramaCastLibrary: profile.dramaCastLibrary ?? storedProfile?.dramaCastLibrary,
     };
   });
+}
+
+function sanitizeDramaCastLibrary(value: unknown): Record<string, ReusableDramaCastEntry> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries: Array<[string, ReusableDramaCastEntry]> = [];
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>).slice(0, 500)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const candidate = raw as Partial<ReusableDramaCastEntry>;
+    const name = typeof candidate.name === 'string' ? candidate.name.trim().slice(0, 160) : '';
+    const voiceId = typeof candidate.voiceId === 'string' ? candidate.voiceId.trim().slice(0, 256) : '';
+    if (!name || !voiceId) continue;
+    entries.push([key.trim().toLocaleLowerCase().slice(0, 160), {
+      name,
+      voiceId,
+      savedAt: Number.isFinite(candidate.savedAt) ? Number(candidate.savedAt) : Date.now(),
+      ...(candidate.cloudDirection ? { cloudDirection: candidate.cloudDirection } : {}),
+      ...(candidate.castingTraits ? { castingTraits: candidate.castingTraits } : {}),
+      ...(candidate.voiceAssignment ? { voiceAssignment: candidate.voiceAssignment } : {}),
+    }]);
+  }
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 function slugifyProfileName(name: string): string {
@@ -219,6 +243,7 @@ function sanitizeProfile(profile: Partial<SmartAudioProfile> & { id?: string; na
     dramaGeminiTtsSettings: normalizeDramaGeminiTtsProfileSettings(
       profile.dramaGeminiTtsSettings || DEFAULT_DRAMA_GEMINI_TTS_SETTINGS,
     ),
+    dramaCastLibrary: sanitizeDramaCastLibrary(profile.dramaCastLibrary),
     // Validate and persist provider order; fall back to default if invalid
     providerOrder: (() => {
       const valid: ScanProvider[] = ['gemini_primary', 'gemini_backup', 'groq'];

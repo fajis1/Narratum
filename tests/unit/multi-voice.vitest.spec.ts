@@ -325,6 +325,7 @@ describe('LitRPG source and production wiring', () => {
     const jobs = fs.readFileSync(path.join(process.cwd(), 'src/components/doclist/views/JobsInlineView.tsx'), 'utf8');
     const listenPage = fs.readFileSync(path.join(process.cwd(), 'src/app/(app)/listen/[bookId]/page.tsx'), 'utf8');
     const studio = fs.readFileSync(path.join(process.cwd(), 'src/components/audiobooks/MultiVoiceReviewStudio.tsx'), 'utf8');
+    const scanner = fs.readFileSync(path.join(process.cwd(), 'src/components/doclist/MultiVoiceCharacterModal.tsx'), 'utf8');
 
     expect(queue).toContain("code: 'CHARACTER_CAST_REQUIRED'");
     expect(queue).toContain("code: 'AUDIOBOOK_REPLACEMENT_REQUIRED'");
@@ -371,6 +372,10 @@ describe('LitRPG source and production wiring', () => {
     expect(listenPage).toContain('estimateSpeakerSegmentAtTime(');
     expect(listenPage).not.toContain('Future: Post this to a DB table');
     expect(studio).toContain('/api/audiobook/review-flags?documentId=');
+    expect(scanner).toContain('Saved cast voices found for this book');
+    expect(scanner).toContain('Use saved voice');
+    expect(scanner).toContain('Reuse all available');
+    expect(scanner).toContain('castLibrary');
   });
 
   test('keeps character discovery explicit and exclusive to Audio Drama', () => {

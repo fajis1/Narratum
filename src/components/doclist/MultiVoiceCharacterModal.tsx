@@ -9,7 +9,7 @@ import {
   normalizeSmartAudioCharacterMap,
 } from '@/lib/shared/multi-voice';
 import toast from 'react-hot-toast';
-import type { SmartAudioCharacterMap } from '@/types/document-settings';
+import type { ReusableDramaCastEntry, SmartAudioCharacterMap } from '@/types/document-settings';
 import type { GeminiVoiceCatalogEntry } from '@/lib/shared/gemini-voice-catalog';
 import { autoAssignGeminiMinorVoices, recommendAnotherGeminiVoice, recommendGeminiVoices } from '@/lib/shared/gemini-voice-matching';
 import {
@@ -36,6 +36,7 @@ type GeminiVoiceLibraryResponse = { voices?: GeminiVoiceCatalogEntry[]; source?:
 
 type CastResponse = {
   characterMap?: SmartAudioCharacterMap | null;
+  castLibrary?: Record<string, ReusableDramaCastEntry>;
   code?: string;
   error?: string;
   message?: string;
@@ -53,6 +54,7 @@ export function MultiVoiceCharacterModal({
   onComplete,
 }: MultiVoiceCharacterModalProps) {
   const [characterMap, setCharacterMap] = useState<SmartAudioCharacterMap | null>(null);
+  const [castLibrary, setCastLibrary] = useState<Record<string, ReusableDramaCastEntry>>({});
   const [geminiVoices, setGeminiVoices] = useState<GeminiVoiceCatalogEntry[]>([]);
   const [geminiVoiceSource, setGeminiVoiceSource] = useState<string | null>(null);
   const [voiceSearch, setVoiceSearch] = useState('');
@@ -125,6 +127,7 @@ export function MultiVoiceCharacterModal({
       const normalized = normalizeCast(body.characterMap);
       if (!normalized) throw new Error('Character scan returned an invalid cast.');
       setCharacterMap(normalized);
+      setCastLibrary(body.castLibrary || {});
       setStatusMessage(null);
     } catch (scanError) {
       setError(scanError instanceof Error ? scanError.message : 'Character scan failed.');
@@ -151,6 +154,7 @@ export function MultiVoiceCharacterModal({
       if (!response.ok) throw new Error(body.error || 'Failed to load the character cast.');
       if (cancelled) return;
       const normalized = normalizeCast(body.characterMap);
+      setCastLibrary(body.castLibrary || {});
       if (normalized?.profileId === profileId && !normalized.needsRescan) {
         setCharacterMap(normalized);
         setStatusMessage(null);
@@ -205,6 +209,11 @@ export function MultiVoiceCharacterModal({
     (entry) => entry.name.toLocaleLowerCase() !== 'narrator' && entry.importance !== 'main' && !entry.voiceId,
   );
   const hasNarrator = primaryCharacters.some((entry) => entry.name.toLocaleLowerCase() === 'narrator');
+  const savedCastMatches = useMemo(() => primaryCharacters.flatMap((character) => {
+    const saved = castLibrary[character.name.trim().toLocaleLowerCase()];
+    return saved ? [{ character, saved }] : [];
+  }), [castLibrary, primaryCharacters]);
+  const reusableSavedCastMatches = savedCastMatches.filter(({ saved }) => geminiVoices.some((voice) => voice.id === saved.voiceId));
   const duplicateVoiceAssignments = useMemo(
     () => getDuplicateVoiceAssignments(characterMap, isCloudDrama
       ? { validVoiceSet: new Set(geminiVoices.map((voice) => voice.id)), preserveSafeVoiceIds: true }
@@ -325,6 +334,21 @@ export function MultiVoiceCharacterModal({
       update(entriesCopy[name]);
       return { ...current, status: 'partial', entries: entriesCopy };
     });
+  };
+
+  const applySavedCastVoice = (characterName: string, saved: ReusableDramaCastEntry) => {
+    updateEntry(characterName, (entry) => {
+      entry.voiceId = saved.voiceId;
+      if (saved.cloudDirection) entry.cloudDirection = saved.cloudDirection;
+      entry.voiceAssignment = saved.voiceAssignment
+        ? { ...saved.voiceAssignment, assignedAt: Date.now(), assignmentSource: 'user', reason: `Reused from saved cast member ${saved.name}.` }
+        : { provider: 'gemini', voiceId: saved.voiceId, assignedAt: Date.now(), assignmentSource: 'user', reason: `Reused from saved cast member ${saved.name}.` };
+    });
+  };
+
+  const applyAllSavedCastVoices = () => {
+    for (const { character, saved } of reusableSavedCastMatches) applySavedCastVoice(character.name, saved);
+    toast.success(`Applied ${reusableSavedCastMatches.length} saved cast voice${reusableSavedCastMatches.length === 1 ? '' : 's'}.`);
   };
 
   const toggleImportance = (name: string, nextImportance: 'main' | 'minor') => {
@@ -496,6 +520,7 @@ export function MultiVoiceCharacterModal({
       const body = await response.json().catch(() => ({})) as CastResponse;
       if (!response.ok) throw new Error(body.error || 'Failed to save the reviewed cast.');
       const savedCharacterMap = normalizeCast(body.characterMap) || characterMap;
+      setCastLibrary(body.castLibrary || castLibrary);
       await onComplete(savedCharacterMap, startGeneration);
       onClose();
     } catch (saveError) {
@@ -522,6 +547,19 @@ export function MultiVoiceCharacterModal({
           {statusMessage && (
             <div className="rounded-xl border border-accent-line bg-accent-wash p-4 text-sm text-text-strong">
               {statusMessage}
+            </div>
+          )}
+          {isCloudDrama && savedCastMatches.length > 0 && (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-text-strong">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="font-semibold">Saved cast voices found for this book</p>
+                  <p className="mt-1 text-xs text-text-soft">Exact-name matches are available from earlier reviewed Gemini Drama casts. Apply them only when these are the same characters.</p>
+                </div>
+                <button type="button" onClick={applyAllSavedCastVoices} disabled={reusableSavedCastMatches.length === 0} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                  Reuse all available ({reusableSavedCastMatches.length})
+                </button>
+              </div>
             </div>
           )}
           <div className="rounded-xl border border-line bg-surface p-4 text-sm text-text-soft">
@@ -630,6 +668,21 @@ export function MultiVoiceCharacterModal({
                   </div>
                   <p className="mt-1 text-sm text-text-soft">{character.description || 'No description supplied.'}</p>
                   <p className="mt-2 rounded-lg bg-surface-sunken p-3 text-sm italic text-text-soft">“{character.sampleText || 'No sample quote was found.'}”</p>
+                  {isCloudDrama && !character.aliasFor && (() => {
+                    const saved = castLibrary[character.name.trim().toLocaleLowerCase()];
+                    if (!saved) return null;
+                    const available = geminiVoices.some((voice) => voice.id === saved.voiceId);
+                    return (
+                      <section className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3" aria-label={`Saved cast voice for ${character.name}`}>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">Saved from a previous book</p>
+                        <p className="mt-1 text-sm font-semibold text-text-strong">{saved.voiceAssignment?.catalogSnapshot?.displayName || saved.voiceId}</p>
+                        <p className="text-xs text-text-soft">Previously used for {saved.name}. Saved {new Date(saved.savedAt).toLocaleDateString()}.</p>
+                        <button type="button" onClick={() => applySavedCastVoice(character.name, saved)} disabled={!available} className="mt-2 rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50">
+                          {available ? 'Use saved voice' : 'Saved voice unavailable'}
+                        </button>
+                      </section>
+                    );
+                  })()}
                   {isCloudDrama && !character.aliasFor && (character.name.toLocaleLowerCase() === 'narrator' || character.importance === 'main') && (() => {
                     const recommendation = recommendedVoices.get(character.name);
                     if (!recommendation) return null;

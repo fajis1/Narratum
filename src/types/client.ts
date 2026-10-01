@@ -5,6 +5,7 @@ import type {
 } from '@/types/tts';
 import type { TtsProviderType } from '@/lib/shared/tts-provider-catalog';
 import type { DramaGeminiTtsProfileSettings } from '@/lib/shared/drama-profile-settings';
+import type { ReusableDramaCastEntry } from '@/types/document-settings';
 
 // --- TTS Client Request Types ---
 
@@ -137,6 +138,8 @@ export interface SmartAudioProfile {
    */
   workerMode?: 'standard' | 'scholar' | 'bibliography-catcher' | 'multi-voice' | 'drama-gemini-tts';
   resolvedDictionaryHash?: string | null;
+  /** Reviewed Gemini Drama voices, keyed by normalized character name for opt-in reuse across books. */
+  dramaCastLibrary?: Record<string, ReusableDramaCastEntry>;
 
   // ── Google Cloud Service Account credentials (for drama-gemini-tts) ──────────
   /**

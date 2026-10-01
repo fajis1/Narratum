@@ -14,6 +14,7 @@ import { errorToLog, serverLogger } from '@/lib/server/logger';
 import {
   findSmartAudioProfileById,
   readSmartAudioProfilesDocument,
+  writeSmartAudioProfilesDocument,
 } from '@/lib/server/smart-audio-profiles';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
 import { runTaskNow } from '@/lib/server/tasks/engine';
@@ -27,7 +28,7 @@ import {
   WAITING_FOR_VOICES_STATUS,
 } from '@/lib/shared/multi-voice';
 import { resolveCleanupAiModel, resolveCleanupAiModels } from '@/lib/shared/smart-audio-models';
-import { DEFAULT_DOCUMENT_SETTINGS, type SmartAudioCharacterMap } from '@/types/document-settings';
+import { DEFAULT_DOCUMENT_SETTINGS, type ReusableDramaCastEntry, type SmartAudioCharacterMap } from '@/types/document-settings';
 import { getGeminiTtsCharacterMapReadiness, normalizeGeminiTtsCharacterMap } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { explainCharacterScanFailure } from '@/lib/server/audiobooks/character-scan-error';
 
@@ -116,6 +117,39 @@ async function saveCharacterMap(input: {
   });
 }
 
+function reusableCastKey(name: string): string {
+  return name.trim().toLocaleLowerCase();
+}
+
+async function rememberGeminiDramaCast(input: {
+  userId: string;
+  profileId: string;
+  characterMap: SmartAudioCharacterMap;
+}): Promise<Record<string, ReusableDramaCastEntry>> {
+  const document = await readSmartAudioProfilesDocument(input.userId);
+  const existingProfile = findSmartAudioProfileById(document, input.profileId);
+  if (!existingProfile) return {};
+  const library = { ...(existingProfile.dramaCastLibrary || {}) };
+  for (const entry of Object.values(input.characterMap.entries)) {
+    if (entry.aliasFor || !entry.voiceId) continue;
+    library[reusableCastKey(entry.name)] = {
+      name: entry.name,
+      voiceId: entry.voiceId,
+      savedAt: Date.now(),
+      ...(entry.cloudDirection ? { cloudDirection: entry.cloudDirection } : {}),
+      ...(entry.castingTraits ? { castingTraits: entry.castingTraits } : {}),
+      ...(entry.voiceAssignment ? { voiceAssignment: entry.voiceAssignment } : {}),
+    };
+  }
+  await writeSmartAudioProfilesDocument(input.userId, {
+    ...document,
+    profiles: document.profiles.map((profile) => profile.id === input.profileId
+      ? { ...profile, dramaCastLibrary: library }
+      : profile),
+  });
+  return library;
+}
+
 function requestIds(request: NextRequest): { documentId: string; profileId: string } {
   const url = new URL(request.url);
   return {
@@ -140,6 +174,9 @@ export async function GET(request: NextRequest) {
       ready: readiness.ready && readiness.map?.profileId === profileId,
       unassigned: readiness.unassigned,
       errors: readiness.errors,
+      castLibrary: scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+        ? scope.profile.dramaCastLibrary || {}
+        : {},
     });
   } catch (error) {
     return errorResponse(error, {
@@ -239,7 +276,13 @@ export async function POST(request: NextRequest) {
         sourceCharacters: source.sourceCharacters,
         sampledCharacters: source.text.length,
       }, 'Extracted an Audio Drama character cast from canonical audiobook text.');
-      return NextResponse.json({ success: true, characterMap });
+      return NextResponse.json({
+        success: true,
+        characterMap,
+        castLibrary: scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+          ? scope.profile.dramaCastLibrary || {}
+          : {},
+      });
     } finally {
       await connection.close();
     }
@@ -279,6 +322,9 @@ export async function PUT(request: NextRequest) {
     characterMap.sourceFingerprint = characterMap.sourceFingerprint
       || scope.settings.smartAudioCharacters?.sourceFingerprint;
     await saveCharacterMap({ documentId, userId: scope.userId, characterMap });
+    const castLibrary = scope.profile.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+      ? await rememberGeminiDramaCast({ userId: scope.userId, profileId, characterMap })
+      : {};
 
     if (jobId) {
       await db.update(audiobookJobs).set({
@@ -302,7 +348,7 @@ export async function PUT(request: NextRequest) {
         error: errorToLog(error),
       }, 'Failed to wake the audiobook queue after casting.'));
     }
-    return NextResponse.json({ success: true, characterMap });
+    return NextResponse.json({ success: true, characterMap, castLibrary });
   } catch (error) {
     return errorResponse(error, {
       logger: serverLogger,

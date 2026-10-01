@@ -149,6 +149,16 @@ export interface SmartAudioCharacterMap {
   entries: Record<string, SmartAudioCharacterEntry>;
 }
 
+/** A user-reviewed Gemini Drama voice that can be explicitly reused in later books. */
+export interface ReusableDramaCastEntry {
+  name: string;
+  voiceId: string;
+  savedAt: number;
+  cloudDirection?: DramaCharacterDirection | null;
+  castingTraits?: SmartAudioCastingTraits;
+  voiceAssignment?: SavedGeminiVoiceAssignment;
+}
+
 export const SMART_AUDIO_REVIEW_FLAG_KINDS = [
   'cloud-tts-failed', 'cloud-tts-split', 'tts-retry-used', 'tts-fallback-used',
   'director-validation-repair', 'prompt-compacted',
