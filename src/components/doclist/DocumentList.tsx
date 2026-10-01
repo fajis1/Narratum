@@ -573,25 +573,12 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
       const dramaProfiles = profiles.filter((profile) => (
         profile.workerMode === 'multi-voice' || profile.workerMode === 'drama-gemini-tts'
       ));
-      const selectedDramaProfile = dramaProfiles.find((profile) => (
-        profile.id === body.selectedSmartAudioProfileId
-      ));
-      const dramaProfile = selectedDramaProfile || dramaProfiles[0];
-      if (!dramaProfile) {
+      if (dramaProfiles.length === 0) {
         toast.error('Create an Audio Drama profile before scanning a drama cast. Regular LitRPG profiles do not scan characters.');
         window.dispatchEvent(new CustomEvent('open-smart-ai-profiles'));
         return;
       }
-      if (dramaProfiles.length > 1) {
-        setDramaCharacterScanChoice({ document: doc, profiles: dramaProfiles });
-        return;
-      }
-      if (!dramaProfile.geminiApiKeyConfigured) {
-        toast.error('Add a Gemini API key to the Audio Drama profile before starting its character scan.');
-        window.dispatchEvent(new CustomEvent('open-smart-ai-profiles'));
-        return;
-      }
-      setDramaCharacterScan({ document: doc, profileId: dramaProfile.id, workerMode: dramaProfile.workerMode as 'multi-voice' | 'drama-gemini-tts' });
+      setDramaCharacterScanChoice({ document: doc, profiles: dramaProfiles });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not open the Audio Drama character scanner.');
     } finally {
@@ -1244,7 +1231,7 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
           <div role="dialog" aria-modal="true" aria-labelledby="character-scan-provider-title" className="w-full max-w-lg rounded-2xl border border-line bg-surface p-6 shadow-2xl">
             <h2 id="character-scan-provider-title" className="text-xl font-bold text-text-strong">Choose character scan type</h2>
-            <p className="mt-2 text-sm text-text-soft">Choose the Audio Drama voice system for this cast. Kokoro and Gemini casts use different voice libraries.</p>
+            <p className="mt-2 text-sm text-text-soft">Choose the Audio Drama voice system before scanning. Kokoro and Gemini casts use different voice libraries, so this choice is always shown.</p>
             <div className="mt-5 space-y-3">
               {dramaCharacterScanChoice.profiles.map((profile) => {
                 const isGeminiDrama = profile.workerMode === 'drama-gemini-tts';
@@ -1271,6 +1258,30 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
                   </button>
                 );
               })}
+              {!dramaCharacterScanChoice.profiles.some((profile) => profile.workerMode === 'multi-voice') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDramaCharacterScanChoice(null);
+                    window.dispatchEvent(new CustomEvent('open-smart-ai-profiles'));
+                  }}
+                  className="w-full rounded-xl border border-dashed border-line bg-surface p-4 text-left text-sm text-text-soft hover:border-accent"
+                >
+                  Configure a Kokoro Audio Drama profile
+                </button>
+              )}
+              {!dramaCharacterScanChoice.profiles.some((profile) => profile.workerMode === 'drama-gemini-tts') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDramaCharacterScanChoice(null);
+                    window.dispatchEvent(new CustomEvent('open-smart-ai-profiles'));
+                  }}
+                  className="w-full rounded-xl border border-dashed border-line bg-surface p-4 text-left text-sm text-text-soft hover:border-accent"
+                >
+                  Configure a Gemini Audio Drama profile
+                </button>
+              )}
             </div>
             <div className="mt-5 flex justify-end">
               <button type="button" onClick={() => setDramaCharacterScanChoice(null)} className="rounded-lg border border-line px-4 py-2 text-sm text-text-soft">Cancel</button>

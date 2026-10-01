@@ -392,7 +392,9 @@ describe('LitRPG source and production wiring', () => {
     expect(library).toContain('Choose character scan type');
     expect(library).toContain('Kokoro Character Scan');
     expect(library).toContain('Gemini Character Scan');
-    expect(library).toContain('Kokoro and Gemini casts use different voice libraries.');
+    expect(library).toContain('this choice is always shown');
+    expect(library).toContain('Configure a Kokoro Audio Drama profile');
+    expect(library).toContain('Configure a Gemini Audio Drama profile');
     expect(scanner).toContain("standalone ? 'Save Cast' : 'Save Cast & Continue'");
     expect(scanner).toContain('duplicateVoiceByCharacter.has(character.name)');
     expect(scanner).toContain('Reusing it is allowed, but these characters may sound identical.');
