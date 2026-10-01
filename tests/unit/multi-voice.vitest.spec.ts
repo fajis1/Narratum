@@ -330,6 +330,9 @@ describe('LitRPG source and production wiring', () => {
     expect(queue).toContain("code: 'CHARACTER_CAST_REQUIRED'");
     expect(queue).toContain("code: 'AUDIOBOOK_REPLACEMENT_REQUIRED'");
     for (const surface of [single, batch, jobs]) expect(surface).toContain('<MultiVoiceCharacterModal');
+    expect(jobs).toContain('Waiting for Google Gemini to finish the first Drama chapter');
+    expect(jobs).toContain('adding a paid Gemini API key in Smart Audio Settings');
+    expect(jobs).toContain('DRAMA_GEMINI_TTS_WORKER_MODE');
     expect(library).toContain('Pre-Scan Drama Characters');
     expect(library).toContain('<MultiVoiceCharacterModal');
     expect(library).toContain('standalone');

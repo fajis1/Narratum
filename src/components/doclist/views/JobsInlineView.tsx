@@ -7,7 +7,7 @@ import {
   AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
   isGeminiRateLimitPause,
 } from '@/lib/shared/audiobook-job-status';
-import { WAITING_FOR_VOICES_STATUS } from '@/lib/shared/multi-voice';
+import { DRAMA_GEMINI_TTS_WORKER_MODE, WAITING_FOR_VOICES_STATUS } from '@/lib/shared/multi-voice';
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from '@/lib/shared/audiobook-runtime-phase';
 
 interface Job {
@@ -72,6 +72,7 @@ export function JobsInlineView() {
   const [errorLogJob, setErrorLogJob] = useState<Job | null>(null);
   const [filter, setFilter] = useState<QueueFilter>('active');
   const [hasInitializedFilter, setHasInitializedFilter] = useState(false);
+  const [profileWorkerModes, setProfileWorkerModes] = useState<Record<string, string>>({});
 
   const onRequeueJob = async (id: string) => {
     try {
@@ -165,6 +166,22 @@ export function JobsInlineView() {
     fetchJobs();
     const interval = setInterval(fetchJobs, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/tts-settings', { cache: 'no-store' })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((body) => {
+        if (cancelled || !Array.isArray(body?.smartAudioProfiles)) return;
+        setProfileWorkerModes(Object.fromEntries(body.smartAudioProfiles.flatMap((profile: { id?: unknown; workerMode?: unknown }) => (
+          typeof profile.id === 'string' && typeof profile.workerMode === 'string'
+            ? [[profile.id, profile.workerMode]]
+            : []
+        ))));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   const activeJobs = jobs.filter(isActiveJob);
@@ -349,6 +366,11 @@ export function JobsInlineView() {
                 || (job.status === 'queued' && job.error === 'waiting_for_voices');
               const isWaitingForGpu = job.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE;
               const isFinished = job.status === 'completed' || job.status === 'error';
+              const isGeminiDramaJob = profileWorkerModes[jobProfileId(job)] === DRAMA_GEMINI_TTS_WORKER_MODE;
+              const isGeminiDramaStarting = isGeminiDramaJob
+                && job.status === 'running'
+                && (job.progress || 0) === 0
+                && !job.error;
               const globalPosition = job.globalQueuePosition;
               
               let queueEtaStr = '';
@@ -412,6 +434,14 @@ export function JobsInlineView() {
                         <p className="max-w-xl text-warning">
                           Your audiobook progress is preserved. Kokoro will continue automatically when the shared GPU is ready.
                         </p>
+                      )}
+                      {isGeminiDramaStarting && (
+                        <div className="max-w-2xl rounded border border-warning/30 bg-warning/10 p-3 text-warning">
+                          <p className="font-semibold">Waiting for Google Gemini to finish the first Drama chapter</p>
+                          <p className="mt-1 text-xs leading-relaxed">
+                            Progress remains at 0% until the first complete chapter is returned. Google&apos;s free-tier API can be overloaded or rate-limited, and OpenReader is retrying automatically. If this profile uses a free-tier key, adding a paid Gemini API key in Smart Audio Settings generally provides more capacity and may start the audiobook sooner.
+                          </p>
+                        </div>
                       )}
                     </div>
                   </div>
