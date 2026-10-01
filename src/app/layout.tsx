@@ -1,19 +1,11 @@
 import "./globals.css";
 import { ReactNode } from "react";
 import { Metadata, Viewport } from "next";
-import { Figtree } from "next/font/google";
 import { ConsentAwareAnalytics } from "@/components/ConsentAwareAnalytics";
 import { CookieConsentBanner } from "@/components/CookieConsentBanner";
 import { getResolvedRuntimeConfig } from "@/lib/server/runtime-config";
 import { tryGetOrigin } from "@/lib/shared/urls";
 import pkg from "../../package.json";
-
-const figtree = Figtree({
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700", "800"],
-  display: "swap",
-  variable: "--font-display",
-});
 
 const themeInitScript = `
 (() => {
@@ -67,7 +59,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   const runtimeConfigInit = `window.__RUNTIME_CONFIG__=${jsonEmbedSafe(runtimeConfigWithAppVersion)};`;
 
   return (
-    <html lang="en" className={figtree.variable} suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="light dark" />
         <script dangerouslySetInnerHTML={{ __html: runtimeConfigInit }} />
