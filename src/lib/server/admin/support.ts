@@ -5,6 +5,7 @@ import {
   count,
   desc,
   eq,
+  gte,
   inArray,
   isNull,
   max,
@@ -100,6 +101,10 @@ function boundedText(value: unknown, maxLength: number): string {
 export function redactSupportDiagnosticText(value: unknown): string | null {
   const text = boundedText(value, 2_000);
   if (!text) return null;
+  return redactSensitiveSupportText(text);
+}
+
+function redactSensitiveSupportText(text: string): string {
   return text
     .replace(/("authorization"\s*:\s*"bearer\s+)[^"]+/gi, '$1[redacted]')
     .replace(/("(?:api[_-]?key|apikey|secret|token)"\s*:\s*")[^"]+/gi, '$1[redacted]')
@@ -107,6 +112,12 @@ export function redactSupportDiagnosticText(value: unknown): string | null {
     .replace(/([?&](?:token|key|api_key|apiKey)=)[^&\s]+/gi, '$1[redacted]')
     .replace(/((?:api[_-]?key|apikey|secret|token)\s*[:=]\s*)[^\s,;&]+/gi, '$1[redacted]')
     .replace(/\b(?:sk|gho|github_pat)_[A-Za-z0-9_-]{12,}\b/g, '[redacted]');
+}
+
+function redactSupportLogDetails(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim().slice(0, 100_000);
+  return text ? redactSensitiveSupportText(text) : null;
 }
 
 function normalizePage(value: number | undefined): number {
@@ -835,7 +846,16 @@ export async function getSupportOverview(): Promise<SupportOverview> {
   };
 }
 
-export async function listSupportSystemLogs(limit = 100) {
+export async function listSupportSystemLogs(input: {
+  limit?: number;
+  sinceMs?: number;
+  severity?: string;
+} = {}) {
+  const limit = Math.min(10_000, Math.max(1, Math.floor(input.limit ?? 100)));
+  const sinceMs = Number.isFinite(input.sinceMs) && (input.sinceMs || 0) > 0
+    ? Math.floor(input.sinceMs || 0)
+    : null;
+  const severity = boundedText(input.severity, 20);
   const rows = await db.select({
     id: systemLogs.id,
     userId: systemLogs.userId,
@@ -844,15 +864,20 @@ export async function listSupportSystemLogs(limit = 100) {
     message: systemLogs.message,
     details: systemLogs.details,
     createdAt: systemLogs.createdAt,
-  }).from(systemLogs).orderBy(desc(systemLogs.createdAt))
-    .limit(Math.min(250, Math.max(1, Math.floor(limit))));
+  }).from(systemLogs)
+    .where(and(
+      sinceMs === null ? undefined : gte(systemLogs.createdAt, sinceMs),
+      severity ? eq(systemLogs.severity, severity) : undefined,
+    ))
+    .orderBy(desc(systemLogs.createdAt))
+    .limit(limit);
   return (rows as Array<Record<string, unknown>>).map((row) => ({
     id: String(row.id),
     userId: typeof row.userId === 'string' ? row.userId : null,
     severity: boundedText(row.severity, 20),
     context: boundedText(row.context, 80),
     message: redactSupportDiagnosticText(row.message) || 'No message',
-    details: redactSupportDiagnosticText(row.details),
+    details: redactSupportLogDetails(row.details),
     createdAt: toMs(row.createdAt),
   }));
 }

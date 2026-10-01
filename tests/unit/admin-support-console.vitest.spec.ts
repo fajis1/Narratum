@@ -39,6 +39,24 @@ describe('admin support console', () => {
     }
   });
 
+  test('keeps verbose diagnostic details redacted, expandable, and exportable by a bounded time range', () => {
+    const consoleSource = source('src/components/admin/support/SupportConsole.tsx');
+    const systemRoute = source('src/app/api/admin/support/system/route.ts');
+    const support = source('src/lib/server/admin/support.ts');
+
+    expect(consoleSource).toContain('Expand diagnostic details');
+    expect(consoleSource).toContain('Download error logs');
+    expect(consoleSource).toContain('Last 7 days');
+    expect(consoleSource).toContain('LOG_RANGE_OPTIONS');
+    expect(systemRoute).toContain('requireAdminContext(req)');
+    expect(systemRoute).toContain("format') === 'download'");
+    expect(systemRoute).toContain("severity: 'error'");
+    expect(systemRoute).toContain('openreader-error-logs-last-');
+    expect(systemRoute).toContain('168');
+    expect(support).toContain('redactSupportLogDetails');
+    expect(support).toContain('slice(0, 100_000)');
+  });
+
   test('redacts credentials and token-bearing URLs from support diagnostics', () => {
     const raw = [
       'Authorization: Bearer secret-token-value',

@@ -29,6 +29,17 @@ const VIEWS: Array<{ id: AdminSupportView; label: string; description: string; i
   { id: 'audit', label: 'Audit log', description: 'Administrator actions', icon: '≡' },
 ];
 
+const LOG_RANGE_OPTIONS = [
+  { hours: 1, label: 'Last hour' },
+  { hours: 2, label: 'Last 2 hours' },
+  { hours: 3, label: 'Last 3 hours' },
+  { hours: 5, label: 'Last 5 hours' },
+  { hours: 10, label: 'Last 10 hours' },
+  { hours: 24, label: 'Last 24 hours' },
+  { hours: 72, label: 'Last 3 days' },
+  { hours: 168, label: 'Last 7 days' },
+] as const;
+
 const fetcher = async <T,>(url: string): Promise<T> => {
   const response = await fetch(url, { cache: 'no-store' });
   const data = await response.json().catch(() => ({})) as { error?: string } & T;
@@ -1152,20 +1163,52 @@ type SystemResponse = {
     createdAt: number;
   }>;
   scheduler: { mode: string };
+  rangeHours: number;
 };
 
 function SystemPanel() {
+  const [rangeHours, setRangeHours] = useState(24);
+  const [isDownloading, setIsDownloading] = useState(false);
   const { data, error, isLoading, mutate } = useSWR<SystemResponse>(
-    '/api/admin/support/system',
+    `/api/admin/support/system?hours=${rangeHours}`,
     fetcher,
     { refreshInterval: 10_000 },
   );
+  const downloadErrorLogs = async () => {
+    setIsDownloading(true);
+    try {
+      const response = await fetch(`/api/admin/support/system?hours=${rangeHours}&format=download`, { cache: 'no-store' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || 'Unable to download error logs.');
+      }
+      const file = await response.blob();
+      const url = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `openreader-error-logs-last-${rangeHours}h.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      toast.success('Downloaded redacted error logs.');
+    } catch (downloadError) {
+      toast.error(downloadError instanceof Error ? downloadError.message : 'Unable to download error logs.');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
   return (
     <div className="space-y-5">
       <PanelHeading
         title="System"
-        description="Background maintenance and recent application diagnostics."
-        actions={<Button size="sm" onClick={() => mutate()}>Refresh</Button>}
+        description="Background maintenance and redacted application diagnostics."
+        actions={(
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="secondary" onClick={() => void downloadErrorLogs()} disabled={isDownloading}>
+              {isDownloading ? 'Preparing…' : 'Download error logs'}
+            </Button>
+            <Button size="sm" onClick={() => mutate()}>Refresh</Button>
+          </div>
+        )}
       />
       {isLoading ? <LoadingBlock label="Loading system status…" /> : null}
       {error ? <ErrorBlock error={error} /> : null}
@@ -1191,7 +1234,22 @@ function SystemPanel() {
             </div>
           </section>
           <section className="rounded-xl border border-line bg-surface p-4">
-            <h3 className="mb-3 font-semibold text-foreground">Recent diagnostic logs</h3>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-semibold text-foreground">Diagnostic logs</h3>
+                <p className="mt-1 text-xs text-soft">Expand an entry to view its complete redacted diagnostic details.</p>
+              </div>
+              <label className="text-xs font-semibold text-soft">Time range
+                <select
+                  aria-label="Log time range"
+                  value={rangeHours}
+                  onChange={(event) => setRangeHours(Number(event.target.value))}
+                  className="ml-2 h-8 rounded-md border border-line bg-surface-sunken px-2 text-sm font-normal text-foreground"
+                >
+                  {LOG_RANGE_OPTIONS.map((option) => <option key={option.hours} value={option.hours}>{option.label}</option>)}
+                </select>
+              </label>
+            </div>
             {data.logs.length === 0 ? <EmptyBlock>No diagnostic logs recorded.</EmptyBlock> : (
               <div className="max-h-[560px] overflow-auto rounded-lg border border-line">
                 <table className="w-full min-w-[760px] text-left text-xs">
@@ -1211,7 +1269,12 @@ function SystemPanel() {
                         <td className="px-3 py-2 text-soft">{log.context}</td>
                         <td className="max-w-3xl px-3 py-2 text-foreground">
                           <p>{log.message}</p>
-                          {log.details ? <p className="mt-1 break-words font-mono text-[10px] text-soft">{log.details}</p> : null}
+                          {log.details ? (
+                            <details className="mt-2 rounded border border-line bg-surface p-2">
+                              <summary className="cursor-pointer text-xs font-medium text-accent">Expand diagnostic details</summary>
+                              <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-soft">{log.details}</pre>
+                            </details>
+                          ) : null}
                         </td>
                       </tr>
                     ))}
