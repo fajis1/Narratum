@@ -352,6 +352,15 @@ export function ChapterErrorLogModal({
                         </div>
                       </div>
                     )}
+                    {diag.category === 'drama_director' && failure.chapterIndex != null && (
+                      <a
+                        href={`/api/audiobook/director-diagnostics?bookId=${encodeURIComponent(bookId)}&chapterIndex=${failure.chapterIndex}`}
+                        download
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-500 text-xs font-semibold"
+                      >
+                        <span>⬇</span> Download full Gemini response (JSON)
+                      </a>
+                    )}
                   </article>
                 );
               })}

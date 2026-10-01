@@ -1807,6 +1807,23 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
                   reason: `Drama Director output failed validation: ${issues.slice(0, 3).join('; ')}`,
                 }],
               }).catch(() => {});
+              const attempts = Array.isArray((error as { attempts?: unknown }).attempts)
+                ? (error as { attempts: unknown[] }).attempts : [];
+              await putAudiobookObject(
+                job.documentId,
+                userId,
+                `drama-director-failure-chapter-${String(chapter.index).padStart(4, '0')}.json`,
+                Buffer.from(JSON.stringify({
+                  schemaVersion: 1,
+                  createdAt: new Date().toISOString(),
+                  chapterIndex: chapter.index,
+                  chapterTitle: chapter.title,
+                  issues,
+                  attempts,
+                }, null, 2), 'utf8'),
+                'application/json',
+                null,
+              ).catch((persistError) => serverLogger.warn({ event: 'audiobook.drama_director_diagnostic_persist_failed', error: persistError }, 'Failed to persist Drama Director diagnostic response'));
             }
             throw error;
           }

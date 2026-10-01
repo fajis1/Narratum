@@ -15,10 +15,16 @@ export const DRAMA_DIRECTOR_PROMPT_EXAMPLES = examples.filter((example) => PROMP
 export const DRAMA_DIRECTOR_EVALUATION_EXAMPLES = examples.filter((example) => EVALUATION_EXAMPLE_NUMBERS.has(example.number));
 
 export class DramaDirectorValidationError extends Error {
-  constructor(public readonly issues: string[]) {
+  constructor(public readonly issues: string[], public readonly response?: string) {
     super(`Drama Director output failed validation: ${issues.join('; ')}`);
     this.name = 'DramaDirectorValidationError';
   }
+}
+
+export interface DramaDirectorResponseAttempt {
+  attempt: number;
+  issues: string[];
+  response: string;
 }
 
 function applyPolicyToTags(
@@ -163,6 +169,7 @@ export async function directDramaWithRepair(input: {
   onRepair?: (attempt: number, issues: readonly string[]) => void;
 }): Promise<DramaDirectorSegment[]> {
   const prompt = buildDramaDirectorPrompt(input);
+  const attempts: DramaDirectorResponseAttempt[] = [];
   let output: unknown;
   let nextPrompt = prompt;
   for (let attempt = 0; attempt <= 2; attempt += 1) {
@@ -170,7 +177,12 @@ export async function directDramaWithRepair(input: {
       output = await input.generate(nextPrompt);
       return validateDramaDirectorOutput({ ...input, output });
     } catch (error) {
-      if (!(error instanceof DramaDirectorValidationError) || attempt === 2) throw error;
+      if (!(error instanceof DramaDirectorValidationError)) throw error;
+      attempts.push({ attempt: attempt + 1, issues: [...error.issues], response: error.response || safeDirectorResponse(output) });
+      if (attempt === 2) {
+        Object.defineProperty(error, 'attempts', { value: attempts, enumerable: true });
+        throw error;
+      }
       input.onRepair?.(attempt + 1, error.issues);
       nextPrompt = [
         prompt,
@@ -183,6 +195,11 @@ export async function directDramaWithRepair(input: {
     }
   }
   throw new DramaDirectorValidationError(['Director repair attempts exhausted.']);
+}
+
+function safeDirectorResponse(value: unknown): string {
+  if (typeof value === 'string') return value.slice(0, 2_000_000);
+  try { return JSON.stringify(value).slice(0, 2_000_000); } catch { return '[unserializable Director response]'; }
 }
 
 /** Gemini JSON transport for the Director; orchestration supplies profile credentials. */
@@ -220,11 +237,11 @@ export async function directDramaWithGemini(input: {
         candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
       };
       const jsonText = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
-      if (!jsonText) throw new DramaDirectorValidationError(['Gemini returned no Director JSON.']);
+      if (!jsonText) throw new DramaDirectorValidationError(['Gemini returned no Director JSON.'], jsonText);
       try {
         return JSON.parse(jsonText) as unknown;
       } catch {
-        throw new DramaDirectorValidationError(['Gemini returned invalid Director JSON.']);
+        throw new DramaDirectorValidationError(['Gemini returned invalid Director JSON.'], jsonText);
       }
     },
   });
