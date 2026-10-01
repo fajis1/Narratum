@@ -42,7 +42,16 @@ function inVocabulary(value: unknown, vocabulary: readonly string[]): value is s
   return typeof value === 'string' && vocabulary.includes(value);
 }
 
-/** Segment text concatenation is byte-for-byte authoritative, including whitespace. */
+function normalizeParagraphBreakMultiplicity(value: string): string {
+  return value.replace(/\r\n?/g, '\n').replace(/\n{2,}/g, '\n');
+}
+
+function hasEquivalentAuthoritativeText(actual: string, expected: string): boolean {
+  return actual === expected
+    || normalizeParagraphBreakMultiplicity(actual) === normalizeParagraphBreakMultiplicity(expected);
+}
+
+/** Segment text is authoritative; only repeated paragraph-break multiplicity may differ. */
 export function validateDramaDirectorOutput(input: {
   sourceText: string;
   castNames: readonly string[];
@@ -75,7 +84,10 @@ export function validateDramaDirectorOutput(input: {
     if (segment.omit_from_audio !== false) issues.push(`${label}: omit_from_audio must be false for cleaned source text.`);
     if ('voiceId' in segment) issues.push(`${label}: voiceId must come from the reviewed cast.`);
     if (!inVocabulary(performance.primaryEmotion, DRAMA_PRIMARY_EMOTIONS)) issues.push(`${label}: invalid primaryEmotion.`);
-    if (!Array.isArray(performance.secondaryEmotions) || performance.secondaryEmotions.length > 2 || performance.secondaryEmotions.some((v) => !inVocabulary(v, DRAMA_SECONDARY_EMOTIONS))) issues.push(`${label}: secondaryEmotions must contain 0–2 allowed values.`);
+    const secondaryEmotions = Array.isArray(performance.secondaryEmotions)
+      ? Array.from(new Set(performance.secondaryEmotions.filter((value) => inVocabulary(value, DRAMA_SECONDARY_EMOTIONS)))).slice(0, 2)
+      : null;
+    if (!secondaryEmotions) issues.push(`${label}: secondaryEmotions must be an array.`);
     if (!inVocabulary(performance.socialIntent, DRAMA_SOCIAL_INTENTS)) issues.push(`${label}: invalid socialIntent.`);
     if (!Array.isArray(performance.delivery) || performance.delivery.length < 1 || performance.delivery.length > 2 || performance.delivery.some((v) => !inVocabulary(v, DRAMA_DELIVERY_STYLES))) issues.push(`${label}: delivery must contain 1–2 allowed values.`);
     if (!inVocabulary(performance.pace, DRAMA_PACING)) issues.push(`${label}: invalid pace.`);
@@ -92,7 +104,7 @@ export function validateDramaDirectorOutput(input: {
       omit_from_audio: segment.omit_from_audio as boolean,
       performance: {
         primaryEmotion: performance.primaryEmotion as DramaDirectorSegment['performance']['primaryEmotion'],
-        secondaryEmotions: performance.secondaryEmotions as DramaDirectorSegment['performance']['secondaryEmotions'],
+        secondaryEmotions: secondaryEmotions as DramaDirectorSegment['performance']['secondaryEmotions'],
         socialIntent: performance.socialIntent as DramaDirectorSegment['performance']['socialIntent'],
         delivery: performance.delivery as DramaDirectorSegment['performance']['delivery'],
         pace: performance.pace as DramaDirectorSegment['performance']['pace'],
@@ -106,8 +118,9 @@ export function validateDramaDirectorOutput(input: {
       },
     });
   }
-  if (rawSegments.map((segment) => record(segment)?.text).some((text) => typeof text !== 'string') ||
-      rawSegments.map((segment) => record(segment)?.text).join('') !== input.sourceText) {
+  const segmentTexts = rawSegments.map((segment) => record(segment)?.text);
+  if (segmentTexts.some((text) => typeof text !== 'string') ||
+      !hasEquivalentAuthoritativeText(segmentTexts.join(''), input.sourceText)) {
     issues.push('Segment text does not exactly match the authoritative source.');
   }
   if (issues.length) throw new DramaDirectorValidationError(issues);

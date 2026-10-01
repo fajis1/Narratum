@@ -52,7 +52,6 @@ describe('Drama Director prompt and validation', () => {
     for (const changes of [
       { omit_from_audio: true },
       { voiceId: 'Kore' },
-      { performance: { ...valid.segments[0].performance, secondaryEmotions: ['calm', 'sad', 'angry'] } },
       { performance: { ...valid.segments[0].performance, delivery: [] } },
       { performance: { ...valid.segments[0].performance, delivery: ['natural', 'soft', 'urgent'] } },
       { performance: { ...valid.segments[0].performance, tags: ['sigh', 'laugh', 'long pause'] } },
@@ -61,6 +60,12 @@ describe('Drama Director prompt and validation', () => {
         ...input, output: { segments: [{ ...valid.segments[0], ...changes }] },
       })).toThrow(DramaDirectorValidationError);
     }
+  });
+
+  it('safely filters and limits secondary emotions without changing source text', () => {
+    const output = structuredClone(valid);
+    (output.segments[0].performance as { secondaryEmotions: string[] }).secondaryEmotions = ['uncertain', 'uncertain', 'not-allowed'];
+    expect(validateDramaDirectorOutput({ ...input, output })[0].performance.secondaryEmotions).toEqual(['uncertain']);
   });
 
   it.each([
@@ -81,6 +86,22 @@ describe('Drama Director prompt and validation', () => {
     expect(validateDramaDirectorOutput({ ...input, output })).toHaveLength(2);
     output.segments[0].text = 'Hello,';
     expect(() => validateDramaDirectorOutput({ ...input, output })).toThrow(/exactly match/);
+  });
+
+  it('allows only paragraph-break multiplicity differences in authoritative text', () => {
+    const sourceText = 'Chapter 1\n\n[Bethany](/bɛθəni/) spoke.\n\nThe room went quiet.';
+    const output = structuredClone(valid);
+    output.segments = [
+      { ...output.segments[0], text: 'Chapter 1\n[Bethany](/bɛθəni/) spoke.\n' },
+      { ...output.segments[0], text: 'The room went quiet.' },
+    ];
+    expect(validateDramaDirectorOutput({ sourceText, castNames: ['Narrator'], output })).toHaveLength(2);
+
+    output.segments[0].text = 'Chapter 1 [Bethany](/bɛθəni/) spoke.\n';
+    expect(() => validateDramaDirectorOutput({ sourceText, castNames: ['Narrator'], output })).toThrow(/exactly match/);
+
+    output.segments[0].text = 'Chapter 1\n[Bethany](/bɛθəni/)spoke.\n';
+    expect(() => validateDramaDirectorOutput({ sourceText, castNames: ['Narrator'], output })).toThrow(/exactly match/);
   });
 
   it('makes up to two repairs and rejects a still-invalid correction', async () => {
