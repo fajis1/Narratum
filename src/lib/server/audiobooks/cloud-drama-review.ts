@@ -5,19 +5,31 @@ import { documentSettings } from '@/db/schema';
 import type { DocumentSettings } from '@/types/document-settings';
 import type { DramaSynthesisReviewFlag } from '@/lib/server/smart-audio/drama-cloud-synthesis';
 
+const CLOUD_DRAMA_REVIEW_KINDS = new Set([
+  'cloud-tts-failed',
+  'cloud-tts-split',
+  'tts-retry-used',
+  'tts-fallback-used',
+  'director-validation-repair',
+  'prompt-compacted',
+]);
+
 export async function persistCloudDramaReviewFlags(input: {
   documentId: string;
   userId: string;
   chapterIndex: number;
   flags: readonly DramaSynthesisReviewFlag[];
 }): Promise<void> {
-  if (!input.flags.length) return;
   const condition = and(eq(documentSettings.documentId, input.documentId), eq(documentSettings.userId, input.userId));
   const [row] = await db.select({ dataJson: documentSettings.dataJson }).from(documentSettings).where(condition).limit(1);
   if (!row) throw new Error('Document settings are unavailable for Cloud Drama review flags.');
   const settings = (typeof row.dataJson === 'string' ? JSON.parse(row.dataJson) : row.dataJson) as DocumentSettings;
   settings.smartAudioReviewFlags = [
-    ...(settings.smartAudioReviewFlags || []),
+    ...(settings.smartAudioReviewFlags || []).filter((flag) => !(
+      flag.chapterIndex === input.chapterIndex
+      && typeof flag.kind === 'string'
+      && CLOUD_DRAMA_REVIEW_KINDS.has(flag.kind)
+    )),
     ...input.flags.map((flag) => ({
       id: randomUUID(), chapterIndex: input.chapterIndex, timestampMs: 0, createdAt: Date.now(),
       kind: flag.kind, speaker: flag.speaker, sourceText: flag.sourceText,

@@ -205,6 +205,13 @@ describe('Audiobook Review Route & Component Contracts', () => {
     expect(chapterSource).toContain('attempts');
   });
 
+  test('Cloud Drama review persistence replaces stale automated flags for the chapter', () => {
+    const reviewSource = readSource('src/lib/server/audiobooks/cloud-drama-review.ts');
+    expect(reviewSource).toContain('CLOUD_DRAMA_REVIEW_KINDS');
+    expect(reviewSource).toContain('flag.chapterIndex === input.chapterIndex');
+    expect(reviewSource).not.toContain('if (!input.flags.length) return');
+  });
+
   test('JobsInlineView connects error log modal to failed background jobs', () => {
     const inlineJobs = readSource('src/components/doclist/views/JobsInlineView.tsx');
     expect(inlineJobs).toContain('View Error Log & Diagnostics');
