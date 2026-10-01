@@ -80,104 +80,91 @@ async def call_gemini_with_capacity_fallback(
     max_in_flight_delay: int | None = None,
     sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> tuple[T, str] | None:
-    """Try each model across configured keys with doubling backoff, equilibrium recovery, and fallback models."""
+    """Exhaust each key's model chain before moving to the next API key."""
     keys = list(dict.fromkeys(key.strip() for key in api_keys if key and key.strip()))
     if not keys or not models:
         return None
 
-    for model in models:
-        key_index = 0
-        is_first_attempt = True
-        while True:
-            api_key = keys[key_index]
-            state_key = (api_key, model)
-            api_state = api_states.setdefault(
-                state_key,
-                {
-                    "lock": asyncio.Lock(),
-                    "current_delay": 0,
-                    "resume_at": 0,
-                    "consecutive_max_delays": 0,
-                    "last_attempt_time": 0.0,
-                },
-            )
+    for key_index, api_key in enumerate(keys):
+        for model_index, model in enumerate(models):
+            is_first_attempt = True
+            while True:
+                state_key = (api_key, model)
+                api_state = api_states.setdefault(
+                    state_key,
+                    {
+                        "lock": asyncio.Lock(),
+                        "current_delay": 0,
+                        "resume_at": 0,
+                        "consecutive_max_delays": 0,
+                        "last_attempt_time": 0.0,
+                    },
+                )
 
-            lock = api_state.setdefault("lock", asyncio.Lock())
-            if not isinstance(lock, asyncio.Lock):
-                lock = asyncio.Lock()
-                api_state["lock"] = lock
+                lock = api_state.setdefault("lock", asyncio.Lock())
+                if not isinstance(lock, asyncio.Lock):
+                    lock = asyncio.Lock()
+                    api_state["lock"] = lock
 
-            async with lock:
-                # Equilibrium pacing: only on initial request entry, ensure at least current_delay has elapsed
-                if is_first_attempt:
-                    is_first_attempt = False
-                    current_delay = int(api_state.get("current_delay", 0) or 0)
-                    last_time = float(api_state.get("last_attempt_time", 0.0) or 0.0)
-                    now = time.time()
-                    elapsed = now - last_time if last_time > 0 else float(current_delay)
-                    needed_wait = float(current_delay) - elapsed
-                    if needed_wait > 0:
-                        if max_in_flight_delay is not None and needed_wait > max_in_flight_delay:
-                            print(f"  -> [⚠️] Model {model} equilibrium wait ({needed_wait:.1f}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
-                            break
-                        print(f"  -> [⏳] Rate Limiter Pacing: Pausing for {needed_wait:.1f}s equilibrium delay ({model})...")
-                        await sleep_fn(needed_wait)
+                async with lock:
+                    if is_first_attempt:
+                        is_first_attempt = False
+                        current_delay = int(api_state.get("current_delay", 0) or 0)
+                        last_time = float(api_state.get("last_attempt_time", 0.0) or 0.0)
+                        now = time.time()
+                        elapsed = now - last_time if last_time > 0 else float(current_delay)
+                        needed_wait = float(current_delay) - elapsed
+                        if needed_wait > 0:
+                            if max_in_flight_delay is not None and needed_wait > max_in_flight_delay:
+                                print(f"  -> [⚠️] Model {model} equilibrium wait ({needed_wait:.1f}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
+                                break
+                            print(f"  -> [⏳] Rate Limiter Pacing: Pausing for {needed_wait:.1f}s equilibrium delay ({model})...")
+                            await sleep_fn(needed_wait)
 
-                api_state["last_attempt_time"] = time.time()
+                    api_state["last_attempt_time"] = time.time()
 
-                try:
-                    response = await request(api_key, model)
-                except Exception as error:
-                    if not is_gemini_capacity_error(error):
-                        raise
+                    try:
+                        response = await request(api_key, model)
+                    except Exception as error:
+                        if not is_gemini_capacity_error(error):
+                            raise
 
-                    # Capacity error (429 or 503)
-                    # If we have another key (e.g. backup key) that hasn't been tried yet in this round:
-                    if len(keys) > 1 and key_index < len(keys) - 1:
                         curr = int(api_state.get("current_delay", 0) or 0)
-                        api_state["current_delay"] = min_delay if curr == 0 else min(curr * 2, max_delay)
-                        api_state["resume_at"] = time.time() + api_state["current_delay"]
-                        print(f"  -> [🔄] Primary API Limit Hit ({model})! Trying backup key...")
-                        key_index += 1
+                        next_delay = min_delay if curr == 0 else min(curr * 2, max_delay)
+                        api_state["current_delay"] = next_delay
+                        api_state["resume_at"] = time.time() + next_delay
+                        print(f"  -> [🛑] API Limit Hit ({model})! Spiking cooldown to {next_delay} seconds.")
+
+                        if model_index == len(models) - 1 and key_index < len(keys) - 1:
+                            print(f"  -> [🔄] Credential model chain exhausted ({model}); trying the backup key from its primary model...")
+                            break
+
+                        if max_in_flight_delay is not None and next_delay > max_in_flight_delay:
+                            print(f"  -> [⚠️] Model {model} cooldown ({next_delay}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
+                            break
+
+                        if next_delay >= max_delay:
+                            consecutive = int(api_state.get("consecutive_max_delays", 0) or 0) + 1
+                            api_state["consecutive_max_delays"] = consecutive
+                            if consecutive > max_top_delays:
+                                print(f"  -> [⚠️] Model {model} exceeded {max_top_delays} consecutive {max_delay}s waits. Advancing to fallback model...")
+                                api_state["consecutive_max_delays"] = 0
+                                break
+                            print(f"  -> [⏳] Waiting {next_delay}s (Wait {consecutive}/{max_top_delays} at max delay)...")
+                        else:
+                            print(f"  -> [⏳] Waiting {next_delay}s before retrying {model}...")
+
+                        await sleep_fn(next_delay)
+                        api_state["last_attempt_time"] = time.time()
                         continue
 
-                    # Reset key_index to 0 for next retry attempt
-                    key_index = 0
-
                     curr = int(api_state.get("current_delay", 0) or 0)
-                    next_delay = min_delay if curr == 0 else min(curr * 2, max_delay)
-                    api_state["current_delay"] = next_delay
-                    api_state["resume_at"] = time.time() + next_delay
-
-                    print(f"  -> [🛑] API Limit Hit ({model})! Spiking cooldown to {next_delay} seconds.")
-
-                    if max_in_flight_delay is not None and next_delay > max_in_flight_delay:
-                        print(f"  -> [⚠️] Model {model} cooldown ({next_delay}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
-                        break
-
-                    if next_delay >= max_delay:
-                        consecutive = int(api_state.get("consecutive_max_delays", 0) or 0) + 1
-                        api_state["consecutive_max_delays"] = consecutive
-                        if consecutive > max_top_delays:
-                            print(f"  -> [⚠️] Model {model} exceeded {max_top_delays} consecutive {max_delay}s waits. Advancing to fallback model...")
-                            api_state["consecutive_max_delays"] = 0
-                            break
-                        print(f"  -> [⏳] Waiting {next_delay}s (Wait {consecutive}/{max_top_delays} at max delay)...")
-                    else:
-                        print(f"  -> [⏳] Waiting {next_delay}s before retrying {model}...")
-
-                    await sleep_fn(next_delay)
-                    api_state["last_attempt_time"] = time.time()
-                    continue
-
-                # SUCCESS! Step the delay back down gracefully to find equilibrium
-                curr = int(api_state.get("current_delay", 0) or 0)
-                if curr > 0:
-                    reduced = curr // 2
-                    api_state["current_delay"] = reduced if reduced >= min_delay else 0
-                    print(f"  -> [✅] API Recovering ({model}): Cooldown reduced to {api_state['current_delay']} seconds.")
-                api_state["resume_at"] = 0
-                api_state["consecutive_max_delays"] = 0
-                return response, model
+                    if curr > 0:
+                        reduced = curr // 2
+                        api_state["current_delay"] = reduced if reduced >= min_delay else 0
+                        print(f"  -> [✅] API Recovering ({model}): Cooldown reduced to {api_state['current_delay']} seconds.")
+                    api_state["resume_at"] = 0
+                    api_state["consecutive_max_delays"] = 0
+                    return response, model
 
     return None

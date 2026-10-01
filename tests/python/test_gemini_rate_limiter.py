@@ -275,6 +275,34 @@ class GeminiCapacityFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, [("primary-key", "model"), ("backup-key", "model")])
         self.assertEqual(delays, [])
 
+    async def test_exhausts_primary_model_chain_before_trying_backup_key(self):
+        attempts = []
+
+        async def request(api_key, model):
+            attempts.append((api_key, model))
+            if api_key == "primary-key":
+                raise RuntimeError("429 Too Many Requests")
+            return "backup-success"
+
+        result = await call_gemini_with_capacity_fallback(
+            api_states={},
+            api_keys=["primary-key", "backup-key"],
+            models=["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"],
+            request=request,
+            min_delay=5,
+            max_delay=300,
+            max_in_flight_delay=0,
+            sleep_fn=lambda _: None,
+        )
+
+        self.assertEqual(result, ("backup-success", "gemini-3.8-flash"))
+        self.assertEqual(attempts, [
+            ("primary-key", "gemini-3.8-flash"),
+            ("primary-key", "gemini-3.7-flash"),
+            ("primary-key", "gemini-3.6-flash"),
+            ("backup-key", "gemini-3.8-flash"),
+        ])
+
     async def test_reports_exhaustion_only_after_every_key_and_model(self):
         attempts = []
         delays = []
@@ -398,4 +426,3 @@ class GeminiCapacityFallbackTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
