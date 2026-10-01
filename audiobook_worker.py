@@ -417,7 +417,7 @@ async def main():
         await nc.connect(nats_url)
         print("==========================================")
         print("  PYTHON AUDIOBOOK WORKER IS ONLINE")
-        print("  [Loaded: Standard Cleaner + LitRPG Audio Drama]")
+        print("  [Loaded: Standard Cleaner + Kokoro Audio Drama + Gemini Audio Drama]")
         print("==========================================")
         await nc.subscribe("audiobooks.gemini.clean", cb=process_message)
         await nc.subscribe("audiobooks.multivoice.extract", cb=process_multivoice_extract)

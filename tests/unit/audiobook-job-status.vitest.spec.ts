@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
+  GEMINI_CLEANUP_TIMEOUT_PAUSE_MESSAGE,
   GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE,
   GOOGLE_CLOUD_TTS_RATE_LIMIT_PAUSE_MESSAGE,
   isGeminiRateLimitPause,
@@ -10,6 +11,7 @@ import {
 describe('audiobook job status', () => {
   test('distinguishes a Gemini quota pause from a normal error', () => {
     expect(isGeminiRateLimitPause(GEMINI_RATE_LIMIT_PAUSE_MESSAGE)).toBe(true);
+    expect(isGeminiRateLimitPause(GEMINI_CLEANUP_TIMEOUT_PAUSE_MESSAGE)).toBe(true);
     expect(isGeminiRateLimitPause(GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE)).toBe(true);
     expect(isGeminiRateLimitPause(GOOGLE_CLOUD_TTS_RATE_LIMIT_PAUSE_MESSAGE)).toBe(true);
     expect(isGeminiRateLimitPause('Google Cloud TTS returned 429')).toBe(true);

@@ -6,6 +6,7 @@ describe('Smart Audio NATS timeout', () => {
     expect(resolveSmartAudioNatsTimeoutMs('scholar', undefined)).toBe(600_000);
     expect(resolveSmartAudioNatsTimeoutMs('bibliography-catcher', undefined)).toBe(600_000);
     expect(resolveSmartAudioNatsTimeoutMs('multi-voice', undefined)).toBe(600_000);
+    expect(resolveSmartAudioNatsTimeoutMs('drama-gemini-tts', undefined)).toBe(600_000);
   });
 
   test('keeps standard cleanup at two minutes by default', () => {

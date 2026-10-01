@@ -32,6 +32,7 @@ import {
 import {
   AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
   GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
+  GEMINI_CLEANUP_TIMEOUT_PAUSE_MESSAGE,
   GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE,
   calculateRemainingDailyQuotaMs,
   formatSystemResourcePauseMessage,
@@ -1379,8 +1380,9 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               : SMART_AUDIO_NATS_SUBJECT;
           }
 
+          const smartAudioNatsTimeoutMs = resolveSmartAudioNatsTimeoutMs(currentSelectedProfile?.workerMode);
           const msg = await nc.request(natsSubject, sc.encode(payload), {
-            timeout: resolveSmartAudioNatsTimeoutMs(currentSelectedProfile?.workerMode),
+            timeout: smartAudioNatsTimeoutMs,
           });
           if (!await workerStillOwnsAudiobookJob(job.id)) throw new AudiobookJobStoppedError();
           const applyAuthoritativeBookTags = (value: unknown): unknown => {
@@ -1650,6 +1652,8 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               jobId: job.id,
               bookId,
               chapter: chapter.index,
+              workerMode: currentSelectedProfile?.workerMode || 'standard',
+              timeoutMs: smartAudioNatsTimeoutMs,
               requestedModel: resolveCleanupAiModel(currentSelectedProfile),
               model: typeof workerResult.model_used === 'string'
                 ? workerResult.model_used
@@ -1697,6 +1701,8 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               jobId: job.id,
               bookId,
               chapter: chapter.index,
+              workerMode: currentSelectedProfile?.workerMode || 'standard',
+              timeoutMs: resolveSmartAudioNatsTimeoutMs(currentSelectedProfile?.workerMode),
             }, 'Smart Audio NATS request timed out. Yielding job to queue with 5-minute cooldown instead of aborting.');
             if (nc) await nc.close();
             const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
@@ -1705,7 +1711,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               status: 'queued',
               createdAt: job.createdAt,
               updatedAt: Date.now(),
-              error: GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
+              error: GEMINI_CLEANUP_TIMEOUT_PAUSE_MESSAGE,
               settingsJson: JSON.stringify(jobSettingsParsed),
             });
             return;
