@@ -10,6 +10,7 @@ import { resolveGeminiPrebuiltVoiceCatalog } from '@/lib/server/smart-audio/gemi
 import { normalizeGeminiTtsCharacterMap } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { synthesizeWithGeminiTts, GEMINI_TTS_AUDIO_MIME_TYPE } from '@/lib/server/smart-audio/gemini-tts-client';
 import { errorToLog, serverLogger } from '@/lib/server/logger';
+import { getStoredGeminiVoicePreview, putStoredGeminiVoicePreview } from '@/lib/server/smart-audio/gemini-voice-preview-cache';
 import {
   GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION,
   GEMINI_VOICE_ONLY_PREVIEW_MODEL,
@@ -95,6 +96,16 @@ export async function POST(request: NextRequest) {
       : cacheKey({ userId: context.userId, documentId, profileId, voiceName, text, previewMode, characterName, sceneContext });
     const cached = readCachedPreview(key);
     if (cached) return new NextResponse(new Uint8Array(cached), { headers: { 'Content-Type': GEMINI_TTS_AUDIO_MIME_TYPE, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'HIT' } });
+    if (previewMode === 'voice-only') {
+      const stored = await getStoredGeminiVoicePreview(key).catch((storageError) => {
+        serverLogger.warn({ event: 'audiobook.gemini_drama.preview.cache_read_failed', error: errorToLog(storageError), voiceName }, 'Could not read the stored Gemini voice preview.');
+        return null;
+      });
+      if (stored) {
+        writeCachedPreview(key, stored);
+        return new NextResponse(new Uint8Array(stored), { headers: { 'Content-Type': GEMINI_TTS_AUDIO_MIME_TYPE, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Narratum-Preview-Cache': 'PERSISTENT_HIT' } });
+      }
+    }
 
     const result = await synthesizeWithGeminiTts({
       text, voiceName, apiKey,
@@ -102,6 +113,11 @@ export async function POST(request: NextRequest) {
       ...(previewMode === 'voice-only' ? { modelName: GEMINI_VOICE_ONLY_PREVIEW_MODEL } : {}),
     });
     writeCachedPreview(key, result.audioBuffer);
+    if (previewMode === 'voice-only') {
+      await putStoredGeminiVoicePreview(key, result.audioBuffer, result.mimeType).catch((storageError) => {
+        serverLogger.warn({ event: 'audiobook.gemini_drama.preview.cache_write_failed', error: errorToLog(storageError), voiceName }, 'Could not store the Gemini voice preview.');
+      });
+    }
     return new NextResponse(new Uint8Array(result.audioBuffer), { headers: { 'Content-Type': result.mimeType, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'MISS' } });
   } catch (error) {
     serverLogger.error({ event: 'audiobook.gemini_drama.preview.failed', error: errorToLog(error), documentId, profileId, voiceName }, 'Gemini voice preview failed.');

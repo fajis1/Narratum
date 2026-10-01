@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
-  auth: vi.fn(), profiles: vi.fn(), synthesize: vi.fn(), catalog: vi.fn(), rows: [] as unknown[][],
+  auth: vi.fn(), profiles: vi.fn(), synthesize: vi.fn(), catalog: vi.fn(), getStoredPreview: vi.fn(), putStoredPreview: vi.fn(), rows: [] as unknown[][],
 }));
 
 vi.mock('@/lib/server/auth/auth', () => ({ requireAuthContext: mocks.auth }));
@@ -20,6 +20,10 @@ vi.mock('@/lib/server/smart-audio/gemini-tts-client', async () => {
 });
 vi.mock('@/lib/server/smart-audio/gemini-voice-catalog-cache', () => ({
   resolveGeminiPrebuiltVoiceCatalog: mocks.catalog,
+}));
+vi.mock('@/lib/server/smart-audio/gemini-voice-preview-cache', () => ({
+  getStoredGeminiVoicePreview: mocks.getStoredPreview,
+  putStoredGeminiVoicePreview: mocks.putStoredPreview,
 }));
 vi.mock('@/db', () => ({
   db: {
@@ -44,6 +48,8 @@ beforeEach(() => {
   mocks.profiles.mockResolvedValue([profile]);
   mocks.synthesize.mockResolvedValue({ audioBuffer: Buffer.from('wav'), mimeType: 'audio/wav' });
   mocks.catalog.mockResolvedValue({ source: 'live', fetchedAt: 1, catalogVersion: 'test', languageCodes: ['en-US'], voices: [{ id: 'Kore' }] });
+  mocks.getStoredPreview.mockResolvedValue(null);
+  mocks.putStoredPreview.mockResolvedValue(undefined);
   mocks.rows = [];
 });
 
@@ -97,6 +103,17 @@ describe('Gemini character preview route', () => {
       text: 'The lantern glowed softly as the evening train disappeared beyond the hills.',
     }));
     expect(mocks.synthesize.mock.calls[0][0].style).toContain('neutral audiobook voice comparison');
+    expect(mocks.putStoredPreview).toHaveBeenCalledWith(expect.any(String), Buffer.from('wav'), 'audio/wav');
+  });
+
+  it('reuses a stored neutral voice sample without calling Gemini again', async () => {
+    mocks.catalog.mockResolvedValue({ source: 'live', fetchedAt: 1, catalogVersion: 'test', languageCodes: ['en-US'], voices: [{ id: 'KoreStored' }] });
+    mocks.getStoredPreview.mockResolvedValue(Buffer.from('stored-wav'));
+    const { POST } = await import('@/app/api/audiobook/characters/preview/route');
+    const response = await POST(request({ previewMode: 'voice-only', voiceName: 'KoreStored' }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Narratum-Preview-Cache')).toBe('PERSISTENT_HIT');
+    expect(mocks.synthesize).not.toHaveBeenCalled();
   });
 
   it('uses saved direction for character previews', async () => {
