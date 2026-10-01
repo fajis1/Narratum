@@ -182,6 +182,8 @@ describe('Audiobook Review Route & Component Contracts', () => {
     expect(failureLogSource).toContain('normalizeSmartAudioReviewFlags');
     expect(failureLogSource).toContain('listAudiobookObjects');
     expect(failureLogSource).toContain('getAudiobookObjectBuffer');
+    expect(failureLogSource).toContain('hasDirectorDiagnostic');
+    expect(failureLogSource).toContain('drama-director-failure-chapter-');
   });
 
   test('ChapterErrorLogModal component categorizes errors and provides diagnostics', () => {
@@ -192,6 +194,15 @@ describe('Audiobook Review Route & Component Contracts', () => {
     expect(modalSource).toContain('Audio Synthesis or Remux Failure');
     expect(modalSource).toContain('navigator.clipboard.writeText');
     expect(modalSource).toContain('Copy Diagnostic Log');
+    expect(modalSource).toContain('failure.hasDirectorDiagnostic');
+    expect(modalSource).toContain('No retained Gemini response is available for this failure');
+  });
+
+  test('chapter re-record route retains failed Gemini Director responses', () => {
+    const chapterSource = readSource('src/app/api/audiobook/chapter/route.ts');
+    expect(chapterSource).toContain('drama-director-failure-chapter-');
+    expect(chapterSource).toContain('audiobook.chapter.drama_director_diagnostic_persist_failed');
+    expect(chapterSource).toContain('attempts');
   });
 
   test('JobsInlineView connects error log modal to failed background jobs', () => {

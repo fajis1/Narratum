@@ -352,7 +352,7 @@ export function ChapterErrorLogModal({
                         </div>
                       </div>
                     )}
-                    {diag.category === 'drama_director' && failure.chapterIndex != null && (
+                    {diag.category === 'drama_director' && failure.chapterIndex != null && failure.hasDirectorDiagnostic && (
                       <a
                         href={`/api/audiobook/director-diagnostics?bookId=${encodeURIComponent(bookId)}&chapterIndex=${failure.chapterIndex}`}
                         download
@@ -360,6 +360,11 @@ export function ChapterErrorLogModal({
                       >
                         <span>⬇</span> Download full Gemini response (JSON)
                       </a>
+                    )}
+                    {diag.category === 'drama_director' && failure.chapterIndex != null && !failure.hasDirectorDiagnostic && (
+                      <p className="text-[11px] text-amber-600 dark:text-amber-300">
+                        No retained Gemini response is available for this failure. Re-recording will save the full response if validation fails again.
+                      </p>
                     )}
                   </article>
                 );

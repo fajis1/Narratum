@@ -1130,6 +1130,27 @@ export async function POST(request: NextRequest) {
                 reason: `Drama Director output failed validation: ${issues.slice(0, 3).join('; ')}`,
               }],
             }).catch(() => {});
+            const attempts = Array.isArray((error as { attempts?: unknown }).attempts)
+              ? (error as { attempts: unknown[] }).attempts
+              : [];
+            await putAudiobookObject(
+              bookId,
+              storageUserId,
+              `drama-director-failure-chapter-${String(chapterIndex).padStart(4, '0')}.json`,
+              Buffer.from(JSON.stringify({
+                schemaVersion: 1,
+                createdAt: new Date().toISOString(),
+                chapterIndex,
+                chapterTitle: data.chapterTitle,
+                issues,
+                attempts,
+              }, null, 2), 'utf8'),
+              'application/json',
+              testNamespace,
+            ).catch((persistError) => serverLogger.warn(
+              { event: 'audiobook.chapter.drama_director_diagnostic_persist_failed', bookId, chapterIndex, error: errorToLog(persistError) },
+              'Failed to persist Drama Director diagnostic response',
+            ));
           }
           throw error;
         }

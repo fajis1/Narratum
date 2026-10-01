@@ -22,6 +22,7 @@ export interface ChapterFailureLogItem {
   jobId?: string;
   profileId?: string;
   sourceText?: string;
+  hasDirectorDiagnostic?: boolean;
 }
 
 export interface AudiobookFailureLogResponse {
@@ -108,6 +109,12 @@ export async function GET(request: NextRequest) {
 
     // List objects from blobstore
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
+    const directorDiagnosticIndices = new Set(
+      objects.flatMap((object) => {
+        const match = object.fileName.match(/^drama-director-failure-chapter-(\d+)\.json$/);
+        return match ? [Number.parseInt(match[1], 10)] : [];
+      }),
+    );
     const failures: ChapterFailureLogItem[] = [];
     const processedIndices = new Set<number>();
 
@@ -188,6 +195,10 @@ export async function GET(request: NextRequest) {
       }
 
       failures.sort((a, b) => a.chapterIndex - b.chapterIndex);
+    }
+
+    for (const failure of failures) {
+      failure.hasDirectorDiagnostic = directorDiagnosticIndices.has(failure.chapterIndex);
     }
 
     const responseData: AudiobookFailureLogResponse = {
