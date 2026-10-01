@@ -68,6 +68,8 @@ type DocumentToDelete = {
   isAudiobookView?: boolean;
 };
 
+type DramaCharacterScanProfile = Pick<SmartAudioProfile, 'id' | 'name' | 'workerMode' | 'geminiApiKeyConfigured'>;
+
 const DEFAULT_STATE: Required<
   Pick<
     DocumentListState,
@@ -253,6 +255,10 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
     document: DocumentListDocument;
     profileId: string;
     workerMode: 'multi-voice' | 'drama-gemini-tts';
+  } | null>(null);
+  const [dramaCharacterScanChoice, setDramaCharacterScanChoice] = useState<{
+    document: DocumentListDocument;
+    profiles: DramaCharacterScanProfile[];
   } | null>(null);
   const [isOpeningDramaCharacterScan, setIsOpeningDramaCharacterScan] = useState(false);
   const [docToInspect, setDocToInspect] = useState<DocumentListDocument | null>(null);
@@ -564,15 +570,20 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
       if (!response.ok) throw new Error(body.error || 'Could not load Audio Drama scanner settings.');
 
       const profiles = Array.isArray(body.smartAudioProfiles) ? body.smartAudioProfiles : [];
-      const selectedDramaProfile = profiles.find((profile) => (
-        profile.id === body.selectedSmartAudioProfileId
-        && (profile.workerMode === 'multi-voice' || profile.workerMode === 'drama-gemini-tts')
+      const dramaProfiles = profiles.filter((profile) => (
+        profile.workerMode === 'multi-voice' || profile.workerMode === 'drama-gemini-tts'
       ));
-      const dramaProfile = selectedDramaProfile
-        || profiles.find((profile) => profile.workerMode === 'multi-voice' || profile.workerMode === 'drama-gemini-tts');
+      const selectedDramaProfile = dramaProfiles.find((profile) => (
+        profile.id === body.selectedSmartAudioProfileId
+      ));
+      const dramaProfile = selectedDramaProfile || dramaProfiles[0];
       if (!dramaProfile) {
         toast.error('Create an Audio Drama profile before scanning a drama cast. Regular LitRPG profiles do not scan characters.');
         window.dispatchEvent(new CustomEvent('open-smart-ai-profiles'));
+        return;
+      }
+      if (dramaProfiles.length > 1) {
+        setDramaCharacterScanChoice({ document: doc, profiles: dramaProfiles });
         return;
       }
       if (!dramaProfile.geminiApiKeyConfigured) {
@@ -1227,6 +1238,45 @@ function DocumentListInner({ brand, appActions }: DocumentListInnerProps) {
           documentId={docToScan.id}
           documentName={docToScan.name}
         />
+      )}
+
+      {dramaCharacterScanChoice && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="character-scan-provider-title" className="w-full max-w-lg rounded-2xl border border-line bg-surface p-6 shadow-2xl">
+            <h2 id="character-scan-provider-title" className="text-xl font-bold text-text-strong">Choose character scan type</h2>
+            <p className="mt-2 text-sm text-text-soft">Choose the Audio Drama voice system for this cast. Kokoro and Gemini casts use different voice libraries.</p>
+            <div className="mt-5 space-y-3">
+              {dramaCharacterScanChoice.profiles.map((profile) => {
+                const isGeminiDrama = profile.workerMode === 'drama-gemini-tts';
+                const available = Boolean(profile.geminiApiKeyConfigured);
+                return (
+                  <button
+                    key={profile.id}
+                    type="button"
+                    disabled={!available}
+                    onClick={() => {
+                      if (!available) return;
+                      setDramaCharacterScan({
+                        document: dramaCharacterScanChoice.document,
+                        profileId: profile.id,
+                        workerMode: isGeminiDrama ? 'drama-gemini-tts' : 'multi-voice',
+                      });
+                      setDramaCharacterScanChoice(null);
+                    }}
+                    className="w-full rounded-xl border border-line bg-surface-raised p-4 text-left transition-colors hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span className="block font-semibold text-text-strong">{isGeminiDrama ? 'Gemini Character Scan' : 'Kokoro Character Scan'}</span>
+                    <span className="mt-1 block text-sm text-text-soft">{profile.name} · {isGeminiDrama ? 'Gemini voice library' : 'Kokoro voice library'}</span>
+                    {!available && <span className="mt-2 block text-xs text-danger">Add a Gemini API key to this profile before scanning.</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button type="button" onClick={() => setDramaCharacterScanChoice(null)} className="rounded-lg border border-line px-4 py-2 text-sm text-text-soft">Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {dramaCharacterScan && (

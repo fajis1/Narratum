@@ -389,6 +389,10 @@ describe('LitRPG source and production wiring', () => {
     expect(scanner).not.toContain('setTimeout(() => { if (!cancelled) void scanCharacters(); }, 0)');
     expect(scanner).toContain('Start Character Scan');
     expect(scanner).toContain('Regular LitRPG audiobooks do not scan characters');
+    expect(library).toContain('Choose character scan type');
+    expect(library).toContain('Kokoro Character Scan');
+    expect(library).toContain('Gemini Character Scan');
+    expect(library).toContain('Kokoro and Gemini casts use different voice libraries.');
     expect(scanner).toContain("standalone ? 'Save Cast' : 'Save Cast & Continue'");
     expect(scanner).toContain('duplicateVoiceByCharacter.has(character.name)');
     expect(scanner).toContain('Reusing it is allowed, but these characters may sound identical.');
