@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   filterGeminiVoiceLibrary,
+  filterGeminiVoicesByModelTier,
   formatGeminiAssignmentReason,
   listGeminiVoiceMetadataValues,
 } from '@/lib/shared/gemini-voice-library-ui';
@@ -11,8 +12,8 @@ const voice = (id: string, extra: Partial<GeminiVoiceCatalogEntry>): GeminiVoice
   persona: null, context: null, description: null, type: 'prebuilt', model: null, expireTime: null, ...extra,
 });
 const voices = [
-  voice('Algenib', { gender: 'male', pitch: 'low', accent: 'American', persona: 'Gravelly', context: 'Audiobook', description: 'Deep textured narration' }),
-  voice('Bright', { gender: 'female', pitch: 'high', accent: 'British', persona: 'Warm', context: 'Conversational', description: 'Bright dialogue' }),
+  voice('Algenib', { model: 'gemini-3.8-flash-tts', gender: 'male', pitch: 'low', accent: 'American', persona: 'Gravelly', context: 'Audiobook', description: 'Deep textured narration' }),
+  voice('Bright', { model: 'gemini-3.8-flash-lite-tts', gender: 'female', pitch: 'high', accent: 'British', persona: 'Warm', context: 'Conversational', description: 'Bright dialogue' }),
   voice('Neutral', { gender: 'neutral', pitch: 'medium', accent: 'American', persona: 'Measured', context: 'Narration', description: 'Measured and clear' }),
 ];
 const filters = { query: '', gender: 'all' as const, pitch: 'all' as const, accent: 'all', context: 'all', hideUsed: false };
@@ -29,6 +30,12 @@ describe('Gemini Voice Library filters', () => {
 
   it('keeps the current voice visible even if every active filter excludes it', () => {
     expect(filterGeminiVoiceLibrary(voices, { ...filters, gender: 'male', pitch: 'low', accent: 'American', context: 'Audiobook', hideUsed: true, currentVoiceId: 'Bright' }, new Set(['Bright'])).map((voice) => voice.id)).toEqual(['Algenib', 'Bright']);
+  });
+
+  it('separates primary Flash voices from Lite fallback voices while preserving a current choice', () => {
+    expect(filterGeminiVoicesByModelTier(voices, 'flash').map((entry) => entry.id)).toEqual(['Algenib', 'Neutral']);
+    expect(filterGeminiVoicesByModelTier(voices, 'flash-lite').map((entry) => entry.id)).toEqual(['Bright']);
+    expect(filterGeminiVoicesByModelTier(voices, 'flash', 'Bright').map((entry) => entry.id)).toEqual(['Algenib', 'Bright', 'Neutral']);
   });
 
   it('discovers metadata filters and formats saved assignment reasons for people', () => {

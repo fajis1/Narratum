@@ -8,12 +8,11 @@ import { requireAuthContext } from '@/lib/server/auth/auth';
 import { findSmartAudioProfileById, readSmartAudioProfilesDocument } from '@/lib/server/smart-audio-profiles';
 import { resolveGeminiPrebuiltVoiceCatalog } from '@/lib/server/smart-audio/gemini-voice-catalog-cache';
 import { normalizeGeminiTtsCharacterMap } from '@/lib/server/smart-audio/gemini-cast-helpers';
-import { synthesizeWithGeminiTts, GEMINI_TTS_AUDIO_MIME_TYPE } from '@/lib/server/smart-audio/gemini-tts-client';
+import { synthesizeWithGeminiTts, GEMINI_TTS_AUDIO_MIME_TYPE, GEMINI_TTS_MODEL, isGeminiTtsModel } from '@/lib/server/smart-audio/gemini-tts-client';
 import { errorToLog, serverLogger } from '@/lib/server/logger';
 import { getStoredGeminiVoicePreview, putStoredGeminiVoicePreview } from '@/lib/server/smart-audio/gemini-voice-preview-cache';
 import {
   GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION,
-  GEMINI_VOICE_ONLY_PREVIEW_MODEL,
   GEMINI_VOICE_ONLY_PREVIEW_STYLE,
   GEMINI_VOICE_ONLY_PREVIEW_TEXT,
 } from '@/lib/shared/gemini-voice-preview';
@@ -78,7 +77,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const catalog = await resolveGeminiPrebuiltVoiceCatalog({ apiKey });
-    if (!catalog.voices.some((voice) => voice.id === voiceName)) {
+    const catalogVoice = catalog.voices.find((voice) => voice.id === voiceName);
+    if (!catalogVoice) {
       return NextResponse.json({ error: 'That voice is no longer available in the Gemini Voice Library.' }, { status: 400 });
     }
     const settingsRows = await db.select({ dataJson: documentSettings.dataJson }).from(documentSettings).where(and(
@@ -91,8 +91,11 @@ export async function POST(request: NextRequest) {
     if (previewMode !== 'voice-only' && !entry) {
       return NextResponse.json({ error: 'Select a saved character before using this preview mode.' }, { status: 400 });
     }
+    const voiceModel = catalogVoice.model && isGeminiTtsModel(catalogVoice.model)
+      ? catalogVoice.model
+      : GEMINI_TTS_MODEL;
     const key = previewMode === 'voice-only'
-      ? cacheKey({ kind: 'gemini-voice-only', version: GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION, voiceName, model: GEMINI_VOICE_ONLY_PREVIEW_MODEL })
+      ? cacheKey({ kind: 'gemini-voice-only', version: GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION, voiceName, model: voiceModel })
       : cacheKey({ userId: context.userId, documentId, profileId, voiceName, text, previewMode, characterName, sceneContext });
     const cached = readCachedPreview(key);
     if (cached) return new NextResponse(new Uint8Array(cached), { headers: { 'Content-Type': GEMINI_TTS_AUDIO_MIME_TYPE, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'HIT' } });
@@ -110,7 +113,7 @@ export async function POST(request: NextRequest) {
     const result = await synthesizeWithGeminiTts({
       text, voiceName, apiKey,
       style: previewStyle({ mode: previewMode, description: entry?.cloudDirection?.audioProfile || entry?.description || '', sceneContext }),
-      ...(previewMode === 'voice-only' ? { modelName: GEMINI_VOICE_ONLY_PREVIEW_MODEL } : {}),
+      ...(previewMode === 'voice-only' ? { modelName: voiceModel } : {}),
     });
     writeCachedPreview(key, result.audioBuffer);
     if (previewMode === 'voice-only') {

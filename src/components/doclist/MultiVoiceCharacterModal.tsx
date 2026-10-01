@@ -14,11 +14,13 @@ import type { GeminiVoiceCatalogEntry } from '@/lib/shared/gemini-voice-catalog'
 import { autoAssignGeminiMinorVoices, recommendAnotherGeminiVoice, recommendGeminiVoices } from '@/lib/shared/gemini-voice-matching';
 import {
   filterGeminiVoiceLibrary,
+  filterGeminiVoicesByModelTier,
   formatGeminiAssignmentReason,
   formatGeminiVoiceMetadata,
   listGeminiVoiceMetadataValues,
   type GeminiVoiceGenderFilter,
   type GeminiVoicePitchFilter,
+  type GeminiVoiceModelTier,
 } from '@/lib/shared/gemini-voice-library-ui';
 
 interface MultiVoiceCharacterModalProps {
@@ -58,6 +60,7 @@ export function MultiVoiceCharacterModal({
   const [geminiVoices, setGeminiVoices] = useState<GeminiVoiceCatalogEntry[]>([]);
   const [geminiVoiceSource, setGeminiVoiceSource] = useState<string | null>(null);
   const [voiceSearch, setVoiceSearch] = useState('');
+  const [voiceModelTier, setVoiceModelTier] = useState<GeminiVoiceModelTier>('flash');
   const [voiceGenderFilter, setVoiceGenderFilter] = useState<GeminiVoiceGenderFilter>('all');
   const [voicePitchFilter, setVoicePitchFilter] = useState<GeminiVoicePitchFilter>('all');
   const [voiceAccentFilter, setVoiceAccentFilter] = useState('all');
@@ -239,7 +242,10 @@ export function MultiVoiceCharacterModal({
   }, [primaryCharacters]);
   const geminiAccents = useMemo(() => listGeminiVoiceMetadataValues(geminiVoices, 'accent'), [geminiVoices]);
   const geminiContexts = useMemo(() => listGeminiVoiceMetadataValues(geminiVoices, 'context'), [geminiVoices]);
-  const visibleGeminiVoices = useCallback((currentVoiceId?: string | null) => filterGeminiVoiceLibrary(geminiVoices, {
+  const primaryGeminiVoices = useMemo(() => filterGeminiVoicesByModelTier(geminiVoices, 'flash'), [geminiVoices]);
+  const liteGeminiVoices = useMemo(() => filterGeminiVoicesByModelTier(geminiVoices, 'flash-lite'), [geminiVoices]);
+  const visibleGeminiVoices = useCallback((currentVoiceId?: string | null) => filterGeminiVoiceLibrary(
+    filterGeminiVoicesByModelTier(geminiVoices, voiceModelTier, currentVoiceId), {
     query: voiceSearch,
     gender: voiceGenderFilter,
     pitch: voicePitchFilter,
@@ -247,7 +253,7 @@ export function MultiVoiceCharacterModal({
     context: voiceContextFilter,
     hideUsed: hideUsedVoices,
     currentVoiceId,
-  }, new Set(charactersByVoice.keys())), [charactersByVoice, geminiVoices, hideUsedVoices, voiceAccentFilter, voiceContextFilter, voiceGenderFilter, voicePitchFilter, voiceSearch]);
+  }, new Set(charactersByVoice.keys())), [charactersByVoice, geminiVoices, hideUsedVoices, voiceAccentFilter, voiceContextFilter, voiceGenderFilter, voiceModelTier, voicePitchFilter, voiceSearch]);
   const recommendedVoices = useMemo(() => {
     const result = new Map<string, ReturnType<typeof recommendGeminiVoices>[number]>();
     if (!isCloudDrama) return result;
@@ -259,7 +265,7 @@ export function MultiVoiceCharacterModal({
         .map((entry) => entry.voiceId as string));
       const [recommendation] = recommendGeminiVoices({
         character: { ...character, voiceAssignment: undefined },
-        voices: geminiVoices,
+        voices: primaryGeminiVoices,
         usedVoiceIds,
         narratorVoiceId,
         limit: 1,
@@ -267,7 +273,7 @@ export function MultiVoiceCharacterModal({
       if (recommendation) result.set(character.name, recommendation);
     }
     return result;
-  }, [geminiVoices, isCloudDrama, primaryCharacters]);
+  }, [isCloudDrama, primaryCharacters, primaryGeminiVoices]);
 
   const applyGeminiVoice = (name: string, voice: GeminiVoiceCatalogEntry) => {
     updateEntry(name, (entry) => {
@@ -300,7 +306,7 @@ export function MultiVoiceCharacterModal({
       .filter((candidate) => candidate.name !== name && candidate.voiceId)
       .map((candidate) => candidate.voiceId as string));
     const next = recommendAnotherGeminiVoice({
-      character: entry, voices: geminiVoices, usedVoiceIds, narratorVoiceId,
+      character: entry, voices: primaryGeminiVoices, usedVoiceIds, narratorVoiceId,
     }, new Set(entry.voiceId ? [entry.voiceId] : []));
     if (!next) {
       toast('No alternate Gemini voice matches the current cast.');
@@ -360,12 +366,12 @@ export function MultiVoiceCharacterModal({
 
   const handleAutoAssignMinor = () => {
     if (!characterMap) return;
-    if (isCloudDrama && geminiVoices.length === 0) {
+    if (isCloudDrama && primaryGeminiVoices.length === 0) {
       toast.error('The Gemini Voice Library is unavailable. Try again after the catalog loads.');
       return;
     }
     const result = isCloudDrama
-      ? autoAssignGeminiMinorVoices({ characterMap, voices: geminiVoices })
+      ? autoAssignGeminiMinorVoices({ characterMap, voices: primaryGeminiVoices })
       : autoAssignMinorCharacterVoices({ characterMap });
     if (result.assigned.length === 0) {
       toast('No unassigned minor characters to assign.');
@@ -577,6 +583,14 @@ export function MultiVoiceCharacterModal({
               {geminiVoiceSource === 'snapshot' && <p className="mb-3 text-xs text-text-soft">Showing the last verified Gemini Voice Library snapshot.</p>}
               {geminiVoiceSource === 'cache' && <p className="mb-3 text-xs text-text-soft">Showing a recently verified Gemini Voice Library cache.</p>}
               <div className="flex flex-wrap items-end gap-3">
+                <div className="flex rounded-lg border border-line bg-background p-1 text-xs" aria-label="Gemini voice model catalog">
+                  <button type="button" onClick={() => setVoiceModelTier('flash')} className={`rounded px-3 py-1.5 font-semibold ${voiceModelTier === 'flash' ? 'bg-accent text-white' : 'text-text-soft'}`}>
+                    Flash 3.8 ({primaryGeminiVoices.length})
+                  </button>
+                  <button type="button" onClick={() => setVoiceModelTier('flash-lite')} className={`rounded px-3 py-1.5 font-semibold ${voiceModelTier === 'flash-lite' ? 'bg-warning text-black' : 'text-text-soft'}`}>
+                    Flash 3.8 Lite fallback ({liteGeminiVoices.length})
+                  </button>
+                </div>
                 <label className="min-w-52 flex-1 text-xs text-text-soft">Search Gemini Voice Library
                   <input value={voiceSearch} onChange={(event) => setVoiceSearch(event.target.value)} placeholder="Name, ID, accent, persona?" className="mt-1 w-full rounded-lg border border-line bg-background p-2 text-sm text-foreground" />
                 </label>
@@ -602,7 +616,9 @@ export function MultiVoiceCharacterModal({
                 </label>
                 <label className="flex items-center gap-2 pb-2 text-xs text-text-soft"><input aria-label="Hide voices already in use" type="checkbox" checked={hideUsedVoices} onChange={(event) => setHideUsedVoices(event.target.checked)} /> Hide voices in use</label>
               </div>
-              <p className="mt-2 text-xs text-text-soft">Showing {visibleGeminiVoices().length} of {geminiVoices.length} Gemini prebuilt voices. A currently selected voice always remains visible.</p>
+              <p className="mt-2 text-xs text-text-soft">
+                Showing {visibleGeminiVoices().length} of {voiceModelTier === 'flash' ? primaryGeminiVoices.length : liteGeminiVoices.length} {voiceModelTier === 'flash' ? 'Flash 3.8 primary' : 'Flash 3.8 Lite fallback'} voices. A currently selected voice always remains visible.
+              </p>
             </div>
           )}
 
@@ -797,7 +813,7 @@ export function MultiVoiceCharacterModal({
                         </details>
                       )}
                       {isCloudDrama && character.voiceAssignment?.assignmentSource !== 'user' && (
-                        <button type="button" onClick={() => handleRecommendAnother(character.name)} disabled={geminiVoices.length === 0 || isPlaying === character.name} className="text-xs font-medium text-accent hover:underline disabled:opacity-50">
+                        <button type="button" onClick={() => handleRecommendAnother(character.name)} disabled={primaryGeminiVoices.length === 0 || isPlaying === character.name} className="text-xs font-medium text-accent hover:underline disabled:opacity-50">
                           Recommend another voice
                         </button>
                       )}

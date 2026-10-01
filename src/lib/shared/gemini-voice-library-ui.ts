@@ -1,5 +1,20 @@
 import type { GeminiVoiceCatalogEntry } from './gemini-voice-catalog';
 
+export type GeminiVoiceModelTier = 'flash' | 'flash-lite';
+
+/** Missing legacy model metadata is treated as the primary Flash catalog. */
+export function geminiVoiceModelTier(voice: GeminiVoiceCatalogEntry): GeminiVoiceModelTier {
+  return voice.model?.toLocaleLowerCase().includes('flash-lite') ? 'flash-lite' : 'flash';
+}
+
+export function filterGeminiVoicesByModelTier(
+  voices: readonly GeminiVoiceCatalogEntry[],
+  tier: GeminiVoiceModelTier,
+  currentVoiceId?: string | null,
+): GeminiVoiceCatalogEntry[] {
+  return voices.filter((voice) => voice.id === currentVoiceId || geminiVoiceModelTier(voice) === tier);
+}
+
 export type GeminiVoiceGenderFilter = 'all' | 'female' | 'male' | 'neutral' | 'unknown';
 export type GeminiVoicePitchFilter = 'all' | 'low' | 'medium' | 'high' | 'unknown';
 

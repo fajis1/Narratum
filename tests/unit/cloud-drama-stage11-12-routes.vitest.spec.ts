@@ -47,7 +47,7 @@ beforeEach(() => {
   mocks.auth.mockResolvedValue({ userId: 'user-1' });
   mocks.profiles.mockResolvedValue([profile]);
   mocks.synthesize.mockResolvedValue({ audioBuffer: Buffer.from('wav'), mimeType: 'audio/wav' });
-  mocks.catalog.mockResolvedValue({ source: 'live', fetchedAt: 1, catalogVersion: 'test', languageCodes: ['en-US'], voices: [{ id: 'Kore' }] });
+  mocks.catalog.mockResolvedValue({ source: 'live', fetchedAt: 1, catalogVersion: 'test', languageCodes: ['en-US'], voices: [{ id: 'Kore', model: 'gemini-3.8-flash-tts' }] });
   mocks.getStoredPreview.mockResolvedValue(null);
   mocks.putStoredPreview.mockResolvedValue(undefined);
   mocks.rows = [];
@@ -99,11 +99,21 @@ describe('Gemini character preview route', () => {
     const response = await POST(request({ previewMode: 'voice-only' }));
     expect(response.status).toBe(200);
     expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({
-      apiKey: profile.geminiApiKey, voiceName: 'Kore', modelName: 'gemini-3.8-flash-lite-tts',
+      apiKey: profile.geminiApiKey, voiceName: 'Kore', modelName: 'gemini-3.8-flash-tts',
       text: 'The lantern glowed softly as the evening train disappeared beyond the hills.',
     }));
     expect(mocks.synthesize.mock.calls[0][0].style).toContain('neutral audiobook voice comparison');
     expect(mocks.putStoredPreview).toHaveBeenCalledWith(expect.any(String), Buffer.from('wav'), 'audio/wav');
+  });
+
+  it('previews a Lite-catalog voice with the Lite model', async () => {
+    mocks.catalog.mockResolvedValue({ source: 'live', fetchedAt: 1, catalogVersion: 'test', languageCodes: ['en-US'], voices: [{ id: 'LiteVoice', model: 'gemini-3.8-flash-lite-tts' }] });
+    const { POST } = await import('@/app/api/audiobook/characters/preview/route');
+    const response = await POST(request({ previewMode: 'voice-only', voiceName: 'LiteVoice' }));
+    expect(response.status).toBe(200);
+    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({
+      voiceName: 'LiteVoice', modelName: 'gemini-3.8-flash-lite-tts',
+    }));
   });
 
   it('reuses a stored neutral voice sample without calling Gemini again', async () => {
