@@ -15,7 +15,7 @@ import { BASE_BOOKS, PRESET_MODELS } from "@/components/constants";
 import { toast } from "react-hot-toast";
 import { ModalFrame } from "@/components/ui";
 import { SmartAudioSettings } from "@/components/SmartAudioSettings";
-import { estimateSpeakerSegmentAtTime, parseVoiceTaggedText, renderVoiceSegments } from "@/lib/shared/multi-voice";
+import { DRAMA_GEMINI_TTS_WORKER_MODE, estimateSpeakerSegmentAtTime, parseVoiceTaggedText, renderVoiceSegments } from "@/lib/shared/multi-voice";
 import type { SmartAudioCharacterMap, SmartAudioReviewFlag } from "@/types/document-settings";
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from "@/lib/shared/audiobook-runtime-phase";
 import {
@@ -101,6 +101,10 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const selectedChapterIndex = currentChapter?.index;
 
   const isMultiVoice = chapterText.includes('<voice');
+  const selectedSmartAudioProfile = smartAudioProfiles.find((profile) => profile.id === selectedProfileId)
+    || smartAudioProfiles[0];
+  const isGeminiDrama = selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
+  const isDramaReview = isMultiVoice || isGeminiDrama;
   const isWaitingForGpu = activeJob?.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE;
 
   useEffect(() => {
@@ -490,7 +494,8 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           chapterIndex: currentChapter.index,
           chapterTitle: currentChapter.title,
           text: textToRecord,
-          useSmartAudio: false,
+          useSmartAudio: isGeminiDrama,
+          ...(isGeminiDrama ? { settings: { smartAudioProfileId: selectedProfileId } } : {}),
           format: currentChapter.format,
         }),
       });
@@ -547,7 +552,8 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           chapterIndex: chapter.index,
           chapterTitle: chapter.title,
           text,
-          useSmartAudio: false,
+          useSmartAudio: isGeminiDrama,
+          ...(isGeminiDrama ? { settings: { smartAudioProfileId: selectedProfileId } } : {}),
           format: chapter.format,
         }),
       });
@@ -851,7 +857,9 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       <div className="flex-none p-4 bg-surface border-b border-line-soft flex items-center justify-between">
         
         <div>
-          <h1 className="text-xl font-bold text-text-strong line-clamp-1">Review: {currentChapter.title}</h1>
+          <h1 className="text-xl font-bold text-text-strong line-clamp-1">
+            {isGeminiDrama ? 'Gemini Drama Review' : 'Review'}: {currentChapter.title}
+          </h1>
           <p className="text-text-soft text-sm">
             Chunk {currentChapter.index + 1}
             {chapterFilter === 'needs_review'
@@ -920,7 +928,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
             <button onClick={() => setShowRightPane(!showRightPane)} className={`px-3 py-1.5 text-xs font-medium border-l border-line-soft transition-colors ${showRightPane ? 'bg-accent text-background' : 'text-foreground hover:bg-surface-sunken'}`}>Edit</button>
           </div>
 
-          {isMultiVoice && (
+          {isMultiVoice && !isGeminiDrama && (
             <button
               onClick={() => setShowMultiVoiceStudio(true)}
               className="hidden md:flex px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium text-sm gap-2"
@@ -1193,18 +1201,18 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           disabled={isRegenerating || isTextLoading}
           className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-50 shrink-0"
         >
-          {isRegenerating ? "Rebuilding..." : "Save to Audiobook"}
+          {isRegenerating ? "Rebuilding..." : isGeminiDrama ? "Re-record with Gemini Drama" : "Save to Audiobook"}
         </button>
       </div>
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Far Left side: Chapter List / Guesses */}
         {showLeftPane && (
-          <div className={`w-full ${isMultiVoice ? 'md:w-1/2' : 'md:w-1/4'} flex flex-col border-r border-line-soft bg-surface h-1/3 md:h-full`}>
+          <div className={`w-full ${isDramaReview ? 'md:w-1/2' : 'md:w-1/4'} flex flex-col border-r border-line-soft bg-surface h-1/3 md:h-full`}>
             <div className="p-3 border-b border-line-soft bg-surface-raised shrink-0 flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-text-strong text-sm">
-                  {isMultiVoice ? 'Chapters & Speakers' : 'Context / Chapter Guesses'}
+                  {isMultiVoice && !isGeminiDrama ? 'Chapters & Speakers' : isGeminiDrama ? 'Gemini Drama Chapters' : 'Context / Chapter Guesses'}
                 </span>
                 {reviewChaptersCount > 0 && (
                   <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-500 border border-amber-500/30">
@@ -1372,7 +1380,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                         </div>
                         <div className="text-xs mt-1 line-clamp-2 opacity-80">{chap.title}</div>
                       </button>
-                    {selected && isMultiVoice && (
+                    {selected && isMultiVoice && !isGeminiDrama && (
                       <div className="ml-3 border-l border-indigo-500/30 py-1 pl-2" aria-label="Speaker segments for selected chapter">
                         {speakerSegments.length > 0 ? speakerSegments.map((segment, segmentIndex) => (
                           <div
@@ -1653,7 +1661,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       </ModalFrame>
 
       {/* Multi-Voice Studio Overlay */}
-      {showMultiVoiceStudio && isMultiVoice && (
+      {showMultiVoiceStudio && isMultiVoice && !isGeminiDrama && (
         <MultiVoiceReviewStudio
           bookId={bookId}
           chapterIndex={currentChapter.index}
