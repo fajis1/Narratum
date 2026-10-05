@@ -30,6 +30,75 @@ describe('Drama Cloud synthesis', () => {
     for (const chunk of chunks) expect(measureUtf8Bytes(chunk)).toBeLessThanOrEqual(20);
   });
 
+  it('prefers an earlier completed sentence over whitespace inside synthetic open dialogue', () => {
+    const limit = 120;
+    const input = `Narration begins. ${'filler '.repeat(7)}A safe boundary. ${'filler '.repeat(4)}"Before we leave there are several forms I need you to fill out and return to the office."`;
+    const chunks = splitDramaTextByUtf8(input, limit);
+    expect(chunks.join('')).toBe(input);
+    expect(chunks[0]).toMatch(/A safe boundary\. /);
+    expect(chunks[0]).not.toContain('fill ');
+    expect(chunks[0].includes('"')).toBe(false);
+    for (const chunk of chunks) expect(measureUtf8Bytes(chunk)).toBeLessThanOrEqual(limit);
+  });
+
+  it('prefers a paragraph boundary over a later sentence or whitespace boundary', () => {
+    const input = `${'first '.repeat(10)}\n\n${'second '.repeat(8)}A later sentence. ${'tail '.repeat(10)}`;
+    const chunks = splitDramaTextByUtf8(input, 120);
+    expect(chunks[0]).toBe(`${'first '.repeat(10)}\n\n`);
+    expect(chunks.join('')).toBe(input);
+    expect(chunks.every((chunk) => measureUtf8Bytes(chunk) <= 120)).toBe(true);
+  });
+
+  it('preserves quotes, apostrophes, markup and multibyte text across safe boundaries', () => {
+    const limit = 70;
+    const input = `“Don't change Bethany's [name](/neɪm/)… Καλημέρα 😀.” ${'filler '.repeat(12)} “A complete sentence.”`;
+    const chunks = splitDramaTextByUtf8(input, limit);
+    expect(chunks.join('')).toBe(input);
+    expect(chunks.join('')).toContain('[name](/neɪm/)');
+    expect(chunks.join('')).toContain('… Καλημέρα 😀');
+    for (const chunk of chunks) expect(measureUtf8Bytes(chunk)).toBeLessThanOrEqual(limit);
+  });
+
+  it('falls back safely for very long dialogue, spaces only, and no whitespace', () => {
+    for (const input of [`"${'word '.repeat(80)}"`, 'word '.repeat(100), '😀'.repeat(80)]) {
+      const chunks = splitDramaTextByUtf8(input, 40);
+      expect(chunks.join('')).toBe(input);
+      expect(chunks.every((chunk) => measureUtf8Bytes(chunk) <= 40)).toBe(true);
+      expect(chunks.every(Boolean)).toBe(true);
+    }
+  });
+
+  it('uses a safe completed sentence for the exact 12,000-byte Director limit', () => {
+    const limit = 12_000;
+    const safePrefix = `${'n'.repeat(11_000)}. `;
+    const input = `${safePrefix}"${'fill out '.repeat(300)}"`;
+    const chunks = splitDramaTextByUtf8(input, limit);
+    expect(measureUtf8Bytes(input)).toBeGreaterThan(limit);
+    expect(chunks[0]).toBe(safePrefix);
+    expect(chunks[0].includes('"')).toBe(false);
+    expect(chunks.join('')).toBe(input);
+    expect(chunks.every((chunk) => measureUtf8Bytes(chunk) <= limit)).toBe(true);
+  });
+
+  it('permits an in-quote fallback for dialogue longer than the byte limit without mutation', () => {
+    const limit = 12_000;
+    const input = `"${'long dialogue '.repeat(1_200)}"`;
+    const chunks = splitDramaTextByUtf8(input, limit);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[0].startsWith('"')).toBe(true);
+    expect(chunks.join('')).toBe(input);
+    expect(chunks.every((chunk) => measureUtf8Bytes(chunk) <= limit)).toBe(true);
+  });
+
+  it('does not split pronunciation markup internally when another legal boundary exists', () => {
+    const input = `${'lead '.repeat(8)}[You](/ju/) ${'tail '.repeat(20)}`;
+    const chunks = splitDramaTextByUtf8(input, 55);
+    expect(chunks.join('')).toBe(input);
+    expect(chunks.every((chunk) => measureUtf8Bytes(chunk) <= 55)).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('[You](/ju/)'))).toBe(true);
+    expect(chunks.every((chunk) => !chunk.includes('[You](/') || chunk.includes('[You](/ju/)'))).toBe(true);
+  });
+
   it('puts one-shot cues once, style cues on each chunk, and pause at the end', () => {
     expect(annotateDramaChunks(['Hello ', 'world.'], ['sigh', 'whispering', 'long pause'])).toEqual([
       '[sigh] [whispering] Hello ', '[whispering] world. [long pause]',

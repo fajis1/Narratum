@@ -41,11 +41,45 @@ export interface DramaSynthesisResult {
   reviewFlags: DramaSynthesisReviewFlag[];
 }
 
-/** Exact source partition, preferring whitespace and sentence boundaries. */
+function pronunciationMarkupInteriorBoundaries(text: string): Set<number> {
+  const blocked = new Set<number>();
+  for (const match of text.matchAll(/\[[^\]]+\]\(\/[^)]*\/\)/gu)) {
+    const start = Array.from(text.slice(0, match.index)).length;
+    const length = Array.from(match[0]).length;
+    for (let boundary = start + 1; boundary < start + length; boundary += 1) blocked.add(boundary);
+  }
+  return blocked;
+}
+
+function quoteStateAtBoundaries(characters: readonly string[]): boolean[] {
+  const states = [false];
+  let open = false;
+  for (const character of characters) {
+    if (character === '“') open = true;
+    else if (character === '”') open = false;
+    else if (character === '"') open = !open;
+    states.push(open);
+  }
+  return states;
+}
+
+function boundaryQuality(characters: readonly string[], boundary: number): number {
+  const before = characters.slice(0, boundary).join('');
+  if (/(?:\r?\n){2,}$/u.test(before)) return 4;
+  const trimmed = before.replace(/\s+$/u, '');
+  if (/[.!?][”"]?$/u.test(trimmed)) return 3;
+  if (/[;:]$/u.test(trimmed)) return 2;
+  if (/,$/u.test(trimmed)) return 1;
+  return /\s$/u.test(before) ? 0 : -1;
+}
+
+/** Exact UTF-8-safe source partition. Prefer paragraphs/sentences outside dialogue before weak whitespace. */
 export function splitDramaTextByUtf8(text: string, maxBytes: number): string[] {
   if (!Number.isInteger(maxBytes) || maxBytes < 4) throw new Error('Chunk byte budget must be at least four bytes.');
   if (!text) return [];
   const characters = Array.from(text);
+  const blockedMarkupBoundaries = pronunciationMarkupInteriorBoundaries(text);
+  const quoteStates = quoteStateAtBoundaries(characters);
   const chunks: string[] = [];
   let start = 0;
   while (start < characters.length) {
@@ -59,14 +93,22 @@ export function splitDramaTextByUtf8(text: string, maxBytes: number): string[] {
     }
     if (end === start) throw new Error('A character exceeds the chunk byte budget.');
     if (end < characters.length) {
-      let boundary = -1;
-      for (let index = end - 1; index > start; index -= 1) {
-        if (/\s/u.test(characters[index]) || /[.!?;:]/u.test(characters[index - 1])) {
-          boundary = index + 1;
-          break;
-        }
+      const minimum = start + Math.floor((end - start) / 2);
+      const candidates: Array<{ boundary: number; quality: number; openQuote: boolean }> = [];
+      for (let boundary = minimum; boundary <= end; boundary += 1) {
+        if (blockedMarkupBoundaries.has(boundary)) continue;
+        const quality = boundaryQuality(characters, boundary);
+        if (quality >= 0) candidates.push({ boundary, quality, openQuote: quoteStates[boundary] });
       }
-      if (boundary > start && boundary - start >= Math.floor((end - start) / 2)) end = boundary;
+      if (candidates.length) {
+        // If any reasonable outside-dialogue boundary exists, it wins over an
+        // in-dialogue boundary. Within that set, linguistic quality outranks
+        // closeness; an overlong quotation still falls back to in-quote splits.
+        const quoteSafe = candidates.filter((candidate) => !candidate.openQuote);
+        const eligible = quoteSafe.length ? quoteSafe : candidates;
+        const bestQuality = Math.max(...eligible.map((candidate) => candidate.quality));
+        end = eligible.filter((candidate) => candidate.quality === bestQuality).at(-1)!.boundary;
+      }
     }
     chunks.push(characters.slice(start, end).join(''));
     start = end;
