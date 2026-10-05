@@ -10,6 +10,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest) {
   const bookId = request.nextUrl.searchParams.get('bookId');
   const chapterIndex = Number(request.nextUrl.searchParams.get('chapterIndex'));
+  const kind = request.nextUrl.searchParams.get('kind') || 'director';
   if (!bookId || !Number.isInteger(chapterIndex) || chapterIndex < 0) {
     return NextResponse.json({ error: 'bookId and a valid chapterIndex are required' }, { status: 400 });
   }
@@ -19,7 +20,10 @@ export async function GET(request: NextRequest) {
   const owned = await db.select({ id: audiobooks.id }).from(audiobooks)
     .where(and(eq(audiobooks.id, bookId), eq(audiobooks.userId, ctxOrRes.userId)));
   if (!owned.length) return NextResponse.json({ error: 'Book not found' }, { status: 404 });
-  const fileName = `drama-director-failure-chapter-${String(chapterIndex).padStart(4, '0')}.json`;
+  if (kind !== 'director' && kind !== 'provider') return NextResponse.json({ error: 'Invalid diagnostic kind' }, { status: 400 });
+  const fileName = kind === 'provider'
+    ? `${String(chapterIndex + 1).padStart(4, '0')}__provider_failure.json`
+    : `drama-director-failure-chapter-${String(chapterIndex).padStart(4, '0')}.json`;
   try {
     const body = await getAudiobookObjectBuffer(bookId, ctxOrRes.userId, fileName, null);
     return new NextResponse(body as unknown as BodyInit, {

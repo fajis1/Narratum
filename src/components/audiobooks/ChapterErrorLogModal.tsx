@@ -336,6 +336,12 @@ export function ChapterErrorLogModal({
                     </div>
 
                     {/* Exact Error Messages Log Box */}
+                    {failure.hasProviderDiagnostic && (
+                      <div className="text-xs text-text-soft rounded-lg border border-line-soft p-3">
+                        <span className="font-semibold">Provider summary: </span>
+                        {failure.stage || 'Smart Audio'}{failure.provider ? ` · ${failure.provider}` : ''}{failure.model ? ` · ${failure.model}` : ''}{failure.httpStatus ? ` · HTTP ${failure.httpStatus}` : ''}{failure.apiStatus ? ` · ${failure.apiStatus}` : ''}{failure.attempts ? ` · ${failure.attempts} attempts` : ''}
+                      </div>
+                    )}
                     {failure.errors.length > 0 && (
                       <div className="space-y-1">
                         <div className="flex justify-between items-center text-[10px] font-semibold text-text-soft uppercase tracking-wider">
@@ -359,6 +365,15 @@ export function ChapterErrorLogModal({
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-500 text-xs font-semibold"
                       >
                         <span>⬇</span> Download full Gemini response (JSON)
+                      </a>
+                    )}
+                    {failure.chapterIndex != null && failure.hasProviderDiagnostic && (
+                      <a
+                        href={`/api/audiobook/director-diagnostics?bookId=${encodeURIComponent(bookId)}&chapterIndex=${failure.chapterIndex}&kind=provider`}
+                        download
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-500 text-xs font-semibold"
+                      >
+                        <span>⬇</span> Download Provider Diagnostic (JSON)
                       </a>
                     )}
                     {diag.category === 'drama_director' && failure.chapterIndex != null && !failure.hasDirectorDiagnostic && (

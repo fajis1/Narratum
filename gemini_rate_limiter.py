@@ -1,5 +1,6 @@
 import asyncio
 import math
+import re
 import time
 from typing import Awaitable, Callable, MutableMapping, Sequence, TypeVar
 
@@ -63,9 +64,43 @@ def ordered_gemini_models(primary: str, fallbacks: object, *, limit: int = 2) ->
     return models
 
 
-def is_gemini_capacity_error(error: Exception) -> bool:
-    message = str(error).lower()
-    return any(token in message for token in ("429", "quota", "rate limit", "503"))
+def gemini_error_details(error: Exception) -> dict[str, object]:
+    """Extract a small, credential-free diagnostic from Google SDK exceptions."""
+    status = getattr(error, "code", None)
+    if callable(status):
+        try:
+            status = status()
+        except Exception:
+            status = None
+    status_value = getattr(status, "value", status)
+    http_status = status_value if isinstance(status_value, int) else None
+    message = str(error)
+    match = re.search(r"\b(429|500|502|503|504)\b", message)
+    if http_status is None and match:
+        http_status = int(match.group(1))
+    api_status = getattr(error, "status", None) or getattr(status, "name", None)
+    if not isinstance(api_status, str):
+        api_status = next((value for value in ("RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED") if value in message.upper()), None)
+    return {
+        "httpStatus": http_status,
+        "apiStatus": api_status if isinstance(api_status, str) else None,
+        "exceptionType": type(error).__name__,
+        "message": message[:2000],
+    }
+
+
+def is_gemini_retryable_error(error: Exception) -> bool:
+    details = gemini_error_details(error)
+    if details["httpStatus"] in (429, 500, 502, 503, 504):
+        return True
+    if details["apiStatus"] in ("RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"):
+        return True
+    message = str(details["message"]).lower()
+    return any(token in message for token in ("quota", "rate limit", "resource_exhausted", "unavailable"))
+
+
+# Compatibility for callers outside this repository.
+is_gemini_capacity_error = is_gemini_retryable_error
 
 
 async def call_gemini_with_capacity_fallback(
@@ -79,12 +114,14 @@ async def call_gemini_with_capacity_fallback(
     max_top_delays: int = 3,
     max_in_flight_delay: int | None = None,
     sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    attempt_recorder: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[T, str] | None:
     """Exhaust each key's model chain before moving to the next API key."""
     keys = list(dict.fromkeys(key.strip() for key in api_keys if key and key.strip()))
     if not keys or not models:
         return None
 
+    attempt_number = 0
     for key_index, api_key in enumerate(keys):
         for model_index, model in enumerate(models):
             is_first_attempt = True
@@ -116,9 +153,9 @@ async def call_gemini_with_capacity_fallback(
                         needed_wait = float(current_delay) - elapsed
                         if needed_wait > 0:
                             if max_in_flight_delay is not None and needed_wait > max_in_flight_delay:
-                                print(f"  -> [⚠️] Model {model} equilibrium wait ({needed_wait:.1f}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
+                                print(f"  -> [WARN] Model {model} equilibrium wait ({needed_wait:.1f}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
                                 break
-                            print(f"  -> [⏳] Rate Limiter Pacing: Pausing for {needed_wait:.1f}s equilibrium delay ({model})...")
+                            print(f"  -> [WAIT] Rate Limiter Pacing: Pausing for {needed_wait:.1f}s equilibrium delay ({model})...")
                             await sleep_fn(needed_wait)
 
                     api_state["last_attempt_time"] = time.time()
@@ -126,33 +163,43 @@ async def call_gemini_with_capacity_fallback(
                     try:
                         response = await request(api_key, model)
                     except Exception as error:
-                        if not is_gemini_capacity_error(error):
+                        details = gemini_error_details(error)
+                        if attempt_recorder:
+                            attempt_number += 1
+                            attempt_recorder({
+                                "attempt": attempt_number,
+                                "keyType": "primary" if key_index == 0 else "backup",
+                                "model": model,
+                                "outcome": "error",
+                                **details,
+                            })
+                        if not is_gemini_retryable_error(error):
                             raise
 
                         curr = int(api_state.get("current_delay", 0) or 0)
                         next_delay = min_delay if curr == 0 else min(curr * 2, max_delay)
                         api_state["current_delay"] = next_delay
                         api_state["resume_at"] = time.time() + next_delay
-                        print(f"  -> [🛑] API Limit Hit ({model})! Spiking cooldown to {next_delay} seconds.")
+                        print(f"  -> [LIMIT] API retryable error ({model}); cooldown {next_delay} seconds.")
 
                         if model_index == len(models) - 1 and key_index < len(keys) - 1:
-                            print(f"  -> [🔄] Credential model chain exhausted ({model}); trying the backup key from its primary model...")
+                            print(f"  -> [FALLBACK] Credential model chain exhausted ({model}); trying backup key from its primary model...")
                             break
 
                         if max_in_flight_delay is not None and next_delay > max_in_flight_delay:
-                            print(f"  -> [⚠️] Model {model} cooldown ({next_delay}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
+                            print(f"  -> [WARN] Model {model} cooldown ({next_delay}s) exceeds in-flight limit ({max_in_flight_delay}s). Advancing to fallback model...")
                             break
 
                         if next_delay >= max_delay:
                             consecutive = int(api_state.get("consecutive_max_delays", 0) or 0) + 1
                             api_state["consecutive_max_delays"] = consecutive
                             if consecutive > max_top_delays:
-                                print(f"  -> [⚠️] Model {model} exceeded {max_top_delays} consecutive {max_delay}s waits. Advancing to fallback model...")
+                                print(f"  -> [WARN] Model {model} exceeded {max_top_delays} consecutive {max_delay}s waits. Advancing to fallback model...")
                                 api_state["consecutive_max_delays"] = 0
                                 break
-                            print(f"  -> [⏳] Waiting {next_delay}s (Wait {consecutive}/{max_top_delays} at max delay)...")
+                            print(f"  -> [WAIT] Waiting {next_delay}s (Wait {consecutive}/{max_top_delays} at max delay)...")
                         else:
-                            print(f"  -> [⏳] Waiting {next_delay}s before retrying {model}...")
+                            print(f"  -> [WAIT] Waiting {next_delay}s before retrying {model}...")
 
                         await sleep_fn(next_delay)
                         api_state["last_attempt_time"] = time.time()
@@ -162,7 +209,7 @@ async def call_gemini_with_capacity_fallback(
                     if curr > 0:
                         reduced = curr // 2
                         api_state["current_delay"] = reduced if reduced >= min_delay else 0
-                        print(f"  -> [✅] API Recovering ({model}): Cooldown reduced to {api_state['current_delay']} seconds.")
+                        print(f"  -> [RECOVERED] API recovering ({model}); cooldown reduced to {api_state['current_delay']} seconds.")
                     api_state["resume_at"] = 0
                     api_state["consecutive_max_delays"] = 0
                     return response, model

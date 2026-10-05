@@ -7,6 +7,7 @@ import {
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import type { DramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
 import { fetchGeminiWithRateLimitFallback } from './gemini-failover';
+import { geminiPrivateErrorDetails } from './gemini-error-details';
 
 const PROMPT_EXAMPLE_NUMBERS = new Set([1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 15]);
 const EVALUATION_EXAMPLE_NUMBERS = new Set([6, 10, 13, 14]);
@@ -232,7 +233,13 @@ export async function directDramaWithGemini(input: {
           },
         ),
       });
-      if (!response.ok) throw new Error(`Gemini Drama Director request failed (HTTP ${response.status}).`);
+      if (!response.ok) {
+        const details = await geminiPrivateErrorDetails(response);
+        const responseDiagnostic = JSON.stringify({ provider: 'gemini', httpStatus: response.status, ...details }).slice(0, 2_000_000);
+        throw new DramaDirectorValidationError([
+          `Gemini Drama Director provider failure (HTTP ${response.status}${details.apiStatus ? ` ${details.apiStatus}` : ''}): ${details.message || 'No provider message.'}`,
+        ], responseDiagnostic);
+      }
       const data = await response.json() as {
         candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
       };

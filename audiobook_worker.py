@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from gemini_rate_limiter import (
     call_gemini_with_capacity_fallback,
     extract_gemini_usage,
+    gemini_error_details,
     ordered_gemini_models,
 )
 
@@ -62,6 +63,15 @@ async def process_message(msg):
     validation_feedback = data.get("validation_feedback", "")
     rejected_output = data.get("rejected_output", "")
     raw_text = data.get("raw_text")
+    correlation = {
+        "jobId": data.get("job_id"), "bookId": data.get("book_id"),
+        "chapterIndex": data.get("chapter_index"), "chapterTitle": data.get("chapter_title"),
+        "workerMode": data.get("worker_mode") or "standard",
+    }
+    attempts: list[dict[str, object]] = []
+
+    def record_attempt(attempt: dict[str, object]) -> None:
+        attempts.append(attempt)
     
     # --- ADD THESE 3 LINES RIGHT HERE ---
     text_length = len(raw_text) if raw_text else 0
@@ -127,6 +137,7 @@ async def process_message(msg):
             min_delay=MIN_DELAY,
             max_delay=MAX_DELAY,
             max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
+            attempt_recorder=record_attempt,
         )
         if generated is None:
             await msg.respond(json.dumps({
@@ -200,8 +211,17 @@ async def process_message(msg):
         print("[*] Job finished and returned to the NATS queue.")
 
     except Exception as e:
-        print(f"[!] Critical API Error: {e}")
-        await msg.respond(json.dumps({"status": "error", "message": str(e)}).encode())
+        details = gemini_error_details(e)
+        diagnostic = {
+            "schemaVersion": 1, "provider": "gemini", "stage": "smart-audio-cleanup",
+            **correlation, "modelRequested": ai_model,
+            "modelsAttempted": [item.get("model") for item in attempts if item.get("model")],
+            "attempts": attempts[-50:], "error": details,
+        }
+        print(json.dumps({"event": "gemini.smart_audio.error", **correlation,
+                          "httpStatus": details.get("httpStatus"), "apiStatus": details.get("apiStatus"),
+                          "exceptionType": details.get("exceptionType")}), flush=True)
+        await msg.respond(json.dumps({"status": "error", "message": details["message"], "diagnostic": diagnostic}).encode())
 
 
 class CharacterCastingTraits(BaseModel):
@@ -279,6 +299,7 @@ async def generate_multivoice_content(msg, api_key, backup_api_key, model, model
                 min_delay=MIN_DELAY,
                 max_delay=MAX_DELAY,
                 max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
+                attempt_recorder=record_attempt,
             )
             if generated is None:
                 await msg.respond(json.dumps({

@@ -23,6 +23,13 @@ export interface ChapterFailureLogItem {
   profileId?: string;
   sourceText?: string;
   hasDirectorDiagnostic?: boolean;
+  hasProviderDiagnostic?: boolean;
+  stage?: string;
+  provider?: string;
+  model?: string;
+  httpStatus?: number;
+  apiStatus?: string;
+  attempts?: number;
 }
 
 export interface AudiobookFailureLogResponse {
@@ -115,6 +122,14 @@ export async function GET(request: NextRequest) {
         return match ? [Number.parseInt(match[1], 10)] : [];
       }),
     );
+    const providerDiagnostics = new Map<number, Record<string, unknown>>();
+    await Promise.all(objects.filter((object) => /^\d{4}__provider_failure\.json$/.test(object.fileName)).map(async (object) => {
+      try {
+        const parsed = JSON.parse((await getAudiobookObjectBuffer(bookId, storageUserId, object.fileName, testNamespace)).toString('utf8')) as Record<string, unknown>;
+        const index = typeof parsed.chapterIndex === 'number' ? parsed.chapterIndex : Number.parseInt(object.fileName.slice(0, 4), 10) - 1;
+        providerDiagnostics.set(index, parsed);
+      } catch (error) { if (!isMissingBlobError(error)) throw error; }
+    }));
     const failures: ChapterFailureLogItem[] = [];
     const processedIndices = new Set<number>();
 
@@ -197,8 +212,22 @@ export async function GET(request: NextRequest) {
       failures.sort((a, b) => a.chapterIndex - b.chapterIndex);
     }
 
+    // Provider artifacts are independent failures; never hide a Gemini/worker failure behind an empty list.
+    for (const [chapterIndex, diagnostic] of providerDiagnostics) {
+      if (targetChapterIndex !== null && chapterIndex !== targetChapterIndex) continue;
+      const response = diagnostic.workerResponse as Record<string, unknown> | undefined;
+      const nested = response?.diagnostic as Record<string, unknown> | undefined;
+      const error = nested?.error as Record<string, unknown> | undefined;
+      const existing = failures.find((failure) => failure.chapterIndex === chapterIndex);
+      const message = typeof response?.message === 'string' ? response.message : 'Smart Audio provider failure.';
+      if (existing) existing.errors.unshift(message);
+      else failures.push({ chapterIndex, chapterTitle: typeof diagnostic.chapterTitle === 'string' ? diagnostic.chapterTitle : `Chapter ${chapterIndex + 1}`, errors: [message], jobId: typeof diagnostic.jobId === 'string' ? diagnostic.jobId : undefined, stage: typeof diagnostic.stage === 'string' ? diagnostic.stage : undefined, provider: typeof nested?.provider === 'string' ? nested.provider : 'gemini', model: typeof nested?.modelRequested === 'string' ? nested.modelRequested : undefined, httpStatus: typeof error?.httpStatus === 'number' ? error.httpStatus : undefined, apiStatus: typeof error?.apiStatus === 'string' ? error.apiStatus : undefined, attempts: Array.isArray(nested?.attempts) ? nested.attempts.length : undefined });
+    }
+    failures.sort((a, b) => a.chapterIndex - b.chapterIndex);
+
     for (const failure of failures) {
       failure.hasDirectorDiagnostic = directorDiagnosticIndices.has(failure.chapterIndex);
+      failure.hasProviderDiagnostic = providerDiagnostics.has(failure.chapterIndex);
     }
 
     const responseData: AudiobookFailureLogResponse = {

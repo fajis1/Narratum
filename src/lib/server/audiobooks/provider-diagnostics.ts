@@ -1,0 +1,33 @@
+export interface ProviderFailureDiagnostic {
+  schemaVersion: 1;
+  createdAt: string;
+  jobId: string;
+  bookId: string;
+  chapterIndex: number;
+  chapterTitle?: string;
+  stage: string;
+  workerMode: string;
+  natsSubject?: string;
+  requestedModel?: string;
+  workerResponse: Record<string, unknown>;
+}
+
+const SECRET = /(api[_-]?key|authorization|private[_-]?key|cookie|token)\s*[:=]\s*[^\s,}]+|([?&]key=)[^&\s]+/giu;
+
+/** Bound untrusted worker diagnostics and remove common credential forms before persistence. */
+export function safeProviderDiagnosticValue(value: unknown, depth = 0): unknown {
+  if (depth > 8) return '[truncated]';
+  if (typeof value === 'string') return value.replace(SECRET, '$1[redacted]').slice(0, 16_000);
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => safeProviderDiagnosticValue(item, depth + 1));
+  if (value && typeof value === 'object') return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !/api[_-]?key|authorization|private[_-]?key|cookie|token/i.test(key))
+      .slice(0, 80).map(([key, item]) => [key, safeProviderDiagnosticValue(item, depth + 1)]),
+  );
+  return String(value).slice(0, 2_000);
+}
+
+export function providerDiagnosticFileName(chapterIndex: number): string {
+  return `${String(chapterIndex + 1).padStart(4, '0')}__provider_failure.json`;
+}

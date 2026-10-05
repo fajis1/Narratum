@@ -4,12 +4,17 @@ from pathlib import Path
 from gemini_rate_limiter import (
     call_gemini_with_capacity_fallback,
     extract_gemini_usage,
+    is_gemini_retryable_error,
     ordered_gemini_models,
     refresh_gemini_cooldown,
 )
 
 
 class GeminiRateLimiterTests(unittest.TestCase):
+    def test_transient_http_statuses_are_retryable(self):
+        for status in (429, 500, 502, 503, 504):
+            self.assertTrue(is_gemini_retryable_error(RuntimeError(f"{status} INTERNAL")))
+        self.assertFalse(is_gemini_retryable_error(RuntimeError("400 INVALID_ARGUMENT")))
     def test_usage_metadata_is_normalized_without_prompt_content(self):
         class Usage:
             prompt_token_count = 120
@@ -90,6 +95,23 @@ class GeminiRateLimiterTests(unittest.TestCase):
 
 
 class GeminiCapacityFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_500_advances_to_fallback_and_records_safe_attempt(self):
+        attempts = []
+
+        async def request(_, model):
+            if model == 'primary':
+                raise RuntimeError('500 INTERNAL: Internal error encountered.')
+            return 'ok'
+
+        result = await call_gemini_with_capacity_fallback(
+            api_states={}, api_keys=['secret-primary'], models=['primary', 'fallback'], request=request,
+            min_delay=5, max_delay=300, max_in_flight_delay=0, sleep_fn=lambda _: None,
+            attempt_recorder=attempts.append,
+        )
+        self.assertEqual(result, ('ok', 'fallback'))
+        self.assertEqual(attempts[0]['httpStatus'], 500)
+        self.assertEqual(attempts[0]['keyType'], 'primary')
+        self.assertNotIn('secret-primary', str(attempts))
     async def test_advances_to_next_model_after_capacity_error(self):
         attempts = []
         slept_delays = []

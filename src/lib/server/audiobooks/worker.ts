@@ -18,6 +18,7 @@ import { resolveTtsCredentials } from '@/lib/server/admin/resolve-credentials';
 import { getResolvedRuntimeConfig } from '@/lib/server/runtime-config';
 import { getAudiobookObjectBuffer, listAudiobookObjects, putAudiobookObject } from '@/lib/server/audiobooks/blobstore';
 import { savePronunciationFailure } from '@/lib/server/audiobooks/pronunciation-failures';
+import { providerDiagnosticFileName, safeProviderDiagnosticValue } from '@/lib/server/audiobooks/provider-diagnostics';
 import { encodeChapterFileName } from '@/lib/server/audiobooks/chapters';
 import { createOrReuseCurrentPdfParseOperation } from '@/lib/server/pdf-parse/operation';
 import { extractPdfToc, computeTocBoundaries } from '@/lib/server/pdf-parse/toc';
@@ -1347,6 +1348,8 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
 
           if (currentSelectedProfile?.workerMode === MULTI_VOICE_WORKER_MODE) {
             payload = JSON.stringify({
+              job_id: job.id, book_id: bookId, chapter_index: chapter.index, chapter_title: chapter.title,
+              worker_mode: currentSelectedProfile?.workerMode || 'standard',
               backup_api_key: backupGeminiApiKey,
               user_id: userId,
               api_key: geminiApiKey,
@@ -1362,6 +1365,8 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
             natsSubject = 'audiobooks.multivoice.assign';
           } else {
             payload = JSON.stringify({
+              job_id: job.id, book_id: bookId, chapter_index: chapter.index, chapter_title: chapter.title,
+              worker_mode: currentSelectedProfile?.workerMode || 'standard',
               backup_api_key: backupGeminiApiKey,
               user_id: userId,
               api_key: geminiApiKey,
@@ -1673,7 +1678,24 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               await putAudiobookObject(bookId, userId, changelogName, Buffer.from(workerResult.changelog, 'utf8'), 'text/plain; charset=utf-8', testNamespace).catch(() => {});
             }
           } else {
-            throw new Error(`Python worker returned error: ${workerResult.message || workerResult.status || 'unknown response'}`);
+            const diagnostic = workerResult.diagnostic;
+            if (diagnostic && typeof diagnostic === 'object') {
+              const artifact = {
+                schemaVersion: 1,
+                createdAt: new Date().toISOString(),
+                jobId: job.id, bookId, chapterIndex: chapter.index, chapterTitle: chapter.title,
+                stage: typeof (diagnostic as Record<string, unknown>).stage === 'string' ? (diagnostic as Record<string, unknown>).stage : 'smart-audio-cleanup',
+                workerMode: currentSelectedProfile?.workerMode || 'standard', natsSubject,
+                requestedModel: resolveCleanupAiModel(currentSelectedProfile),
+                workerResponse: safeProviderDiagnosticValue({ status: workerResult.status, message: workerResult.message, diagnostic }) as Record<string, unknown>,
+              };
+              try {
+                await putAudiobookObject(bookId, userId, providerDiagnosticFileName(chapter.index), Buffer.from(JSON.stringify(artifact, null, 2), 'utf8'), 'application/json', testNamespace);
+              } catch (persistenceError) {
+                serverLogger.warn({ event: 'audiobook.provider_diagnostic.save_failed', jobId: job.id, bookId, chapter: chapter.index, error: errorToLog(persistenceError) }, 'Could not persist Smart Audio provider diagnostic.');
+              }
+            }
+            throw new Error(`Python worker returned error: ${workerResult.message || workerResult.status || 'unknown response'}`, { cause: diagnostic });
           }
         } catch (e) {
           if (e instanceof AudiobookJobStoppedError) throw e;

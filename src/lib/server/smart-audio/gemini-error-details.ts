@@ -1,4 +1,5 @@
 export type GeminiErrorDetails = { status: number; code?: number; apiStatus?: string; retryAfterMs?: number; quotaMetrics?: string[] };
+export type GeminiPrivateErrorDetails = GeminiErrorDetails & { message?: string };
 
 /** Allowlisted fields only: no messages, request URLs, project IDs or raw bodies. */
 export async function geminiErrorDetails(response: Response, now = Date.now()): Promise<GeminiErrorDetails> {
@@ -26,4 +27,14 @@ export async function geminiErrorDetails(response: Response, now = Date.now()): 
     }
   } catch { /* HTML/network error bodies are deliberately not retained. */ }
   return result;
+}
+
+/** Private artifact fields only. Keep normal logs on the stricter allowlist above. */
+export async function geminiPrivateErrorDetails(response: Response): Promise<GeminiPrivateErrorDetails> {
+  const details: GeminiPrivateErrorDetails = await geminiErrorDetails(response);
+  try {
+    const error = (await response.clone().json() as { error?: Record<string, unknown> }).error;
+    if (typeof error?.message === 'string') details.message = error.message.slice(0, 8_000);
+  } catch { /* provider bodies can be HTML or absent */ }
+  return details;
 }
