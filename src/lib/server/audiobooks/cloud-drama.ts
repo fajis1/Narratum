@@ -31,6 +31,8 @@ export async function generateCloudDramaAudiobook(input: {
   ttsModel?: string;
   ttsModelFallbacks?: readonly string[];
   onModelFallback?: (fromModel: string, toModel: string, reason: string) => void;
+  /** Caller-owned structured lifecycle logging; payloads contain no source text or credentials. */
+  onLifecycle?: (event: string, fields?: Record<string, unknown>) => void;
 }): Promise<CloudDramaAudiobookResult> {
   const readiness = await getGeminiTtsCharacterMapReadiness({
     value: input.characterMap,
@@ -46,23 +48,30 @@ export async function generateCloudDramaAudiobook(input: {
   const sourceBatches = splitDramaTextByUtf8(input.cleanedText, 12_000);
   let silentSegment: Buffer | null = null;
   let continuityState = input.priorContinuityState;
+  let segmentNumber = 0;
 
-  for (const sourceText of sourceBatches) {
+  for (const [batchIndex, sourceText] of sourceBatches.entries()) {
     if (input.signal?.aborted) throw new Error('ABORTED');
+    input.onLifecycle?.('director.start', { batchIndex, model: input.directorModel });
     const directed = await directDramaWithGemini({
       sourceText, castNames, apiKey: input.geminiApiKey,
       backupApiKey: input.backupGeminiApiKey,
       model: input.directorModel,
       policy,
       priorContinuityState: continuityState,
-      onRepair: (attempt) => reviewFlags.push({
-        kind: 'director-validation-repair', speaker: 'Narrator', sourceText,
-        chunkIndex: 0, attempts: attempt, reason: `Director output required validation repair ${attempt}.`,
-      }),
+      onRepair: (attempt, issues) => {
+        input.onLifecycle?.('director.validation', { batchIndex, model: input.directorModel, attempt, issueCount: issues.length });
+        reviewFlags.push({ kind: 'director-validation-repair', speaker: 'Narrator', sourceText,
+          chunkIndex: 0, attempts: attempt, reason: `Director output required validation repair ${attempt}.` });
+      },
     });
+    input.onLifecycle?.('director.response', { batchIndex, model: input.directorModel, segmentCount: directed.length });
     continuityState = directed.at(-1)?.sceneContext || continuityState;
     for (const segment of directed) {
       if (input.signal?.aborted) throw new Error('ABORTED');
+      segmentNumber += 1;
+      const voice = readiness.map.entries[segment.speaker]?.voiceId ?? undefined;
+      input.onLifecycle?.('tts.segment.start', { segmentNumber, speaker: segment.speaker, voice, model: input.ttsModel });
       const result = await synthesizeGeminiDramaSegment({
         segment, characterMap: readiness.map,
         apiKey: input.geminiApiKey,
@@ -72,6 +81,12 @@ export async function generateCloudDramaAudiobook(input: {
         signal: input.signal,
       });
       reviewFlags.push(...result.reviewFlags);
+      const audioBytes = result.chunks.reduce((total, chunk) => total + (chunk.audioBuffer?.length || 0), 0);
+      const failed = result.reviewFlags.some((flag) => flag.kind === 'cloud-tts-failed');
+      input.onLifecycle?.(failed ? 'tts.segment.failure' : 'tts.segment.success', {
+        segmentNumber, speaker: segment.speaker, voice, model: input.ttsModel,
+        chunkCount: result.chunks.length, audioBytes,
+      });
       const failures = result.reviewFlags.filter((flag) => flag.kind === 'cloud-tts-failed');
       if (failures.length && profileSettings.failedSegmentBehavior === 'stop-job') {
         throw new CloudDramaGenerationError(
@@ -90,8 +105,11 @@ export async function generateCloudDramaAudiobook(input: {
     }
   }
   if (!audioSegments.length) throw new Error('Cloud Drama produced no audio segments.');
+  input.onLifecycle?.('chapter.audio_aggregation.start', { audioSegmentCount: audioSegments.length });
+  const audioBuffer = await concatenateWavSegmentsToMp3(audioSegments, input.signal);
+  input.onLifecycle?.('chapter.audio_aggregation.success', { audioSegmentCount: audioSegments.length, audioBytes: audioBuffer.length });
   return {
-    audioBuffer: await concatenateWavSegmentsToMp3(audioSegments, input.signal),
+    audioBuffer,
     reviewFlags,
   };
 }

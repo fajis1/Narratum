@@ -1314,7 +1314,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
         const currentSelectedProfile = findSmartAudioProfileById(currentProfilesDocument, smartAudioProfileId);
         
         try {
-          serverLogger.info({ event: 'audiobook.queue.smart_audio.enabled', bookId, chapter: chapter.index }, 'Triggering Python Gemini worker...');
+          serverLogger.info({ event: 'audiobook.drama.cleanup.start', jobId: job.id, bookId, chapterIndex: chapter.index, workerMode: currentSelectedProfile?.workerMode || 'standard', model: resolveCleanupAiModel(currentSelectedProfile) }, 'Starting Smart Audio cleanup.');
           
           // Key is stored per-profile; fall back to empty string which causes
           // the Python worker to return {status:"error"} and skip smart audio.
@@ -1672,6 +1672,9 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               toc_sections_skipped: tocSectionsSkipped,
               tokens: normalizeGeminiTokenUsage(workerResult.usage),
             }, 'Recorded Gemini cleanup token usage.');
+            if (currentSelectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+              serverLogger.info({ event: 'audiobook.drama.cleanup.success', jobId: job.id, bookId, chapterIndex: chapter.index, workerMode: currentSelectedProfile.workerMode, model: typeof workerResult.model_used === 'string' ? workerResult.model_used : resolveCleanupAiModel(currentSelectedProfile) }, 'Smart Audio cleanup completed.');
+            }
             
             if (typeof workerResult.changelog === 'string' && workerResult.changelog) {
               const changelogName = `${String(chapter.index + 1).padStart(4, '0')}__changelog.txt`;
@@ -1699,6 +1702,9 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
           }
         } catch (e) {
           if (e instanceof AudiobookJobStoppedError) throw e;
+          if (currentSelectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+            serverLogger.error({ event: 'audiobook.drama.cleanup.failure', jobId: job.id, bookId, chapterIndex: chapter.index, workerMode: currentSelectedProfile.workerMode, error: errorToLog(e) }, 'Smart Audio cleanup failed.');
+          }
 
           if (e instanceof SmartAudioTargetedRepairError || e instanceof SmartAudioOutputValidationError) {
             serverLogger.warn({
@@ -1812,10 +1818,15 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               priorContinuityState: continuityState,
               ttsModel: GEMINI_TTS_MODEL,
               ttsModelFallbacks: GEMINI_TTS_FALLBACK_MODELS,
+              onLifecycle: (stage, fields = {}) => serverLogger.info({
+                event: `audiobook.drama.${stage}`, jobId: job.id, bookId, chapterIndex: chapter.index,
+                workerMode: selectedProfile.workerMode, ...fields,
+              }, `Audio Drama lifecycle: ${stage}`),
             });
             ttsBuffer = drama.audioBuffer;
             await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: drama.reviewFlags });
           } catch (error) {
+            serverLogger.error({ event: 'audiobook.drama.failure', jobId: job.id, bookId, chapterIndex: chapter.index, workerMode: selectedProfile.workerMode, error: errorToLog(error) }, 'Audio Drama generation failed.');
             if (error instanceof CloudDramaGenerationError) {
               await persistCloudDramaReviewFlags({ documentId: job.documentId, userId, chapterIndex: chapter.index, flags: error.reviewFlags });
             } else if (error instanceof DramaDirectorValidationError || (error as { name?: string })?.name === 'DramaDirectorValidationError') {
@@ -1961,7 +1972,13 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
 
       const contentType = format === 'mp3' ? 'audio/mpeg' : 'audio/mp4';
       totalBytes += ttsBuffer.length;
+      if (selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+        serverLogger.info({ event: 'audiobook.drama.chapter.persistence.start', jobId: job.id, bookId, chapterIndex: chapter.index, workerMode: selectedProfile.workerMode, audioBytes: ttsBuffer.length, fileName: chapterFileName }, 'Persisting Audio Drama chapter file.');
+      }
       await putAudiobookObject(bookId, userId, chapterFileName, ttsBuffer, contentType, testNamespace);
+      if (selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
+        serverLogger.info({ event: 'audiobook.drama.chapter.persistence.success', jobId: job.id, bookId, chapterIndex: chapter.index, workerMode: selectedProfile.workerMode, audioBytes: ttsBuffer.length, fileName: chapterFileName }, 'Audio Drama chapter file persisted.');
+      }
       
       // Save the cleaned text so the user can review and edit it later in the new listen UI
       const textFileName = `${String(chapter.index + 1).padStart(4, '0')}__text.txt`;
