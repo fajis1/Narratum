@@ -86,7 +86,7 @@ describe('Kokoro pronunciation policy', () => {
       'Dictionary word must be one reusable term, not a phrase.',
     );
     expect(getKokoroPronunciationWordWarnings('πáντων')).toContain(
-      'Dictionary word mixes Latin, Greek, or Hebrew scripts.',
+      'Dictionary word mixes Latin, Greek, Hebrew, or Ethiopic scripts.',
     );
     expect(getKokoroPronunciationWordWarnings('τρρσσ')).toContain(
       'Dictionary word looks like a stray Greek consonant fragment.',
@@ -233,3 +233,29 @@ describe('Kokoro pronunciation policy', () => {
     expect(normalizeKokoroPronunciationCandidate('word', 'unsupported-xyz-!@#$')).toBeNull();
   });
 });
+
+ test('supports Ethiopic source keys while keeping pronunciation and script safety independent', () => {
+  for (const word of ['ኵሎ', 'ኅቡኣተ', 'ጥበቦሙ']) {
+    expect(getKokoroPronunciationWordWarnings(word)).toEqual([]);
+    // Illustrative broad approximation only, not a scholarly pronunciation claim.
+    expect(isKokoroSafePronunciation(word, '/kulo/')).toBe(true);
+    expect(normalizeKokoroPronunciationCandidate(word, '/kulo/')).toBe('/kulo/');
+    expect(isKokoroSafePronunciation(word, `/${word}/`)).toBe(false);
+  }
+  expect(isKokoroSafePronunciation('ኵሎabc', '/kulo/')).toBe(false);
+  expect(isKokoroSafePronunciation('привет', '/privet/')).toBe(false);
+  expect(isKokoroSafePronunciation('ኵሎ', '/привет/')).toBe(false);
+  expect(isKokoroSafePronunciation('שלום', '/ʃɑloʊm/')).toBe(true);
+  expect(isKokoroSafePronunciation('λόγος', '/loʊɡɒs/')).toBe(true);
+  expect(getKokoroPronunciationWordWarnings('υἱοθεσ')).toContain('Dictionary word ends with nonfinal Greek sigma and looks OCR-damaged.');
+ });
+ test('Ethiopic guidance and required policy reach the Gemini prompt', () => {
+  const prompt = buildKokoroPronunciationInstructions();
+  expect(prompt).toContain('Ethiopic/Geʽez');
+  expect(prompt).toContain('nearby author-supplied scholarly transliteration');
+  expect(prompt).toContain('never raw Ethiopic characters or unsupported narrow IPA');
+  expect(prompt).toContain('Do not fabricate a pronunciation');
+  const scanRoute = readFileSync(resolve(process.cwd(), 'src/app/api/documents/scan-foreign-words/route.ts'), 'utf8');
+  expect(scanRoute).toContain('const prompt = `${buildKokoroPronunciationInstructions(activeProfile)}');
+  expect(getKokoroPronunciationCompatibilityErrors('/kuˌlo/')).toContain('Secondary stress marker ˌ is not supported.');
+ });

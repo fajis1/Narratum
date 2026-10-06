@@ -1,5 +1,8 @@
+import { requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
 export type ForeignWordScanResultRow = {
   word: string;
+  sourceStatus?: string;
+  sourceOutcome?: string | null;
   count?: number;
   pronunciations?: unknown[];
   userOverride?: string | null;
@@ -200,6 +203,7 @@ export function sortForeignWordScanRows<T extends ForeignWordScanResultRow>(
 }
 
 export function isAutomaticallyIgnoredForeignWord(row: ForeignWordScanResultRow): boolean {
+  if (requiresForeignWordSourceRepair(row)) return false;
   return row.ocrFragment === true || row.automaticIgnore === true;
 }
 

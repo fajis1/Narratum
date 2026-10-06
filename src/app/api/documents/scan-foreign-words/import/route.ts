@@ -1,3 +1,4 @@
+import { classifyForeignWordSourceIntegrity } from '@/lib/shared/foreign-word-source-integrity';
 import { NextRequest, NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db';
@@ -9,7 +10,6 @@ import { readBookLexicon, writeBookLexicon } from '@/lib/server/smart-audio/book
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
 import { parseForeignWordScanImportDetailed, type ForeignWordImportChange, type ForeignWordImportSkipped } from '@/lib/shared/foreign-word-scan-transfer';
 import {
-  isKokoroSafePronunciation,
   normalizeKokoroPronunciationCandidate,
 } from '@/lib/shared/kokoro-pronunciation-policy';
 
@@ -42,6 +42,7 @@ export async function POST(req: NextRequest) {
     if (job.status === 'queued' || job.status === 'running') {
       return NextResponse.json({ error: 'Wait for the scan to finish before importing edits.' }, { status: 409 });
     }
+    job.words = job.words.map(classifyForeignWordSourceIntegrity);
     let importResult;
     try {
       importResult = parseForeignWordScanImportDetailed(

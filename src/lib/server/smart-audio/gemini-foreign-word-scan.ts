@@ -1,7 +1,7 @@
+import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { createHash } from 'node:crypto';
 import {
   getKokoroPronunciationQualityWarnings,
-  isKokoroSafePronunciation,
   normalizeKokoroPronunciationCandidate,
 } from '@/lib/shared/kokoro-pronunciation-policy';
 
@@ -164,6 +164,13 @@ export function isUsableForeignWordCandidate(value: unknown): boolean {
     && Boolean(word.trim())
     && !/\s/u.test(word)
     && !/^\/.*\/$/u.test(word.trim());
+}
+
+/** Keep accepted source classifications and intentional ignores out of Gemini work. */
+export function selectGeminiEligibleScanRows<T extends { word: string; sourceStatus?: unknown; sourceOutcome?: unknown;
+  ocrFragment?: unknown; automaticIgnore?: unknown }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !requiresForeignWordSourceRepair(row)
+    && row.ocrFragment !== true && row.automaticIgnore !== true);
 }
 
 export type GeminiPronunciationRepairRequest = GeminiForeignWordTerm & {

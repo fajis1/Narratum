@@ -5,6 +5,19 @@ import scan_pdf_foreign_words
 
 
 class ForeignWordContextTests(unittest.TestCase):
+    def test_ethiopic_keys_keep_nearby_scholarly_transliteration_evidence(self):
+        text = 'ኵሎ ኅቡኣተ ጥበቦሙ || k w ulo h· ǝ bu ʾ a t a t· ǝ babomu'
+        with (
+            patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=text),
+            patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+        ):
+            rows = scan_pdf_foreign_words.scan_pdf_foreign_words('unused.pdf', target_percentile=100, mode='all_foreign', quiet=True)
+        by_word = {row['word']: row for row in rows}
+        for word in ('ኵሎ', 'ኅቡኣተ', 'ጥበቦሙ'):
+            self.assertIn(word, by_word)
+            self.assertIn('babomu', by_word[word]['contexts'][0])
+            self.assertNotEqual(by_word[word].get('sourceStatus'), 'needs_source_repair')
+
     def test_all_foreign_keeps_complete_transliterations(self):
         text = 'Aššurbanipal met haššāmayim. The short form ʾîš also appears.'
         with (

@@ -1,10 +1,12 @@
+import { getSupportedSourceScripts, hasUnsupportedSourceLetters, isForeignSourceWord, getForeignWordSourceRepairReasons } from './foreign-word-source-integrity';
 import type { SmartAudioProfile } from '@/types/client';
 
-export const KOKORO_PRONUNCIATION_POLICY_VERSION = 5;
+export const KOKORO_PRONUNCIATION_POLICY_VERSION = 6;
 
 export const KOKORO_COMPATIBILITY_POLICY = `KOKORO PRONUNCIATION COMPATIBILITY POLICY (REQUIRED, VERSION ${KOKORO_PRONUNCIATION_POLICY_VERSION}):
 - Use English-compatible IPA intended for Kokoro.
-- NEVER use the primary stress marker "ˈ"; it can cause ghost syllables.
+- NEVER use the primary stress marker "ˈ"; it can cause ghost syllables. Do not use secondary stress "ˌ" either; normalization removes both.
+- Source keys may use Latin, Greek, Hebrew, or Ethiopic. Pronunciations must use English-compatible phonetic characters, never raw Hebrew/Ethiopic text or another source-script spelling.
 - NEVER use a standalone "/o/"; use an English-compatible vowel such as "/oʊ/" or "/ɒ/" when appropriate.
 - NEVER insert syllable-boundary periods between vowels.
 - Do not use true pharyngeal fricatives such as "ħ" or "ʕ"; approximate them with English-compatible "/k/" or "/x/" sounds.
@@ -21,6 +23,7 @@ export const DEFAULT_KOKORO_PRONUNCIATION_GUIDANCE = `DEFAULT KOKORO PRONUNCIATI
 Prefer clear, natural English-compatible phonetic approximations that Kokoro can synthesize reliably.
 For Koine Greek (Strict Erasmian), use these defaults where applicable: α=/ɑ/, ε=/ɛ/, η=/eɪ/, ι=/i/, ο=/oʊ/ or /ɒ/, υ=/u/, ω=/oʊ/, αι=/aɪ/, ει=/eɪ/, οι=/ɔɪ/, ου=/u/, ευ=/ju/, χ=/k/, θ=/θ/.
 For Biblical Hebrew (Standard Academic), use these defaults where applicable: Qamats/Patah=/ɑ/, Tsere/Segol=/ɛ/ or /eɪ/, Hireq=/i/, Holem=/oʊ/, Shureq/Qibbuts=/u/, Shewa=/ə/ when vocal, and Het/Khaf=/k/ or /x/.
+For Ethiopic/Geʽez source text, recognize complete words as legitimate dictionary terms. Use nearby author-supplied scholarly transliteration as high-value evidence and prefer it when the context associates it with the word. Produce a readable English-compatible Kokoro approximation, never raw Ethiopic characters or unsupported narrow IPA. Do not fabricate a pronunciation for corrupted or incomplete source text; request source repair or report insufficient context.
 For Greek and Hebrew initialisms, abbreviations, and letter-based references, first determine from context whether the text is an abbreviation rather than a lexical word. Do not apply foreign-word IPA to an initialism. Transliterate the source letters into English letter names separated by commas and spaces so Kokoro speaks them individually; for example, Greek κτλ (the initialism of και τα λοιπά / “etc.”) becomes "K, T, L", and κ.τ.λ. follows the same rule. Do not expand the abbreviation unless the surrounding text explicitly provides its expansion. This initialism rule takes precedence over the normal Greek/Hebrew IPA rule.
 For English heteronyms and ambiguous homographs (words spelled the same but pronounced differently, such as the proper name "Job" /dʒoʊb/ vs. the occupation "job", or "live" /laɪv/ vs. "live" /lɪv/), analyze the surrounding context carefully. Whenever context dictates a specific pronunciation that the TTS engine might get wrong, always supply the exact phonetic markup but prefix the IPA with an exclamation mark (e.g., [Job](!/dʒoʊb/) or [live](!/laɪv/)). This special syntax prevents heteronyms from polluting the global pronunciation dictionary.
 For fantasy names, proper nouns, and other languages, favor a readable English-compatible pronunciation over narrow or unsupported IPA.`;
@@ -57,6 +60,13 @@ export function getKokoroPronunciationCompatibilityErrors(pronunciation: unknown
   const errors: string[] = [];
   if (inner === 'o') errors.push('Standalone /o/ is not supported.');
   if (inner.includes('ˈ')) errors.push('Primary stress marker ˈ is not supported.');
+  if (inner.includes('ˌ')) errors.push('Secondary stress marker ˌ is not supported.');
+  if ([...inner].some((character) => /\p{L}/u.test(character)
+      && !/[\p{Script=Latin}\p{Script=Common}]/u.test(character)
+      && character !== 'θ')) {
+    errors.push('Pronunciation contains source-script letters instead of English-compatible phonetic characters.');
+  }
+
   if (/[ħʕ]/u.test(inner)) errors.push('True pharyngeal fricatives are not supported.');
   if (/[aeiouɑɒɔəɛɪʊ]\.[aeiouɑɒɔəɛɪʊ]/iu.test(inner)) {
     errors.push('Syllable-boundary periods between vowels are not supported.');
@@ -66,14 +76,6 @@ export function getKokoroPronunciationCompatibilityErrors(pronunciation: unknown
 
 export function isKokoroCompatiblePronunciation(pronunciation: unknown): pronunciation is string {
   return getKokoroPronunciationCompatibilityErrors(pronunciation).length === 0;
-}
-
-function scriptsIn(value: string): number {
-  return [
-    /\p{Script=Latin}/u.test(value),
-    /\p{Script=Greek}/u.test(value),
-    /\p{Script=Hebrew}/u.test(value),
-  ].filter(Boolean).length;
 }
 
 function greekConsonantFragment(value: string): boolean {
@@ -129,26 +131,14 @@ export function getKokoroPronunciationWordWarnings(word: unknown): string[] {
   if (/^[-–—]|[-–—]$/u.test(trimmed)) warnings.push('Dictionary word is truncated at a dash.');
   if (/[_\\]/u.test(trimmed)) warnings.push('Dictionary word contains a markup or separator character.');
   if (/[ɐ-ʯː]/u.test(trimmed)) warnings.push('Dictionary word looks like bare IPA rather than source text.');
-  if (scriptsIn(trimmed) > 1) warnings.push('Dictionary word mixes Latin, Greek, or Hebrew scripts.');
-  if (!/[\p{Script=Latin}\p{Script=Greek}\p{Script=Hebrew}]/u.test(trimmed) || [...trimmed].some((character) => (
-    /\p{L}/u.test(character)
-    && !/[\p{Script=Latin}\p{Script=Greek}\p{Script=Hebrew}]/u.test(character)
-    && !(/\p{Script=Latin}/u.test(trimmed) && /[ʾʿʼʽʻ]/u.test(character))
-  ))) warnings.push('Dictionary word contains an unsupported or mixed writing system.');
-  if (/\p{Script=Greek}/u.test(trimmed) && /σ$/u.test(trimmed)) {
-    warnings.push('Dictionary word ends with nonfinal Greek sigma and looks OCR-damaged.');
+  if (getSupportedSourceScripts(trimmed).length > 1) warnings.push('Dictionary word mixes Latin, Greek, Hebrew, or Ethiopic scripts.');
+  if (getSupportedSourceScripts(trimmed).length === 0 || hasUnsupportedSourceLetters(trimmed)) {
+    warnings.push('Dictionary word contains an unsupported or mixed writing system.');
   }
-  if (/\p{Script=Greek}/u.test(trimmed) && /ς.+/u.test(trimmed)) {
-    warnings.push('Dictionary word contains final Greek sigma before the end of the word.');
-  }
-  if (/\p{Script=Hebrew}/u.test(trimmed) && /^[ךםןףץ]/u.test(trimmed)) {
-    warnings.push('Dictionary word starts with a Hebrew final-form letter and looks reversed or OCR-damaged.');
-  }
-  if (/\p{Script=Hebrew}/u.test(trimmed) && /[כמנפצ]$/u.test(trimmed)) {
-    warnings.push('Dictionary word ends with a nonfinal Hebrew letter form and looks OCR-damaged.');
-  }
+  warnings.push(...getForeignWordSourceRepairReasons(trimmed));
   if (greekConsonantFragment(trimmed)) warnings.push('Dictionary word looks like a stray Greek consonant fragment.');
 
+  // Retain this script-specific heuristic: Ethiopic reduplication is not proof of OCR damage.
   const isForeign = /[\p{Script=Greek}\p{Script=Hebrew}]/u.test(trimmed);
   const letters = [...trimmed.normalize('NFD').replace(/\p{M}/gu, '')]
     .filter((character) => /\p{L}/u.test(character))
@@ -214,7 +204,7 @@ export function getKokoroPronunciationQualityWarnings(
     warnings.push('Contains an adjacent repeated pronunciation token that may sound stuttered.');
   }
   if (
-    /[\p{Script=Greek}\p{Script=Hebrew}]/u.test(word)
+    isForeignSourceWord(word)
     && word.normalize('NFC').toLowerCase() !== 'κτλ'
     && tokens.length >= 3
     && tokens.every((token) => LETTER_NAME_TOKENS.has(token))
@@ -222,7 +212,7 @@ export function getKokoroPronunciationQualityWarnings(
     warnings.push('Spells an apparent OCR fragment as letter names instead of pronouncing a word.');
   }
   if (
-    /[\p{Script=Greek}\p{Script=Hebrew}]/u.test(word)
+    isForeignSourceWord(word)
     && word.normalize('NFC').toLowerCase() !== 'κτλ'
     && tokens.length >= 4
     && tokens.every((token) => [...token.replace(/[ːˑ]/gu, '')].length <= 2)

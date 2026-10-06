@@ -1,3 +1,4 @@
+import { buildKokoroPronunciationInstructions, KOKORO_COMPATIBILITY_POLICY } from '@/lib/shared/kokoro-pronunciation-policy';
 import { describe, expect, it } from 'vitest';
 import {
   exportForeignWordScan,
@@ -288,4 +289,20 @@ it('exports exactly 15 unresolved rows in queue order independently of 139 flags
   const flagged = generateForeignWordAiInstructions({ isFlaggedExport: true });
   expect(flagged).toContain('may contain an');
   expect(flagged).not.toContain('Each item in this flagged review file includes');
+});
+
+it('all export guides use the actual compatibility policy and stress-free examples', () => {
+  for (const options of [{}, { isFlaggedExport: true }, { exportMode: 'gemini_manual_review' as const }]) {
+    const guide = generateForeignWordAiInstructions(options);
+    expect(guide).toContain(buildKokoroPronunciationInstructions());
+    expect(guide).toContain(KOKORO_COMPATIBILITY_POLICY);
+    expect(guide).toContain('NEVER use the primary stress marker');
+    expect(guide).not.toContain('Allowed Phonemes');
+    expect(guide).not.toMatch(/\/[^/\n]*[ˈˌ][^/\n]*\//);
+    expect(guide).toContain('rather than an exhaustive phoneme whitelist');
+  }
+  const scan = exportForeignWordScan(documentId, [{ word: 'ኵሎ' }]);
+  scan.words[0].proposedPronunciation = '/kuˈlo/';
+  expect(parseForeignWordScanImport(scan, documentId, new Set(['ኵሎ'])))
+    .toEqual([{ word: 'ኵሎ', pronunciation: '/kulo/' }]);
 });

@@ -165,3 +165,32 @@ test('saves review flags when all edits fail if continueOnError is requested', a
     importWarning: 'Invalid Kokoro pronunciation for θεός.',
   });
 });
+
+test('blocks guessed pronunciation for a historical malformed Hebrew key and records source repair', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed',
+    words: [{ word: 'אבצ', sourceStatus: 'unverified', pronunciations: [] }],
+  }) }]);
+  const response = await POST(request({ documentId: 'book', jobId: 'job', continueOnError: true, scan: {
+    ...scan, words: [{ word: 'אבצ', proposedPronunciation: '/ab/', sourceStatus: 'unverified' }],
+  } }) as never);
+  const result = await response.json();
+  expect(response.status).toBe(200);
+  expect(result.imported).toBe(0);
+  expect(result.words[0]).toMatchObject({ word: 'אבצ', sourceStatus: 'needs_source_repair', sourceOutcome: 'needs_source_repair' });
+  expect(result.skipped[0].reason).toContain('source repair');
+  expect(mocks.writeLexicon).not.toHaveBeenCalled();
+});
+test('imports a safe Ethiopic pronunciation through the document-scoped path', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed', words: [{ word: 'ኵሎ' }],
+  }) }]);
+  const response = await POST(request({ documentId: 'book', jobId: 'job', scan: {
+    ...scan, words: [{ word: 'ኵሎ', proposedPronunciation: '/kulo/' }],
+  } }) as never);
+  expect(response.status).toBe(200);
+  expect((await response.json()).imported).toBe(1);
+  expect(mocks.writeLexicon).toHaveBeenCalledWith('owner', 'book', expect.objectContaining({
+    entries: { 'ኵሎ': expect.objectContaining({ term: 'ኵሎ', pronunciation: '/kulo/', language: 'other' }) },
+  }));
+});

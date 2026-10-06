@@ -1,6 +1,8 @@
+import { getForeignWordSourceRepairReasons } from './foreign-word-source-integrity';
 import { selectGeminiManualReviewWords } from './foreign-word-scan-results';
 import {
   isKokoroSafePronunciation,
+  buildKokoroPronunciationInstructions,
   normalizeKokoroPronunciationCandidate,
 } from './kokoro-pronunciation-policy';
 import {
@@ -30,6 +32,7 @@ export interface ForeignWordScanTransfer {
     occurrences: Array<Record<string, unknown>>;
     editorialSpellings: string[];
     ocrEvidence: string[];
+    sourceRepairReasons?: string[];
     sourceStatus: string;
     sourceOutcome: string | null;
     qualityFlags: string[];
@@ -112,6 +115,7 @@ export function exportForeignWordScan(
         }) : [],
       editorialSpellings: Array.isArray(row.editorialSpellings) ? row.editorialSpellings.filter((value): value is string => typeof value === 'string') : [],
       ocrEvidence: Array.isArray(row.ocrEvidence) ? row.ocrEvidence.filter((value): value is string => typeof value === 'string') : [],
+      sourceRepairReasons: Array.isArray(row.sourceRepairReasons) ? row.sourceRepairReasons.filter((value): value is string => typeof value === 'string') : [],
       sourceStatus: typeof row.sourceStatus === 'string' ? row.sourceStatus : 'unverified',
       sourceOutcome: typeof row.sourceOutcome === 'string' ? row.sourceOutcome : null,
       qualityFlags: Array.isArray(row.qualityFlags) ? row.qualityFlags.filter((value): value is string => typeof value === 'string') : [],
@@ -221,7 +225,7 @@ export function parseForeignWordScanImportDetailed(
     if (!hasProposedPronunciation && !hasProposedDefinition) continue;
     foundAnyProposedEdits = true;
 
-    if (trustedSourceStatuses.get(word) === 'needs_source_repair') {
+    if (trustedSourceStatuses.get(word) === 'needs_source_repair' || getForeignWordSourceRepairReasons(word).length > 0) {
       const reason = `${word} needs PDF source repair and a rescan before pronunciation or definition import.`;
       if (options.allowPartial) {
         skipped.push({ word, reason });
@@ -312,12 +316,12 @@ ${options?.exportMode === 'gemini_manual_review' ? GEMINI_MANUAL_REVIEW_INSTRUCT
 ## ⚠️ Core Editing Rules
 
 1. **Which fields to edit**:
-   - \`proposedPronunciation\`: Standard Kokoro IPA string wrapped in slashes \`"/.../"\` (e.g. \`"/hɑːdɑːm/"\`, \`"/bəˈheɪmɑː/"\`). Set to \`null\` if untouched.
+   - \`proposedPronunciation\`: Standard Kokoro IPA string wrapped in slashes \`"/.../"\` (e.g. \`"/hɑːdɑːm/"\`, \`"/bəheɪmɑː/"\`). Set to \`null\` if untouched.
    - \`proposedDefinition\`: Concise contextual definition of 1 to 4 words. Set to \`null\` if untouched or omitted.
    - \`omitDefinition\`: Set to \`true\` to omit definitions for stop-words (see Stop-Words rule below).
 2. **DO NOT MODIFY**:
    - The \`word\` property is the immutable database key. Never rename or alter the \`word\` string.
-   - \`count\`, \`contexts\`, \`occurrences\`, \`sourceStatus\`, and \`qualityFlags\` are read-only evidence. Do not alter them.
+   - \`count\`, \`contexts\`, \`occurrences\`, \`sourceStatus\`, \`sourceRepairReasons\`, and \`qualityFlags\` are read-only evidence. Do not alter them.
 3. **Format**:
    - The output must be valid JSON matching the exact structure of the input scan file.
 
@@ -325,19 +329,9 @@ ${options?.exportMode === 'gemini_manual_review' ? GEMINI_MANUAL_REVIEW_INSTRUCT
 
 ## 🔊 Kokoro Pronunciation Guidelines
 
-OpenReader synthesizes pronunciations using Kokoro TTS, which strictly validates standard IPA phonemes.
+${buildKokoroPronunciationInstructions()}
 
-### Requirements:
-- **Slash Delimiters**: Must begin and end with forward slashes, e.g. \`"/phonemes/"\`.
-- **Allowed Phonemes**:
-  - Vowels: \`ɑ, æ, ʌ, ɔ, aʊ, aɪ, eɪ, i, ɪ, oʊ, ɔɪ, u, ʊ, ə, ɛ\`
-  - Consonants: \`b, d, f, ɡ, h, j, k, l, m, n, ŋ, p, r, s, ʃ, t, tʃ, θ, ð, v, w, z, ʒ\`
-  - Stress & Length: Primary stress \`ˈ\`, secondary stress \`ˌ\`, vowel elongation \`ː\`.
-  - Transliteration Modifiers: Academic Hebrew/Arabic transliteration modifiers (\`ʾ\` U+02BE, \`ʿ\` U+02BF, \`ʼ\` U+02BC) are permitted in Latin dictionary tokens.
-- **Strictly Disallowed**:
-  - Numbers or OCR digits (e.g., if word has \`118Lamaštu\`, pronounce only the word, e.g. \`"/lɑːmɑʃtuː/"\`; do not include \`118\`).
-  - Raw English orthography without phonemic slashes (e.g. \`"shalom"\` will be rejected; use \`"/ʃəˈloʊm/"\`).
-  - Non-IPA symbols or punctuation inside the slashes.
+The validator checks compatibility and word-dependent quality rather than an exhaustive phoneme whitelist. Predictable formatting normalization may remove stress marks or repair delimiters; it never reconstructs or renames damaged source keys.
 
 ---
 
@@ -353,7 +347,7 @@ OpenReader reads definitions aloud in "Biblical Scholar" audiobook mode.
    - For terms like Hebrew pronouns (\`הוּא\`, \`זֹאת\`, \`לוֹ\`, \`בָּהֶם\`, \`לָהֶם\`), prepositions (\`מִן\`, \`ב\`, \`ל\`, \`כ\`, \`על\`, \`אל\`), or conjunctions (\`ו\`, \`כי\`, \`אשר\`):
      - Set **\`omitDefinition: true\`**
      - Set **\`proposedDefinition: null\`**
-   - If a definition like \`"he"\` or \`"in them"\` is provided, OpenReader's dictionary validator will reject the word with: \`Invalid contextual definition for <word>\`.
+   - The importer automatically omits function-word-only glosses such as \`"he"\` or \`"in them"\`. Set the omission fields explicitly rather than supplying a gloss that should not be spoken.
 4. **NO Meta-Descriptions**: Do not use placeholders like \`"inflected form"\`, \`"OCR fragment"\`, or \`"unknown"\`. If a word cannot be defined, set \`omitDefinition: true\`.
 
 ---
