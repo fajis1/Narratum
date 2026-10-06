@@ -1,3 +1,4 @@
+import { getGeminiManualReviewState } from '@/lib/shared/foreign-word-scan-results';
 import { after, NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { requireAuthContext } from '@/lib/server/auth/auth';
@@ -54,6 +55,7 @@ import {
   parseForeignWordCandidateCache,
   parseGeminiForeignWordResults,
   validateForeignWordResultBatch,
+  normalizeGeminiOcrResults,
 } from '@/lib/server/smart-audio/gemini-foreign-word-scan';
 import {
   normalizeDictionaryDefinition,
@@ -120,6 +122,8 @@ export async function POST(req: NextRequest) {
       total: 0,
       completed: 0,
       resolved: 0,
+      manualReviewTerms: [],
+      manualReviewCount: 0,
       librarySkipped: 0,
       transliterationRejected: 0,
       errors: [],
@@ -425,6 +429,13 @@ export async function POST(req: NextRequest) {
             .map((word: { word: string }) => [word.word, 'needs_source_repair']),
         );
         const resolvedGeminiWords = new Set<string>();
+        const normalizeOcr = (results: Parameters<typeof normalizeGeminiOcrResults>[0], batch: number) =>
+          normalizeGeminiOcrResults(results, (result) => serverLogger.warn({
+            event: 'pdf.scan.gemini.ocr_normalized', jobId, documentId, batch,
+            term: result.term, originalSourceOutcome: result.sourceOutcome,
+            normalizedSourceOutcome: 'needs_source_repair',
+          }, 'Canonicalized confirmed Gemini OCR fragment'));
+
         let acceptedChoices = 0;
         let updatedLexicon = false;
         let terminalGeminiError: string | null = null;
@@ -493,6 +504,7 @@ export async function POST(req: NextRequest) {
           total: wordsMissingOptions.length,
           completed: 0,
           librarySkipped,
+          ...getGeminiManualReviewState(wordsMissingOptions, resolvedGeminiWords),
         });
 
 
@@ -671,6 +683,7 @@ ${JSON.stringify(terms)}`;
                 await saveJob({ statusMessage: `Trying ${providerLabel} key (${orderedProviders.indexOf(provider) + 1}/${orderedProviders.length})…` });
                 generated = await requestGeminiSingleKey(prompt, 'pronunciation_definition_scan');
               }
+              generated = normalizeOcr(generated, i / chunkSize + 1);
               const missingResults = validateForeignWordResultBatch(chunk, generated);
               if (missingResults.length > 0) {
                 serverLogger.warn({
@@ -724,7 +737,7 @@ ${JSON.stringify(repairRequests)}`;
               statusMessage: `Correcting ${repairRequests.length} pronunciation ${repairRequests.length === 1 ? 'result' : 'results'} (one automatic pass)…`,
             });
             try {
-              const repairs = await requestGeminiResults(repairPrompt, 'pronunciation_quality_repair');
+              const repairs = normalizeOcr(await requestGeminiResults(repairPrompt, 'pronunciation_quality_repair'), i / chunkSize + 1);
               validateForeignWordResultBatch(repairRequests.map((request) => request.term), repairs);
               generated = mergeGeminiPronunciationRepairResults(generated, repairs);
             } catch (repairError) {
@@ -762,6 +775,19 @@ ${JSON.stringify(repairRequests)}`;
             if (w) {
               const scanned = words.find((item: any) => item.word === w);
               const requestedTerm = terms.find((term) => term.term === w);
+              if (result.ocrFragment === true) {
+                // Gemini, not a brittle local heuristic, made the final call.
+                // Do not let a confirmed OCR shard reuse or create a global entry.
+                confirmedOcrFragments.add(w);
+                if (!compatibleOverrides[w] && lexiconEntries[w]?.approvedRepair !== true
+                    && Object.prototype.hasOwnProperty.call(lexiconEntries, w)) {
+                  delete lexiconEntries[w];
+                  updatedLexicon = true;
+                }
+                sourceOutcomes.set(w, 'needs_source_repair');
+                acceptedWords.add(w);
+                continue;
+              }
               if (isUnresolvedForeignWordOutcome(result)) {
                 sourceOutcomes.set(w, String(result.sourceOutcome));
                 if (requestedTerm && isRejectedLatinTransliteration(requestedTerm, result)
@@ -777,19 +803,6 @@ ${JSON.stringify(repairRequests)}`;
                 // terms stay visible only in the ignored count and never
                 // enter a book, profile, or global pronunciation library.
                 rejectedLatinTransliterations.add(w);
-                acceptedWords.add(w);
-                continue;
-              }
-              if (result.ocrFragment === true) {
-                // Gemini, not a brittle local heuristic, made the final call.
-                // Do not let a confirmed OCR shard reuse or create a global entry.
-                confirmedOcrFragments.add(w);
-                if (!compatibleOverrides[w] && lexiconEntries[w]?.approvedRepair !== true
-                    && Object.prototype.hasOwnProperty.call(lexiconEntries, w)) {
-                  delete lexiconEntries[w];
-                  updatedLexicon = true;
-                }
-                sourceOutcomes.set(w, 'needs_source_repair');
                 acceptedWords.add(w);
                 continue;
               }
@@ -972,7 +985,8 @@ ${JSON.stringify(repairRequests)}`;
           const isTerminal = err instanceof GeminiHttpError && (err.status === 400 || err.status === 429 || err.status === 503);
           
           await saveJob({ 
-            errors, 
+            errors,
+            ...getGeminiManualReviewState(wordsMissingOptions, resolvedGeminiWords),
             completed: isTerminal ? i : Math.min(i + chunk.length, wordsMissingOptions.length) 
           });
 
@@ -984,6 +998,7 @@ ${JSON.stringify(repairRequests)}`;
         await saveJob({
           completed: Math.min(i + chunk.length, wordsMissingOptions.length),
           resolved: resolvedGeminiWords.size,
+          ...getGeminiManualReviewState(wordsMissingOptions, resolvedGeminiWords),
           transliterationRejected: rejectedLatinTransliterations.size,
         });
       }
@@ -1093,6 +1108,10 @@ ${JSON.stringify(repairRequests)}`;
     }
 
         const errors = Array.isArray(jobState.errors) ? jobState.errors : [];
+        const manualReview = getGeminiManualReviewState(wordsMissingOptions, resolvedGeminiWords);
+        if (manualReview.manualReviewCount > 0) serverLogger.warn({
+          event: 'pdf.scan.gemini.manual_review', jobId, documentId, ...manualReview,
+        }, 'Gemini work remains unresolved');
         await saveJob({
           status: terminalGeminiError ? 'failed' : 'completed',
           completed: terminalGeminiError
@@ -1101,6 +1120,7 @@ ${JSON.stringify(repairRequests)}`;
           generated,
           generatedChoices: acceptedChoices,
           resolved: resolvedGeminiWords.size,
+          ...manualReview,
           transliterationRejected: rejectedLatinTransliterations.size,
           error: terminalGeminiError
             || (errors.length > 0 ? `${errors.length} Gemini batch${errors.length === 1 ? '' : 'es'} failed. ${errors[0]}` : null),

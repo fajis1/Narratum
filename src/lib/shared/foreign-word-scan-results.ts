@@ -202,3 +202,25 @@ export function sortForeignWordScanRows<T extends ForeignWordScanResultRow>(
 export function isAutomaticallyIgnoredForeignWord(row: ForeignWordScanResultRow): boolean {
   return row.ocrFragment === true || row.automaticIgnore === true;
 }
+
+/** Exact unresolved work, in the original Gemini queue order. */
+export function getGeminiManualReviewState(queue: readonly string[], resolved: ReadonlySet<string>) {
+  const manualReviewTerms = queue.filter((term) => !resolved.has(term));
+  return { manualReviewTerms, manualReviewCount: manualReviewTerms.length };
+}
+
+/** Missing rows must never silently produce an incomplete allegedly exact export. */
+export function selectGeminiManualReviewWords<T extends ForeignWordScanResultRow>(
+  words: readonly T[], terms: readonly string[],
+): T[] {
+  const byTerm = new Map(words.map((word) => [word.word, word]));
+  return terms.map((term) => {
+    const row = byTerm.get(term);
+    if (!row) throw new Error(`Manual review row unavailable: ${term}`);
+    return row;
+  });
+}
+
+export function readGeminiManualReviewTerms(value: unknown): string[] | null {
+  return Array.isArray(value) ? value.filter((term): term is string => typeof term === 'string') : null;
+}

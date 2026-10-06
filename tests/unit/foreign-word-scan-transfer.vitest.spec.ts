@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   exportForeignWordScan,
+  exportGeminiManualReviewScan,
   exportForeignWordScanBatches,
   generateForeignWordAiInstructions,
   parseForeignWordScanImport,
@@ -267,4 +268,24 @@ describe('foreign-word scan JSON transfer', () => {
       { word: 'שלום', pronunciation: '/ʃəloʊm/', definition: 'peace' },
     ]);
   });
+});
+
+it('exports exactly 15 unresolved rows in queue order independently of 139 flags, and imports edits', () => {
+  const all = Array.from({ length: 139 }, (_, i) => ({ word: `term${i}`, importWarning: 'review' }));
+  const terms = all.slice(10, 25).map((row) => row.word).reverse();
+  const payload = exportGeminiManualReviewScan(documentId, all, terms);
+  expect(payload.words.map((row) => row.word)).toEqual(terms);
+  expect(payload.words).toHaveLength(15);
+  expect(payload.version).toBe(2);
+  expect(payload.instructions).toContain('Gemini manual review export (15 words)');
+  payload.words[0].omitDefinition = true;
+  expect(parseForeignWordScanImport(payload, documentId, new Set(all.map((row) => row.word))))
+    .toEqual([{ word: terms[0], definition: null }]);
+  expect(() => exportGeminiManualReviewScan(documentId, [], terms)).toThrow('row unavailable');
+  const guide = generateForeignWordAiInstructions({ exportMode: 'gemini_manual_review', totalWords: 15 });
+  expect(guide).toContain('did not receive a resolved usable result');
+  expect(guide).not.toContain('Handling Flagged Words');
+  const flagged = generateForeignWordAiInstructions({ isFlaggedExport: true });
+  expect(flagged).toContain('may contain an');
+  expect(flagged).not.toContain('Each item in this flagged review file includes');
 });

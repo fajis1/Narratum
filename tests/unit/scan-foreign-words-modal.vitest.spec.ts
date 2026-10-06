@@ -146,3 +146,19 @@ describe('foreign-word scan modal', () => {
     expect(source).toContain('📄 AI Agent Guide (.md)');
   });
 });
+
+test('consumes exact job terms, resets them, and keeps exports distinct', () => {
+  expect(source).toContain('readGeminiManualReviewTerms(job.manualReviewTerms)');
+  expect(source).toContain('scanJobManualReviewTerms?.length');
+  expect(source).toContain('selectGeminiManualReviewWords(words, scanJobManualReviewTerms ?? [])');
+  expect(source).toContain('Export Manual Review JSON ({manualReviewCount})');
+  expect(source).toContain('-gemini-manual-review.json');
+  expect(source).toContain('-gemini-manual-review-AI-INSTRUCTIONS.md');
+  expect(source).toContain("exportMode: 'gemini_manual_review'");
+  expect(source.match(/setScanJobManualReviewTerms\(null\)/g)!.length).toBeGreaterThanOrEqual(4);
+  expect(source).toContain('Legacy count is approximate');
+  expect(source).toContain('words.filter(isFlaggedForReview)');
+  expect(scanRoute).toContain('...getGeminiManualReviewState(wordsMissingOptions, resolvedGeminiWords)');
+  expect(scanRoute).toContain('generated = normalizeOcr(generated');
+  expect(scanRoute).toContain('const repairs = normalizeOcr(');
+});

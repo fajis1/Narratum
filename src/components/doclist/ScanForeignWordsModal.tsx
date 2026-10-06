@@ -8,12 +8,15 @@ import { matchesTransliteratedTerm } from '@/lib/shared/transliteration-search';
 import {
   isAutomaticallyIgnoredForeignWord,
   isFlaggedForReview,
+  readGeminiManualReviewTerms,
+  selectGeminiManualReviewWords,
   isMissingPronunciation,
   prepareForeignWordScanRows,
   sortForeignWordScanRows,
 } from '@/lib/shared/foreign-word-scan-results';
 import {
   exportForeignWordScan,
+  exportGeminiManualReviewScan,
   exportForeignWordScanBatches,
   generateForeignWordAiInstructions,
 } from '@/lib/shared/foreign-word-scan-transfer';
@@ -93,6 +96,7 @@ export function ScanForeignWordsModal({
   const [scanJobProgress, setScanJobProgress] = useState({ completed: 0, total: 0 });
   const [scanJobLibrarySkipped, setScanJobLibrarySkipped] = useState(0);
   const [scanJobTransliterationRejected, setScanJobTransliterationRejected] = useState(0);
+  const [scanJobManualReviewTerms, setScanJobManualReviewTerms] = useState<string[] | null>(null);
   const [scanJobResolved, setScanJobResolved] = useState(0);
   const [scanJobGeneratedChoices, setScanJobGeneratedChoices] = useState(0);
   const [scanJobError, setScanJobError] = useState<string | null>(null);
@@ -191,6 +195,7 @@ export function ScanForeignWordsModal({
       setScanJobLibrarySkipped(0);
       setScanJobTransliterationRejected(0);
       setScanJobResolved(0);
+      setScanJobManualReviewTerms(null);
       setScanJobGeneratedChoices(0);
       setScanJobError(null);
       setLibraryScanStatus('idle');
@@ -223,6 +228,7 @@ export function ScanForeignWordsModal({
       setScanJobLibrarySkipped(0);
       setScanJobTransliterationRejected(0);
       setScanJobResolved(0);
+      setScanJobManualReviewTerms(null);
       setScanJobGeneratedChoices(0);
       setScanJobError(null);
       setLibraryScanStatus('idle');
@@ -431,6 +437,7 @@ export function ScanForeignWordsModal({
     setScanJobLibrarySkipped(Number(job.librarySkipped) || 0);
     setScanJobTransliterationRejected(Number(job.transliterationRejected) || 0);
     setScanJobResolved(Number(job.resolved ?? job.generated) || 0);
+    setScanJobManualReviewTerms(readGeminiManualReviewTerms(job.manualReviewTerms));
     setScanJobGeneratedChoices(Number(job.generatedChoices) || 0);
     setScanJobError(job.error || (Array.isArray(job.errors) && job.errors.length > 0 ? job.errors.join(' ') : null));
     setScanJobStatusMessage(typeof job.statusMessage === 'string' ? job.statusMessage : null);
@@ -504,6 +511,7 @@ export function ScanForeignWordsModal({
     if (scanInFlight.current || scanActive) return;
 
     scanInFlight.current = true;
+    setScanJobManualReviewTerms(null);
     setLoading(true);
     setError(null);
     try {
@@ -534,6 +542,7 @@ export function ScanForeignWordsModal({
       setScanJobLibrarySkipped(0);
       setScanJobTransliterationRejected(0);
       setScanJobResolved(0);
+      setScanJobManualReviewTerms(null);
       setScanJobGeneratedChoices(0);
       setScanJobError(null);
       stopScanPolling();
@@ -582,6 +591,22 @@ export function ScanForeignWordsModal({
       triggerDownload(`foreign-words-${activeDocId}-AI-INSTRUCTIONS.md`, instructions, 'text/markdown;charset=utf-8');
     }, 400);
     toast.success('Exported all words JSON and companion AI-INSTRUCTIONS.md.');
+  };
+
+  const manualReviewWords = useMemo(() => {
+    try { return selectGeminiManualReviewWords(words, scanJobManualReviewTerms ?? []); }
+    catch { return null; }
+  }, [words, scanJobManualReviewTerms]);
+  const manualReviewCount = scanJobManualReviewTerms?.length
+    ?? Math.max(0, scanJobProgress.completed - scanJobResolved);
+  const downloadManualReviewJson = () => {
+    if (!activeDocId || !scanJobManualReviewTerms?.length || !manualReviewWords) return;
+    const payload = exportGeminiManualReviewScan(activeDocId, words, scanJobManualReviewTerms);
+    triggerDownload(`foreign-words-${activeDocId}-gemini-manual-review.json`, JSON.stringify(payload, null, 2), 'application/json');
+    const instructions = generateForeignWordAiInstructions({ documentId: activeDocId,
+      totalWords: manualReviewWords.length, exportMode: 'gemini_manual_review' });
+    setTimeout(() => triggerDownload(`foreign-words-${activeDocId}-gemini-manual-review-AI-INSTRUCTIONS.md`,
+      instructions, 'text/markdown;charset=utf-8'), 400);
   };
 
   const downloadFlaggedScanJson = () => {
@@ -1126,10 +1151,19 @@ export function ScanForeignWordsModal({
                   ) : (
                     <p className="text-[11px] text-green-700 dark:text-green-300">Gemini processed {scanJobProgress.completed}/{scanJobProgress.total} terms and generated {scanJobGeneratedChoices} new pronunciation choices.</p>
                   )}
-                  {scanJobProgress.completed > scanJobResolved && (
+                  {manualReviewCount > 0 && (
                     <p className="text-[11px] font-bold text-red-600 dark:text-red-400">
-                      ⚠️ {scanJobProgress.completed - scanJobResolved} terms need manual review because Gemini omitted them or returned no usable pronunciation.
+                      ⚠️ {manualReviewCount} terms need manual review because Gemini omitted them or returned no usable pronunciation.
                     </p>
+                  )}
+                  {manualReviewCount > 0 && scanJobManualReviewTerms === null && (
+                    <p className="text-xs text-soft">Legacy count is approximate. Rerun the pre-scan to populate the exact manual-review export.</p>
+                  )}
+                  {Boolean(scanJobManualReviewTerms?.length) && (
+                    <button type="button" onClick={downloadManualReviewJson} disabled={!manualReviewWords || !activeDocId}
+                      className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
+                      Export Manual Review JSON ({manualReviewCount})
+                    </button>
                   )}
                 </div>
               ) : scanJobStatus === 'failed' ? (
@@ -1495,6 +1529,7 @@ export function ScanForeignWordsModal({
                       setActiveDocId(doc.id);
                       setActiveDocName(doc.name);
                       setWords([]);
+                      setScanJobManualReviewTerms(null);
                       setError(null);
                       setHasScanned(false);
                       setSuspectDefinitions(null);

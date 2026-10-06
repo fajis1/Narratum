@@ -90,6 +90,22 @@ export function isUnresolvedForeignWordOutcome(result: GeminiForeignWordResult |
     || result?.sourceOutcome === 'not_applicable';
 }
 
+/** Canonicalize confirmed OCR only; all unrelated fields still face strict validation. */
+export function normalizeGeminiOcrResults(
+  results: readonly GeminiForeignWordResult[],
+  onNormalized?: (result: GeminiForeignWordResult) => void,
+): GeminiForeignWordResult[] {
+  return results.map((result) => {
+    if (result.ocrFragment !== true) return result;
+    if (result.sourceOutcome !== 'needs_source_repair'
+        || !Array.isArray(result.pronunciations) || result.pronunciations.length > 0
+        || result.definition !== null || result.definitionOmitted !== true) onNormalized?.(result);
+    // needsReview governs definition review; sourceOutcome independently flags source repair.
+    return { ...result, sourceOutcome: 'needs_source_repair', pronunciations: [],
+      definition: null, definitionOmitted: true };
+  });
+}
+
 export function validateForeignWordResultBatch(
   requestedTerms: readonly string[],
   results: readonly GeminiForeignWordResult[],
@@ -235,6 +251,8 @@ export interface ForeignWordScanJob extends Record<string, unknown> {
   documentId?: string;
   status?: string;
   updatedAt?: number;
+  manualReviewTerms?: string[];
+  manualReviewCount?: number;
 }
 
 function parseScanJob(value: unknown): ForeignWordScanJob | null {

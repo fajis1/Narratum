@@ -1,3 +1,4 @@
+import { selectGeminiManualReviewWords } from './foreign-word-scan-results';
 import {
   isKokoroSafePronunciation,
   normalizeKokoroPronunciationCandidate,
@@ -289,6 +290,7 @@ export interface GenerateForeignWordAiInstructionsOptions {
   documentId?: string;
   totalWords?: number;
   isFlaggedExport?: boolean;
+  exportMode?: 'gemini_manual_review';
 }
 
 export function generateForeignWordAiInstructions(options?: GenerateForeignWordAiInstructionsOptions): string {
@@ -300,7 +302,7 @@ export function generateForeignWordAiInstructions(options?: GenerateForeignWordA
 
 ## Mission
 You are processing an OpenReader foreign-word scan JSON file${docStr}${wordCountStr}.
-Your goal is to inspect the words and provide:
+${options?.exportMode === 'gemini_manual_review' ? GEMINI_MANUAL_REVIEW_INSTRUCTIONS + '\n' : ''}Your goal is to inspect the words and provide:
 1. Valid Kokoro IPA pronunciations (\`proposedPronunciation\`)
 2. Contextual English definitions (\`proposedDefinition\`)
 3. Definition omission flags (\`omitDefinition: true\`) for grammatical stop-words
@@ -358,7 +360,7 @@ OpenReader reads definitions aloud in "Biblical Scholar" audiobook mode.
 
 ${isFlagged ? `## 🛠️ Handling Flagged Words (\`importWarning\`)
 
-Each item in this flagged review file includes an \`importWarning\` field stating why it was previously rejected:
+A flagged item may contain an \`importWarning\` describing an import validation problem. Other items may instead be flagged by sourceStatus, sourceOutcome, definition review state, or quality flags. Review the available source evidence. Source-repair terms require PDF source recovery and a rescan; never reconstruct them by renaming the immutable word key. For verified complete terms, repair the indicated pronunciation or definition:
 - **\`Invalid contextual definition for <word>\`**: The definition was a stop-word or invalid gloss. Set \`proposedDefinition: null\` and \`omitDefinition: true\`.
 - **\`Invalid Kokoro pronunciation for <word>\`**: The pronunciation had invalid characters, numbers, or missing slashes. Provide valid Kokoro phonemes in \`proposedPronunciation: "/.../"\`.
 - **\`A valid pronunciation is needed before importing a definition\`**: Provide a valid \`proposedPronunciation: "/.../"\` alongside the definition.
@@ -438,4 +440,12 @@ Each item in this flagged review file includes an \`importWarning\` field statin
 }
 \`\`\`
 `;
+}
+
+export const GEMINI_MANUAL_REVIEW_INSTRUCTIONS = 'These terms were eligible for Gemini pronunciation/definition processing but did not receive a resolved usable result. Review source evidence before making changes. Provide a Kokoro-compatible proposedPronunciation only for a verified complete term. Correct definitions where appropriate. Do not modify the immutable word property. Source-repair terms require source recovery and a rescan, never reconstruction by renaming the JSON key.';
+
+export function exportGeminiManualReviewScan(documentId: string, words: readonly ScanWord[], terms: readonly string[]) {
+  const payload = exportForeignWordScan(documentId, selectGeminiManualReviewWords(words, terms));
+  payload.instructions = `Gemini manual review export (${terms.length} words). ${GEMINI_MANUAL_REVIEW_INSTRUCTIONS}`;
+  return payload;
 }

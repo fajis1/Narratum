@@ -1,3 +1,4 @@
+import { getGeminiManualReviewState, readGeminiManualReviewTerms, selectGeminiManualReviewWords } from '@/lib/shared/foreign-word-scan-results';
 import { describe, expect, test } from 'vitest';
 import {
   getAutomaticForeignWordIgnoreReason,
@@ -96,3 +97,14 @@ describe('foreign-word scan result preparation', () => {
     expect(isMissingPronunciation({ word: 'test', pronunciations: [], userOverride: '/override/' })).toBe(false);
   });
 });
+
+ test('tracks only actual unresolved work in processing order, excluding skipped library/artifact rows', () => {
+  const rows = ['library', 'artifact', 'A', 'B', 'C', 'D', 'repair', 'context', 'not-applicable'].map((word) => ({ word }));
+  const queue = ['A', 'B', 'C', 'D', 'repair', 'context', 'not-applicable'];
+  const resolved = new Set(['A', 'C', 'repair', 'context', 'not-applicable']);
+  const state = getGeminiManualReviewState(queue, resolved);
+  expect(JSON.parse(JSON.stringify(state))).toEqual({ manualReviewTerms: ['B', 'D'], manualReviewCount: 2 });
+  expect(selectGeminiManualReviewWords(rows.reverse(), state.manualReviewTerms).map((row) => row.word)).toEqual(['B', 'D']);
+  expect(readGeminiManualReviewTerms(undefined)).toBeNull();
+  expect(readGeminiManualReviewTerms(['B', null, 3, 'D'])).toEqual(['B', 'D']);
+ });

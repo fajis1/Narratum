@@ -1,3 +1,4 @@
+import { isFlaggedForReview, getGeminiManualReviewState } from '@/lib/shared/foreign-word-scan-results';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
@@ -14,6 +15,8 @@ import {
   parseForeignWordCandidateCache,
   parseGeminiForeignWordResults,
   validateForeignWordResultBatch,
+  normalizeGeminiOcrResults,
+  isUnresolvedForeignWordOutcome,
 } from '@/lib/server/smart-audio/gemini-foreign-word-scan';
 
 describe('Gemini foreign-word structured output', () => {
@@ -273,4 +276,41 @@ describe('Gemini foreign-word structured output', () => {
     expect(route.indexOf('rejectedLatinTransliterations.add(w);'))
       .toBeLessThan(route.indexOf('updatedGlobalWords.add(w);'));
   });
+});
+
+ test('normalizes only confirmed OCR contradictions before validating a mixed batch', () => {
+  const original = { term: 'ampliﬁ', language: 'other', ocrFragment: true,
+    sourceOutcome: 'valid_word', pronunciations: ['/something/'], definition: 'something',
+    definitionOmitted: false, needsReview: false, confidence: 0.8 };
+  const notices: string[] = [];
+  const good = { ...original, term: 'λόγος', ocrFragment: false, pronunciations: ['/loʊɡos/'] };
+  const normalized = normalizeGeminiOcrResults([original, good], (row) => notices.push(row.term));
+  expect(normalized[0]).toMatchObject({ term: 'ampliﬁ', sourceOutcome: 'needs_source_repair',
+    pronunciations: [], definition: null, definitionOmitted: true });
+  expect(original.sourceOutcome).toBe('valid_word');
+  expect(normalized[1]).toBe(good);
+  expect(validateForeignWordResultBatch(['ampliﬁ', 'λόγος'], normalized)).toEqual([]);
+  expect(isUnresolvedForeignWordOutcome(normalized[0])).toBe(true);
+  expect(isFlaggedForReview({ ...normalized[0], word: normalized[0].term })).toBe(true);
+  const classifications = ['needs_source_repair', 'insufficient_context', 'not_applicable']
+    .map((sourceOutcome) => ({ ...normalized[0], term: sourceOutcome, ocrFragment: false, sourceOutcome }));
+  expect(validateForeignWordResultBatch(classifications.map((row) => row.term), classifications)).toEqual([]);
+  const resolved = new Set(classifications.filter(isUnresolvedForeignWordOutcome).map((row) => row.term));
+  expect(getGeminiManualReviewState([...resolved, 'omitted', 'failed-batch-term'], resolved))
+    .toEqual({ manualReviewTerms: ['omitted', 'failed-batch-term'], manualReviewCount: 2 });
+  expect(collectGeminiPronunciationRepairRequests([{ term: 'ampliﬁ', contexts: [], currentPronunciation: null }], normalized)).toEqual([]);
+  expect(notices).toEqual(['ampliﬁ']);
+  expect(() => validateForeignWordResultBatch(['ampliﬁ'], normalizeGeminiOcrResults([
+    { ...original, confidence: 'bad' },
+  ]))).toThrow('Invalid result fields');
+  expect(() => validateForeignWordResultBatch(['λόγος'], [{ ...good, language: 'invalid' }])).toThrow('Invalid language');
+ });
+
+test('authenticated latest-job selection retains exact review fields and tolerates legacy jobs', () => {
+  const job = { id: 'scan', userId: 'owner', documentId: 'book', status: 'completed',
+    manualReviewTerms: ['B', 'D'], manualReviewCount: 2 };
+  expect(findLatestForeignWordScanJob([JSON.stringify(job)], 'owner', 'book')).toEqual(job);
+  expect(findLatestForeignWordScanJob([job], 'other', 'book')).toBeNull();
+  expect(findLatestForeignWordScanJob([{ id: 'legacy', userId: 'owner', documentId: 'book', status: 'completed' }],
+    'owner', 'book')?.manualReviewTerms).toBeUndefined();
 });
