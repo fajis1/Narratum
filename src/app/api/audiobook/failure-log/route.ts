@@ -37,6 +37,8 @@ export interface AudiobookFailureLogResponse {
   documentTitle?: string;
   jobError?: string | null;
   jobStatus?: string | null;
+  /** Retained chapter diagnostics and review flags, independent of latest job status. */
+  historySemantics?: 'retained-diagnostics';
   failures: ChapterFailureLogItem[];
   reviewFlags: SmartAudioReviewFlag[];
 }
@@ -236,6 +238,7 @@ export async function GET(request: NextRequest) {
       jobError: job?.error ?? null,
       jobStatus: job?.status ?? null,
       failures,
+      historySemantics: 'retained-diagnostics',
       reviewFlags: filteredReviewFlags,
     };
 

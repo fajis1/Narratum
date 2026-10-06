@@ -1,3 +1,5 @@
+import { assertDramaSourceSpans, batchDramaSourceSpans, createDramaSourceSpans, type DramaSourceSpan } from './drama-source-spans';
+import { serverLogger } from '@/lib/server/logger';
 import examples from './drama-director-examples.json';
 import {
   DRAMA_DELIVERY_STYLES, DRAMA_ENERGY, DRAMA_INLINE_PAUSE_EVENT_SET, DRAMA_INLINE_VOCAL_EVENTS,
@@ -16,7 +18,7 @@ export const DRAMA_DIRECTOR_PROMPT_EXAMPLES = examples.filter((example) => PROMP
 export const DRAMA_DIRECTOR_EVALUATION_EXAMPLES = examples.filter((example) => EVALUATION_EXAMPLE_NUMBERS.has(example.number));
 
 export class DramaDirectorValidationError extends Error {
-  constructor(public readonly issues: string[], public readonly response?: string) {
+  constructor(public readonly issues: string[], public readonly response?: string, public readonly diagnostics?: Record<string, unknown>) {
     super(`Drama Director output failed validation: ${issues.join('; ')}`);
     this.name = 'DramaDirectorValidationError';
   }
@@ -26,6 +28,7 @@ export interface DramaDirectorResponseAttempt {
   attempt: number;
   issues: string[];
   response: string;
+  diagnostics?: Record<string, unknown>;
 }
 
 function applyPolicyToTags(
@@ -49,16 +52,7 @@ function inVocabulary(value: unknown, vocabulary: readonly string[]): value is s
   return typeof value === 'string' && vocabulary.includes(value);
 }
 
-function normalizeParagraphBreakMultiplicity(value: string): string {
-  return value.replace(/\r\n?/g, '\n').replace(/\n{2,}/g, '\n');
-}
-
-function hasEquivalentAuthoritativeText(actual: string, expected: string): boolean {
-  return actual === expected
-    || normalizeParagraphBreakMultiplicity(actual) === normalizeParagraphBreakMultiplicity(expected);
-}
-
-/** Segment text is authoritative; only repeated paragraph-break multiplicity may differ. */
+/** Server validation remains authoritative, including exact legacy text validation. */
 export function validateDramaDirectorOutput(input: {
   sourceText: string;
   castNames: readonly string[];
@@ -91,16 +85,14 @@ export function validateDramaDirectorOutput(input: {
     if (segment.omit_from_audio !== false) issues.push(`${label}: omit_from_audio must be false for cleaned source text.`);
     if ('voiceId' in segment) issues.push(`${label}: voiceId must come from the reviewed cast.`);
     if (!inVocabulary(performance.primaryEmotion, DRAMA_PRIMARY_EMOTIONS)) issues.push(`${label}: invalid primaryEmotion.`);
-    const secondaryEmotions = Array.isArray(performance.secondaryEmotions)
-      ? Array.from(new Set(performance.secondaryEmotions.filter((value) => inVocabulary(value, DRAMA_SECONDARY_EMOTIONS)))).slice(0, 2)
-      : null;
-    if (!secondaryEmotions) issues.push(`${label}: secondaryEmotions must be an array.`);
+    const secondaryEmotions = performance.secondaryEmotions;
+    if (!Array.isArray(secondaryEmotions) || secondaryEmotions.length > 2 || secondaryEmotions.some((value) => !inVocabulary(value, DRAMA_SECONDARY_EMOTIONS))) issues.push(`${label}: secondaryEmotions must contain 0–2 allowed values.`);
     if (!inVocabulary(performance.socialIntent, DRAMA_SOCIAL_INTENTS)) issues.push(`${label}: invalid socialIntent.`);
     if (!Array.isArray(performance.delivery) || performance.delivery.length < 1 || performance.delivery.length > 2 || performance.delivery.some((v) => !inVocabulary(v, DRAMA_DELIVERY_STYLES))) issues.push(`${label}: delivery must contain 1–2 allowed values.`);
     if (!inVocabulary(performance.pace, DRAMA_PACING)) issues.push(`${label}: invalid pace.`);
     if (!inVocabulary(performance.energy, DRAMA_ENERGY)) issues.push(`${label}: invalid energy.`);
     if (!inVocabulary(performance.intensity, DRAMA_INTENSITY)) issues.push(`${label}: invalid intensity.`);
-    if (!Array.isArray(performance.tags) || performance.tags.filter((tag) => tagSet.has(tag)).length > 2) issues.push(`${label}: tags must contain 0–2 allowed values.`);
+    if (!Array.isArray(performance.tags) || performance.tags.length > 2 || performance.tags.some((tag) => !tagSet.has(tag))) issues.push(`${label}: tags must contain 0–2 allowed values.`);
     if (performance.nuance !== undefined && typeof performance.nuance !== 'string') issues.push(`${label}: nuance must be a string.`);
     if (issues.length > issueCount) continue;
     segments.push({
@@ -127,37 +119,40 @@ export function validateDramaDirectorOutput(input: {
   }
   const segmentTexts = rawSegments.map((segment) => record(segment)?.text);
   if (segmentTexts.some((text) => typeof text !== 'string') ||
-      !hasEquivalentAuthoritativeText(segmentTexts.join(''), input.sourceText)) {
+      segmentTexts.join('') !== input.sourceText) {
     issues.push('Segment text does not exactly match the authoritative source.');
   }
   if (issues.length) throw new DramaDirectorValidationError(issues);
   return segments;
 }
 
-export function buildDramaDirectorPrompt(input: { sourceText: string; castNames: readonly string[]; policy?: DramaDirectorPolicy; priorContinuityState?: string }): string {
+export function buildDramaDirectorPrompt(input: { sourceText: string; castNames: readonly string[]; policy?: DramaDirectorPolicy; priorContinuityState?: string; sourceSpans?: readonly DramaSourceSpan[] }): string {
   return [
     'You are the OpenReader Drama Director. Return JSON only: {"segments": [...]} .',
-    'Partition the entire source text into ordered, contiguous segments. The concatenation of every segment.text must equal the source exactly, including spaces, punctuation, and newlines. Never rewrite, add, omit, or normalize spoken text.',
+    'Return direction metadata over immutable source span IDs. Cover EVERY ID exactly once in supplied order. Each segment.spanIds is a non-empty contiguous group. Never return text, offsets, rewritten source, or voiceId.',
     'Use only cast names supplied below for speaker. Never choose or emit a voiceId.',
     'Start a new segment whenever the speaker or utterance type changes. Keep narration and speech attribution in narrator segments, separate from character dialogue, internal thoughts, and squad-link turns. Never combine different speakers into one segment.',
     'Formatting is evidence, not proof of utterance type. Internal thought and squad-link may both be italicized; use narrative context. Squad-link uses the character’s natural voice, never an automatic whisper.',
-    'Authority is not loudness. High intensity can be quiet and low energy. Performance can change within a thought; split at the exact source boundary when needed. Default to tags: []; use vocal cues only for localized effects. A pause applies after its segment text; split at the intended boundary for a pause inside a line.',
+    'Authority is not loudness. High intensity can be quiet and low energy. Performance can change within a thought; split between source spans when needed. Default to tags: []; use vocal cues only for localized effects. A pause applies after the referenced source spans; split at the intended boundary for a pause inside a line.',
     `utteranceType: ${JSON.stringify(DRAMA_UTTERANCE_TYPES)}`,
     `primaryEmotion/secondaryEmotions: ${JSON.stringify(DRAMA_PRIMARY_EMOTIONS)}`,
     `socialIntent: ${JSON.stringify(DRAMA_SOCIAL_INTENTS)}`,
     `delivery: ${JSON.stringify(DRAMA_DELIVERY_STYLES)}`,
     `pace: ${JSON.stringify(DRAMA_PACING)}; energy: ${JSON.stringify(DRAMA_ENERGY)}; intensity: ${JSON.stringify(DRAMA_INTENSITY)}`,
-    `Allowed tags only: ${JSON.stringify(DRAMA_INLINE_VOCAL_EVENTS)}. Do not put markup into text.`,
-    'Every segment needs speaker, utteranceType, text, sceneContext (1–3 sentences), performance with all required fields, and omit_from_audio: false. Source cleanup already decided what to narrate. Use 0–2 secondary emotions, 1–2 delivery styles, and 0–2 safe tags.',
-    ...(input.priorContinuityState ? [`Previous scene context: ${JSON.stringify(input.priorContinuityState)}`] : []),
+    `Allowed tags only: ${JSON.stringify(DRAMA_INLINE_VOCAL_EVENTS)}. Never regenerate pronunciation markup.`,
+    'Emotion is an internal emotional state; socialIntent is interpersonal purpose; delivery is audible speaking style. Friendly belongs to social intent; conversational belongs to delivery, neither is an emotion. Every segment needs spanIds, speaker, utteranceType, sceneContext (one concise sentence), performance with all required fields, and omit_from_audio: false. Source cleanup already decided what to narrate. Use 0–2 secondary emotions, 1–2 delivery styles, and 0–2 safe tags.',
+    ...(input.priorContinuityState ? [`Previous scene context: ${JSON.stringify(input.priorContinuityState.slice(0, 1000))}`] : []),
     'Author examples (text is exact; direction illustrates context and performance):',
     ...(input.policy ? [
       `Director policy: ${JSON.stringify(input.policy)}. Apply this as a bias only; preserve scene-appropriate intensity and exact source text.`,
       'Narrator expressiveness applies to narration; character expressiveness applies to character speech. Persistent character direction remains authoritative for identity.',
     ] : []),
-    ...DRAMA_DIRECTOR_PROMPT_EXAMPLES.map((example) => JSON.stringify(example)),
+    ...DRAMA_DIRECTOR_PROMPT_EXAMPLES.map((example) => JSON.stringify({
+      sourceSpans: [{ id: 'example', text: example.text }],
+      segments: [{ ...example.direction, performance: { ...example.direction.performance, tags: example.direction.performance.tags.filter((tag) => DRAMA_INLINE_VOCAL_EVENTS.includes(tag as never)) }, spanIds: ['example'], omit_from_audio: false }],
+    })),
     `Cast names: ${JSON.stringify(input.castNames)}`,
-    `Authoritative source text: ${JSON.stringify(input.sourceText)}`,
+    `Immutable source spans: ${JSON.stringify(input.sourceSpans ?? createDramaSourceSpans(input.sourceText))}`,
   ].join('\n');
 }
 
@@ -165,22 +160,26 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
 export async function directDramaWithRepair(input: {
   sourceText: string;
   castNames: readonly string[];
+  sourceSpans?: readonly DramaSourceSpan[];
   generate: (prompt: string) => Promise<unknown>;
   policy?: DramaDirectorPolicy;
   priorContinuityState?: string;
   onRepair?: (attempt: number, issues: readonly string[]) => void;
 }): Promise<DramaDirectorSegment[]> {
-  const prompt = buildDramaDirectorPrompt(input);
+  const sourceSpans = input.sourceSpans ?? createDramaSourceSpans(input.sourceText);
+  assertDramaSourceSpans(input.sourceText, sourceSpans);
+  const prompt = buildDramaDirectorPrompt({ ...input, sourceSpans });
   const attempts: DramaDirectorResponseAttempt[] = [];
   let output: unknown;
   let nextPrompt = prompt;
   for (let attempt = 0; attempt <= 2; attempt += 1) {
     try {
+      output = undefined;
       output = await input.generate(nextPrompt);
-      return validateDramaDirectorOutput({ ...input, output });
+      return validateDirectedSpanGroups({ ...input, sourceSpans, output });
     } catch (error) {
       if (!(error instanceof DramaDirectorValidationError)) throw error;
-      attempts.push({ attempt: attempt + 1, issues: [...error.issues], response: error.response || safeDirectorResponse(output) });
+      attempts.push({ attempt: attempt + 1, issues: [...error.issues], response: error.response ?? safeDirectorResponse(output), diagnostics: error.diagnostics });
       if (attempt === 2) {
         Object.defineProperty(error, 'attempts', { value: attempts, enumerable: true });
         throw error;
@@ -190,9 +189,9 @@ export async function directDramaWithRepair(input: {
         prompt,
         attempt === 0
           ? 'Your previous JSON failed validation. Return the full corrected JSON object only.'
-          : 'Final repair: follow the schema and source text exactly. Return the full corrected JSON object only.',
-        `Validation issues: ${JSON.stringify(error.issues)}`,
-        `Previous output: ${JSON.stringify(output)}`,
+          : 'Final repair: follow the schema and cover all span IDs in order. Return the full corrected metadata JSON object only.',
+        `Validation issues: ${JSON.stringify(error.issues.slice(0, 20)).slice(0, 4000)}`,
+        'Regenerate metadata for all supplied spans. Prior output is intentionally excluded.',
       ].join('\n');
     }
   }
@@ -201,56 +200,185 @@ export async function directDramaWithRepair(input: {
 
 function safeDirectorResponse(value: unknown): string {
   if (typeof value === 'string') return value.slice(0, 2_000_000);
-  try { return JSON.stringify(value).slice(0, 2_000_000); } catch { return '[unserializable Director response]'; }
+  try { return JSON.stringify(value)?.slice(0, 2_000_000) ?? '[no Director response]'; } catch { return '[unserializable Director response]'; }
 }
 
-/** Gemini JSON transport for the Director; orchestration supplies profile credentials. */
+/** JSON Schema from the shared taxonomy, using Gemini's supported subset. */
+export function buildDramaDirectorResponseSchema(castNames: readonly string[], spans: readonly DramaSourceSpan[]) {
+  const choice = (values: readonly string[], description?: string) => ({ type: 'string', enum: [...values], ...(description ? { description } : {}) });
+  const array = (values: readonly string[], minItems: number, maxItems: number) => ({ type: 'array', items: choice(values), minItems, maxItems });
+  const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
+  return object({ segments: {
+    type: 'array', minItems: 1, maxItems: spans.length,
+    items: object({
+      spanIds: array(spans.map((span) => span.id), 1, spans.length),
+      speaker: choice(castNames), utteranceType: choice(DRAMA_UTTERANCE_TYPES),
+      sceneContext: { type: 'string', description: 'One concise sentence of scene context.' },
+      // Boolean enum/const is outside the documented subset; enforce false
+      // authoritatively below rather than relying on an unsupported keyword.
+      omit_from_audio: { type: 'boolean', description: 'Must be false. All cleaned source is narratable.' },
+      performance: object({
+        primaryEmotion: choice(DRAMA_PRIMARY_EMOTIONS, 'Dominant internal emotional state. Not friendly, welcoming, helpful, or conversational.'),
+        secondaryEmotions: array(DRAMA_SECONDARY_EMOTIONS, 0, 2),
+        socialIntent: choice(DRAMA_SOCIAL_INTENTS, 'Interpersonal purpose toward another character.'),
+        delivery: { ...array(DRAMA_DELIVERY_STYLES, 1, 2), description: 'Audible manner of speaking.' },
+        pace: choice(DRAMA_PACING), energy: choice(DRAMA_ENERGY), intensity: choice(DRAMA_INTENSITY),
+        tags: array(DRAMA_INLINE_VOCAL_EVENTS, 0, 2),
+        nuance: { type: 'string', description: 'Optional brief acting hint.' },
+      }, ['primaryEmotion', 'secondaryEmotions', 'socialIntent', 'delivery', 'pace', 'energy', 'intensity', 'tags']),
+    }),
+  } });
+}
+
+/** Reject omissions, duplicates, unknown IDs and noncontiguous/reordered groups. */
+export function validateDirectedSpanGroups(input: {
+  sourceText: string; sourceSpans: readonly DramaSourceSpan[]; castNames: readonly string[];
+  output: unknown; policy?: DramaDirectorPolicy;
+}): DramaDirectorSegment[] {
+  assertDramaSourceSpans(input.sourceText, input.sourceSpans);
+  const rawSegments = record(input.output)?.segments;
+  if (!Array.isArray(rawSegments) || !rawSegments.length) throw new DramaDirectorValidationError(['Expected a non-empty segments array.']);
+  const table = new Map(input.sourceSpans.map((span) => [span.id, span.text]));
+  const returned: string[] = [];
+  const issues: string[] = [];
+  const segments = rawSegments.map((raw, index) => {
+    const group = record(raw);
+    if (group && 'text' in group) issues.push(`Segment ${index + 1}: text must not be generated.`);
+    const ids = group?.spanIds;
+    if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== 'string')) {
+      issues.push(`Segment ${index + 1}: spanIds must be a non-empty string array.`);
+      return { ...group, text: '' };
+    }
+    for (const id of ids) returned.push(id);
+    return { ...group, text: ids.map((id) => table.get(id) ?? '').join('') };
+  });
+  const seen = new Set<string>();
+  const firstUnknownSpan = returned.find((id) => !table.has(id));
+  const firstDuplicateSpan = returned.find((id) => { if (seen.has(id)) return true; seen.add(id); return false; });
+  const present = new Set(returned);
+  const firstMissingSpan = input.sourceSpans.find((span) => !present.has(span.id))?.id;
+  const firstOutOfOrderSpan = returned.find((id, index) => id !== input.sourceSpans[index]?.id);
+  const diagnostics = { firstMissingSpan, firstDuplicateSpan, firstOutOfOrderSpan, firstUnknownSpan,
+    expectedSpanCount: input.sourceSpans.length, returnedSpanCount: returned.length };
+  if (firstUnknownSpan) issues.push(`Unknown source span: ${firstUnknownSpan}.`);
+  if (firstDuplicateSpan) issues.push(`Duplicate source span: ${firstDuplicateSpan}.`);
+  if (firstMissingSpan) issues.push(`Missing source span: ${firstMissingSpan}.`);
+  if (firstOutOfOrderSpan) issues.push(`Out-of-order source span: ${firstOutOfOrderSpan}.`);
+  if (issues.length) throw new DramaDirectorValidationError(issues, undefined, diagnostics);
+  return validateDramaDirectorOutput({ ...input, output: { segments } });
+}
+
+/** Gemini generateContent REST transport; server reconstructs all spoken text. */
 export async function directDramaWithGemini(input: {
   sourceText: string;
+  sourceSpans?: readonly DramaSourceSpan[];
   castNames: readonly string[];
   apiKey: string;
   backupApiKey?: string;
   model: string;
   policy?: DramaDirectorPolicy;
   priorContinuityState?: string;
+  batchIndex?: number;
+  signal?: AbortSignal;
+  onDiagnostic?: (fields: Record<string, unknown>) => void;
   onRepair?: (attempt: number, issues: readonly string[]) => void;
 }): Promise<DramaDirectorSegment[]> {
-  return directDramaWithRepair({
-    ...input,
-    generate: async (prompt) => {
-      const { response } = await fetchGeminiWithRateLimitFallback({
-        primaryApiKey: input.apiKey,
-        backupApiKey: input.backupApiKey,
-        requestedModel: input.model,
-        request: (apiKey, model) => fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || input.model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: { responseMimeType: 'application/json' },
-            }),
-          },
-        ),
-      });
-      if (!response.ok) {
-        const details = await geminiPrivateErrorDetails(response);
-        const responseDiagnostic = JSON.stringify({ provider: 'gemini', httpStatus: response.status, ...details }).slice(0, 2_000_000);
-        throw new DramaDirectorValidationError([
-          `Gemini Drama Director provider failure (HTTP ${response.status}${details.apiStatus ? ` ${details.apiStatus}` : ''}): ${details.message || 'No provider message.'}`,
-        ], responseDiagnostic);
-      }
-      const data = await response.json() as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-      const jsonText = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
-      if (!jsonText) throw new DramaDirectorValidationError(['Gemini returned no Director JSON.'], jsonText);
-      try {
-        return JSON.parse(jsonText) as unknown;
-      } catch {
-        throw new DramaDirectorValidationError(['Gemini returned invalid Director JSON.'], jsonText);
-      }
-    },
-  });
+  const redact = (value: string) => {
+    for (const key of [input.apiKey, input.backupApiKey]) if (key) value = value.split(key).join('[redacted]');
+    return value;
+  };
+  const allSpans = input.sourceSpans ?? createDramaSourceSpans(input.sourceText);
+  assertDramaSourceSpans(input.sourceText, allSpans);
+  const batches = batchDramaSourceSpans(allSpans);
+  const directed: DramaDirectorSegment[] = [];
+  let continuity = input.priorContinuityState;
+  for (const [index, sourceSpans] of batches.entries()) {
+    input.signal?.throwIfAborted();
+    const sourceText = sourceSpans.map((span) => span.text).join('');
+    const base = { batchIndex: (input.batchIndex ?? 0) + index, sourceByteCount: Buffer.byteLength(sourceText, 'utf8'), sourceSpanCount: sourceSpans.length };
+    let attempt = 0;
+    let provider: Record<string, unknown> = {};
+    const emit = (fields: Record<string, unknown>) => {
+      const diagnostic = { ...base, ...provider, ...fields };
+      serverLogger.info({ event: 'drama_director.diagnostic', ...diagnostic }, 'Drama Director request diagnostic');
+      input.onDiagnostic?.(diagnostic);
+    };
+    const segments = await directDramaWithRepair({
+      ...input, sourceText, sourceSpans, priorContinuityState: continuity,
+      generate: async (prompt) => {
+        input.signal?.throwIfAborted();
+        attempt += 1;
+        provider = {};
+        const { response } = await fetchGeminiWithRateLimitFallback({
+          primaryApiKey: input.apiKey, backupApiKey: input.backupApiKey, requestedModel: input.model, signal: input.signal,
+          request: (apiKey, model) => fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || input.model)}:generateContent`,
+            {
+              method: 'POST', signal: input.signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+              body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
+                // Verified against Google's current generateContent REST example
+                // for gemini-3.8-flash; schema is not merely a JSON MIME hint.
+                generationConfig: { responseFormat: { text: { mimeType: 'application/json', schema: buildDramaDirectorResponseSchema(input.castNames, sourceSpans) } }, maxOutputTokens: 24_000 },
+              }),
+            },
+          ),
+        });
+        if (!response.ok) {
+          const details = await geminiPrivateErrorDetails(response);
+          if (details.message) details.message = redact(details.message);
+          provider = { ...base, attempt, httpStatus: response.status };
+          emit({ failure: 'provider' });
+          throw new DramaDirectorValidationError([
+            `Gemini Drama Director provider failure (HTTP ${response.status}${details.apiStatus ? ` ${details.apiStatus}` : ''}): ${details.message || 'No provider message.'}`,
+          ], JSON.stringify({ provider: 'gemini', httpStatus: response.status, ...details }).slice(0, 2_000_000), provider);
+        }
+        const envelope = await response.text();
+        let parsedEnvelope: unknown;
+        try { parsedEnvelope = JSON.parse(envelope) as unknown; }
+        catch {
+          provider = { ...base, attempt, responseLength: envelope.length, parseFailure: true };
+          emit({ failure: 'invalid-provider-json' });
+          throw new DramaDirectorValidationError(['Gemini returned an invalid Director response envelope.'], redact(envelope).slice(0, 2_000_000), provider);
+        }
+        const data = (record(parsedEnvelope) ?? {}) as {
+          candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+          usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+          modelVersion?: string;
+        };
+        const candidate = data.candidates?.[0];
+        const jsonText = candidate?.content?.parts?.filter((part) => !part.thought).map((part) => part.text || '').join('') || '';
+        provider = { ...base, attempt, finishReason: candidate?.finishReason, modelVersion: data.modelVersion,
+          promptTokenCount: data.usageMetadata?.promptTokenCount, candidatesTokenCount: data.usageMetadata?.candidatesTokenCount,
+          totalTokenCount: data.usageMetadata?.totalTokenCount, responseLength: jsonText.length };
+        let output: unknown;
+        try { output = JSON.parse(jsonText) as unknown; }
+        catch (error) {
+          // Store only parse location, not V8's source excerpt in normal logs.
+          const location = error instanceof Error ? error.message.match(/position (\d+)|line (\d+) column (\d+)/u)?.[0] : undefined;
+          provider = { ...provider, parseFailure: true, parseErrorLocation: location };
+          emit({ failure: 'invalid-json' });
+          throw new DramaDirectorValidationError([jsonText ? 'Gemini returned invalid Director JSON.' : 'Gemini returned no Director JSON.'], redact(jsonText).slice(0, 2_000_000), provider);
+        }
+        const rawSegments = record(output)?.segments;
+        provider = { ...provider, directedSegmentCount: Array.isArray(rawSegments) ? rawSegments.length : 0 };
+        if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
+          emit({ failure: 'incomplete-output' });
+          throw new DramaDirectorValidationError([`Gemini Director finish reason: ${candidate.finishReason}.`], redact(jsonText).slice(0, 2_000_000), provider);
+        }
+        try {
+          const validated = validateDirectedSpanGroups({ ...input, sourceText, sourceSpans, output });
+          emit({ directedSegmentCount: validated.length });
+        } catch (error) {
+          if (!(error instanceof DramaDirectorValidationError)) throw error;
+          const diagnostics = { ...provider, ...error.diagnostics };
+          emit({ ...error.diagnostics, failure: 'validation' });
+          throw new DramaDirectorValidationError(error.issues, redact(jsonText).slice(0, 2_000_000), diagnostics);
+        }
+        return output;
+      },
+    });
+    directed.push(...segments);
+    continuity = segments.at(-1)?.sceneContext || continuity;
+  }
+  return directed;
 }

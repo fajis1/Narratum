@@ -119,3 +119,64 @@ emotion, whisper-style, inline-event, fallback, and short multi-segment chapter
 smoke tests described in the migration plan. Verify that unary audio starts with
 `RIFF`, tags are not spoken literally, and the final MP3/M4B plays correctly.
 No live credential or staging execution was used for this code-only migration.
+
+## Director source-span reliability (2026-10-06)
+
+Next-release note: Drama Director now returns schema-constrained direction over
+immutable source IDs. Narratum reconstructs the exact cleaned source, preventing
+model text drift and silent omissions; adaptive batches and bounded repairs reduce
+large-output failures, and provider finish/token/coverage diagnostics aid recovery.
+
+The chapter is split once into deterministic `s000001`-style spans at paragraph,
+sentence and straight/double-smart quote boundaries, with a 600-byte soft target
+at token boundaries. Pronunciation markup is atomic. No whitespace, Unicode,
+punctuation or line wrapping is normalized. Span concatenation must equal the
+cleaned authoritative source before any Director call. Groups must cover every ID
+exactly once in order; only then does the server reconstruct the existing
+`DramaDirectorSegment.text`. The legacy validator now requires exact equality too.
+
+Batches have hard budgets of 12,000 source bytes and 48 spans, with paragraph or
+sentence boundary preference in the latter half. The span count budgets worst-case
+metadata output (~300 tokens per span), rather than assuming that source bytes
+predict speaker density. Output is limited to 24,000 tokens. Single atomic source
+units exceeding the byte budget fail before a provider call rather than splitting
+pronunciation markup. These are conservative engineering budgets, not measured
+provider guarantees; tune from the new diagnostics and staging observations.
+
+The current Gemini 3.8 `generateContent` REST contract is configured using
+`generationConfig.responseFormat.text = { mimeType: 'application/json', schema }`.
+All cast/span IDs and performance enums derive from authoritative shared values;
+object shape and array limits are schema-constrained. Google's documented subset
+does not support boolean `const`/`enum`, so `omit_from_audio` is a required boolean
+with a false-only instruction and an authoritative server check. Server validation
+also rejects unsupported tags and secondary emotions instead of silently filtering.
+
+Contract references:
+- https://ai.google.dev/gemini-api/docs/generate-content/structured-output
+- https://ai.google.dev/api/generate-content#TextResponseFormat
+
+Each failed batch has at most two corrections. Each correction contains one
+original span prompt plus at most 20 issues / 4,000 issue characters; prior JSON
+and prior repair prompts are never appended. Continuity text is bounded to 1,000
+characters. Malformed JSON is never heuristically repaired. Non-STOP finish
+reasons also fail even if the result parses. Exhausted attempts retain bounded
+raw responses and finish/token/batch/parse/coverage metadata in the existing
+Director failure artifact; normal structured logs contain no source or credentials.
+
+Failure-log exports label their semantics as retained diagnostics, independent of
+latest job status. The UI explains historical records and suppresses a current
+failure banner for a completed job without removing useful history. TTS primary,
+backup-key, Flash-Lite fallback and review/failed-segment behavior are unchanged.
+
+No database or persisted segment migration is needed. Worker processes must load
+the new code. A staging narration/dialogue/PDF-markup Director smoke remains a
+live release gate; automated mock transport tests do not establish provider latency,
+acting quality, quota availability or exact deployed-model schema support.
+
+Verification for this update: 118 tests across 10 focused Director/orchestration/
+request/synthesis/diagnostic/failover suites passed; full `pnpm test:unit` passed
+199 files / 1,613 tests. `pnpm exec tsc --noEmit`, ESLint on the seven core/schema/
+helper/test files, and `git diff --check` passed. The affected failure-log route
+and diagnostic modal retain respectively 1 and 23 existing ESLint errors; a
+read-only HEAD comparison confirmed no increase. No live Gemini or browser smoke
+was run. Existing unrelated local changes were preserved.

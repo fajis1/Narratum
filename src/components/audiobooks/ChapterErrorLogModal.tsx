@@ -90,6 +90,7 @@ export function ChapterErrorLogModal({
       bookTitle: bookTitle || data.documentTitle,
       jobError: jobError || data.jobError,
       jobStatus: data.jobStatus,
+      historySemantics: data.historySemantics || 'retained-diagnostics',
       failures: activeFailures,
       reviewFlags: activeReviewFlags,
       timestamp: new Date().toISOString(),
@@ -101,7 +102,7 @@ export function ChapterErrorLogModal({
     }).catch(() => {});
   };
 
-  const effectiveJobError = jobError || data?.jobError;
+  const effectiveJobError = data?.jobStatus === 'completed' ? null : jobError || data?.jobError;
 
   return (
     <ModalFrame open={open} onClose={onClose} size="xl">
@@ -145,6 +146,10 @@ export function ChapterErrorLogModal({
 
           {!loading && !fetchError && (
             <>
+              <p className="text-xs text-text-muted">
+                Retained diagnostic history and review flags may include earlier attempts.
+                Latest job status: {data?.jobStatus || 'unavailable'}. These records do not establish that the latest run failed.
+              </p>
               {/* Overall Job Error Banner */}
               {effectiveJobError && (
                 <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/30 text-text-strong text-xs space-y-1">
@@ -198,7 +203,7 @@ export function ChapterErrorLogModal({
               {/* Chapter Failure Entries */}
               {activeFailures.length === 0 && activeReviewFlags.length === 0 && !effectiveJobError && (
                 <div className="py-10 text-center text-text-soft text-xs space-y-1">
-                  <p className="text-base font-semibold text-text-strong">✨ No active failure records</p>
+                  <p className="text-base font-semibold text-text-strong">✨ No retained diagnostic records</p>
                   <p>All chapters have valid recordings or have not logged unrecoverable errors.</p>
                 </div>
               )}

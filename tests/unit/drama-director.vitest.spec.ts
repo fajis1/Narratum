@@ -1,3 +1,4 @@
+import { DRAMA_INLINE_VOCAL_EVENTS } from '../../src/lib/shared/drama-director-schema';
 import { describe, expect, it, vi } from 'vitest';
 import examples from '../../src/lib/server/smart-audio/drama-director-examples.json';
 import {
@@ -32,6 +33,7 @@ describe('Drama Director prompt and validation', () => {
     for (const example of examples) {
       const output = { segments: [{
         ...example.direction,
+        performance: { ...example.direction.performance, tags: example.direction.performance.tags.filter((tag) => DRAMA_INLINE_VOCAL_EVENTS.includes(tag as never)) },
         text: example.text,
         omit_from_audio: false,
       }] };
@@ -43,10 +45,10 @@ describe('Drama Director prompt and validation', () => {
     }
   });
 
-  it('accepts exact text and strips unknown tags', () => {
+  it('rejects unknown tags', () => {
     const output = structuredClone(valid);
     (output.segments[0].performance.tags as string[]).push('sigh', 'scared');
-    expect(validateDramaDirectorOutput({ ...input, output })[0].performance.tags).toEqual(['sigh']);
+    expect(() => validateDramaDirectorOutput({ ...input, output })).toThrow(/tags/);
   });
 
   it('rejects unauthorized omissions, voice choices, and oversized performance arrays', () => {
@@ -63,10 +65,10 @@ describe('Drama Director prompt and validation', () => {
     }
   });
 
-  it('safely filters and limits secondary emotions without changing source text', () => {
+  it('rejects invalid and oversized secondary emotions', () => {
     const output = structuredClone(valid);
     (output.segments[0].performance as { secondaryEmotions: string[] }).secondaryEmotions = ['uncertain', 'uncertain', 'not-allowed'];
-    expect(validateDramaDirectorOutput({ ...input, output })[0].performance.secondaryEmotions).toEqual(['uncertain']);
+    expect(() => validateDramaDirectorOutput({ ...input, output })).toThrow(/secondaryEmotions/);
   });
 
   it.each([
@@ -89,14 +91,14 @@ describe('Drama Director prompt and validation', () => {
     expect(() => validateDramaDirectorOutput({ ...input, output })).toThrow(/exactly match/);
   });
 
-  it('allows only paragraph-break multiplicity differences in authoritative text', () => {
+  it('rejects paragraph-break multiplicity differences in legacy validation', () => {
     const sourceText = 'Chapter 1\n\n[Bethany](/bɛθəni/) spoke.\n\nThe room went quiet.';
     const output = structuredClone(valid);
     output.segments = [
       { ...output.segments[0], text: 'Chapter 1\n[Bethany](/bɛθəni/) spoke.\n' },
       { ...output.segments[0], text: 'The room went quiet.' },
     ];
-    expect(validateDramaDirectorOutput({ sourceText, castNames: ['Narrator'], output })).toHaveLength(2);
+    expect(() => validateDramaDirectorOutput({ sourceText, castNames: ['Narrator'], output })).toThrow(/exactly match/);
 
     output.segments[0].text = 'Chapter 1 [Bethany](/bɛθəni/) spoke.\n';
     expect(() => validateDramaDirectorOutput({ sourceText, castNames: ['Narrator'], output })).toThrow(/exactly match/);
@@ -106,7 +108,7 @@ describe('Drama Director prompt and validation', () => {
   });
 
   it('makes up to two repairs and rejects a still-invalid correction', async () => {
-    const generate = vi.fn().mockResolvedValueOnce({ segments: [] }).mockResolvedValueOnce(valid);
+    const generate = vi.fn().mockResolvedValueOnce({ segments: [] }).mockResolvedValueOnce({ segments: [{ speaker: 'Narrator', utteranceType: 'narration', sceneContext: 'Greeting.', omit_from_audio: false, performance: valid.segments[0].performance, spanIds: ['s000001'] }] });
     expect(await directDramaWithRepair({ ...input, generate })).toHaveLength(1);
     expect(generate).toHaveBeenCalledTimes(2);
     expect(generate.mock.calls[1][0]).toContain('Validation issues');

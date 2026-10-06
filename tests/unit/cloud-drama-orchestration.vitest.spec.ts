@@ -18,6 +18,7 @@ vi.mock('../../src/lib/server/audiobooks/segmented-tts', () => ({
 }));
 
 import { generateCloudDramaAudiobook } from '../../src/lib/server/audiobooks/cloud-drama';
+import { DRAMA_DIRECTOR_MAX_SPANS } from '@/lib/server/smart-audio/drama-source-spans';
 import type { SmartAudioCharacterMap } from '../../src/types/document-settings';
 
 const map: SmartAudioCharacterMap = {
@@ -55,6 +56,28 @@ describe('Cloud Drama chapter orchestration', () => {
     }));
     expect(concatenate).toHaveBeenCalledWith([Buffer.from('spoken')], undefined);
     expect(result.audioBuffer).toEqual(Buffer.from('chapter'));
+  });
+
+  it('directs adaptive immutable chapter batches in order with continuity and diagnostics', async () => {
+    const cleanedText = Array.from({ length: 100 }, (_, index) => `“Turn ${index}.” Narrator said.\n`).join('');
+    const onLifecycle = vi.fn();
+    direct.mockImplementation(async (options) => {
+      options.onDiagnostic({ batchIndex: options.batchIndex, finishReason: 'STOP', sourceSpanCount: options.sourceSpans.length });
+      return [{ ...segment, text: options.sourceText, sceneContext: `Batch ${options.batchIndex}.` }];
+    });
+    const result = await generateCloudDramaAudiobook({ cleanedText, characterMap: map, geminiApiKey: 'test', directorModel: 'gemini-test', directionOnly: true, onLifecycle });
+    expect(direct.mock.calls.length).toBeGreaterThan(2);
+    expect(result.segments.map((item) => item.text).join('')).toBe(cleanedText);
+    const ids = direct.mock.calls.flatMap(([options]) => options.sourceSpans.map((span: { id: string }) => span.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const [index, [options]] of direct.mock.calls.entries()) {
+      expect(options.sourceSpans.length).toBeLessThanOrEqual(DRAMA_DIRECTOR_MAX_SPANS);
+      expect(Buffer.byteLength(options.sourceText)).toBeLessThanOrEqual(12_000);
+      expect(options.batchIndex).toBe(index);
+      if (index) expect(options.priorContinuityState).toBe(`Batch ${index - 1}.`);
+    }
+    expect(onLifecycle).toHaveBeenCalledWith('director.diagnostic', expect.objectContaining({ finishReason: 'STOP' }));
+    expect(synthesize).not.toHaveBeenCalled();
   });
 
   it('prepares speaker review without synthesizing or stitching audio', async () => {

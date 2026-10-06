@@ -106,6 +106,12 @@ export interface DramaDirectorSegment {
   omit_from_audio: boolean;
 }
 
+/** Provider direction metadata contains references only; source is reconstructed server-side. */
+export interface DirectedSpanGroup extends Omit<DramaDirectorSegment, 'text' | 'omit_from_audio'> {
+  spanIds: string[];
+  omit_from_audio: false;
+}
+
 /** Gemini 3.8 point-in-time vocal events. Sustained delivery belongs in style metadata. */
 export const DRAMA_INLINE_VOCAL_EVENTS = [
   'sigh', 'laugh', 'chuckle', 'cough', 'breath', 'heavy breath', 'gasp',

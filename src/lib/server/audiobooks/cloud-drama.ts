@@ -1,7 +1,8 @@
+import { createDramaSourceSpans, batchDramaSourceSpans } from '@/lib/server/smart-audio/drama-source-spans';
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { directDramaWithGemini } from '@/lib/server/smart-audio/drama-director';
-import { splitDramaTextByUtf8, synthesizeGeminiDramaSegment } from '@/lib/server/smart-audio/drama-cloud-synthesis';
+import { synthesizeGeminiDramaSegment } from '@/lib/server/smart-audio/drama-cloud-synthesis';
 import type { DramaSynthesisReviewFlag } from '@/lib/server/smart-audio/drama-cloud-synthesis';
 import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { concatenateWavSegmentsToMp3, generateSilentWavSegment } from './segmented-tts';
@@ -51,16 +52,19 @@ export async function generateCloudDramaAudiobook(input: {
   const profileSettings = normalizeDramaGeminiTtsProfileSettings(input.dramaGeminiTtsSettings);
   const policy = buildDramaDirectorPolicy(profileSettings);
   const castNames = Object.keys(readiness.map.entries);
-  const sourceBatches = splitDramaTextByUtf8(input.cleanedText, 12_000);
+  const sourceBatches = batchDramaSourceSpans(createDramaSourceSpans(input.cleanedText));
   let silentSegment: Buffer | null = null;
   let continuityState = input.priorContinuityState;
   let segmentNumber = 0;
 
-  for (const [batchIndex, sourceText] of sourceBatches.entries()) {
+  for (const [batchIndex, sourceSpans] of sourceBatches.entries()) {
+    const sourceText = sourceSpans.map((span) => span.text).join('');
     if (input.signal?.aborted) throw new Error('ABORTED');
-    input.onLifecycle?.('director.start', { batchIndex, model: input.directorModel });
+    input.onLifecycle?.('director.start', { batchIndex, model: input.directorModel, sourceByteCount: Buffer.byteLength(sourceText, 'utf8'), sourceSpanCount: sourceSpans.length });
     const directed = await directDramaWithGemini({
-      sourceText, castNames, apiKey: input.geminiApiKey,
+      sourceText, sourceSpans, batchIndex, signal: input.signal,
+      onDiagnostic: (fields) => input.onLifecycle?.('director.diagnostic', fields),
+      castNames, apiKey: input.geminiApiKey,
       backupApiKey: input.backupGeminiApiKey,
       model: input.directorModel,
       policy,
@@ -68,7 +72,7 @@ export async function generateCloudDramaAudiobook(input: {
       onRepair: (attempt, issues) => {
         input.onLifecycle?.('director.validation', { batchIndex, model: input.directorModel, attempt, issueCount: issues.length });
         reviewFlags.push({ kind: 'director-validation-repair', speaker: 'Narrator', sourceText,
-          chunkIndex: 0, attempts: attempt, reason: `Director output required validation repair ${attempt}.` });
+          chunkIndex: batchIndex, attempts: attempt, reason: `Director output required validation repair ${attempt}.` });
       },
     });
     input.onLifecycle?.('director.response', { batchIndex, model: input.directorModel, segmentCount: directed.length });
