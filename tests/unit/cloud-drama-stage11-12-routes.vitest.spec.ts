@@ -116,6 +116,32 @@ describe('Gemini character preview route', () => {
     }));
   });
 
+  it('previews with explicit modelName requested in the body', async () => {
+    const { POST } = await import('@/app/api/audiobook/characters/preview/route');
+    const response = await POST(request({ previewMode: 'voice-only', modelName: 'gemini-3.8-flash-lite-tts' }));
+    expect(response.status).toBe(200);
+    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({
+      modelName: 'gemini-3.8-flash-lite-tts',
+    }));
+  });
+
+  it('previews character using entry.ttsModel when modelName is not in body', async () => {
+    mocks.rows = [
+      [{ id: 'doc-1' }],
+      [{ dataJson: JSON.stringify({ smartAudioCharacters: {
+        schemaVersion: 1, status: 'complete', entries: {
+          Rina: { name: 'Rina', description: 'Guarded.', voiceId: 'Kore', ttsModel: 'gemini-3.8-flash-lite-tts', cloudDirection: { audioProfile: 'Quiet and controlled.' } },
+        },
+      } }) }],
+    ];
+    const { POST } = await import('@/app/api/audiobook/characters/preview/route');
+    const response = await POST(request({ previewMode: 'character', characterName: 'Rina' }));
+    expect(response.status).toBe(200);
+    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({
+      modelName: 'gemini-3.8-flash-lite-tts',
+    }));
+  });
+
   it('reuses a stored neutral voice sample without calling Gemini again', async () => {
     mocks.catalog.mockResolvedValue({ source: 'live', fetchedAt: 1, catalogVersion: 'test', languageCodes: ['en-US'], voices: [{ id: 'KoreStored' }] });
     mocks.getStoredPreview.mockResolvedValue(Buffer.from('stored-wav'));

@@ -214,6 +214,9 @@ function characterEntry(
   const importance: 'main' | 'minor' = (source.importance === 'main' || source.importance === 'minor')
     ? source.importance
     : (name.toLocaleLowerCase() === 'narrator' ? 'main' : 'minor');
+  const ttsModel = source.ttsModel === 'gemini-3.8-flash-lite-tts' || source.ttsModel === 'gemini-3.8-flash-tts'
+    ? source.ttsModel
+    : (source.model === 'gemini-3.8-flash-lite-tts' || source.model === 'gemini-3.8-flash-tts' ? source.model : undefined);
   return {
     name,
     description: normalizedDescription(source.description),
@@ -221,6 +224,7 @@ function characterEntry(
     voiceId,
     aliasFor,
     importance,
+    ...(ttsModel ? { ttsModel } : {}),
     ...(cloudDirection !== null ? { cloudDirection } : {}),
     ...(castingTraits ? { castingTraits } : {}),
     ...(voiceAssignment ? { voiceAssignment } : {}),
@@ -448,6 +452,7 @@ export function mergeExtractedCharacters(input: {
       sampleText: normalizedSample(source.sample_text ?? source.sampleText) || existing?.sampleText || '',
       voiceId: existing?.voiceId || null,
       importance,
+      ...(existing?.ttsModel ? { ttsModel: existing.ttsModel } : {}),
       ...(existing?.cloudDirection ? { cloudDirection: existing.cloudDirection } : {}),
       ...(castingTraits ? { castingTraits } : {}),
       ...(existing?.voiceAssignment ? { voiceAssignment: existing.voiceAssignment } : {}),
@@ -465,6 +470,7 @@ export function mergeExtractedCharacters(input: {
       description: existingNarrator?.description || 'Primary audiobook narrator.',
       sampleText: existingNarrator?.sampleText || '',
       voiceId: existingNarrator?.voiceId || null,
+      ...(existingNarrator?.ttsModel ? { ttsModel: existingNarrator.ttsModel } : {}),
       ...(existingNarrator?.castingTraits ? { castingTraits: existingNarrator.castingTraits } : {}),
       ...(existingNarrator?.voiceAssignment ? { voiceAssignment: existingNarrator.voiceAssignment } : {}),
       importance: 'main',

@@ -4,6 +4,9 @@ const { direct, synthesize, concatenate, silence } = vi.hoisted(() => ({
   direct: vi.fn(), synthesize: vi.fn(), concatenate: vi.fn(), silence: vi.fn(),
 }));
 
+vi.mock('@/lib/server/smart-audio/gemini-cast-helpers', () => ({
+  getGeminiTtsCharacterMapReadiness: async ({ value }: { value: unknown }) => ({ ready: true, map: value }),
+}));
 vi.mock('../../src/lib/server/smart-audio/drama-director', () => ({ directDramaWithGemini: direct }));
 vi.mock('../../src/lib/server/smart-audio/drama-cloud-synthesis', () => ({
   synthesizeGeminiDramaSegment: synthesize,
@@ -51,6 +54,28 @@ describe('Cloud Drama chapter orchestration', () => {
     }));
     expect(concatenate).toHaveBeenCalledWith([Buffer.from('spoken')], undefined);
     expect(result.audioBuffer).toEqual(Buffer.from('chapter'));
+  });
+
+  it('prepares speaker review without synthesizing or stitching audio', async () => {
+    const onDirectedSegments = vi.fn().mockResolvedValue(undefined);
+    const result = await generateCloudDramaAudiobook({
+      cleanedText: 'Hello.', characterMap: map, geminiApiKey: 'test', directorModel: 'gemini-test',
+      directionOnly: true, onDirectedSegments,
+    });
+    expect(result.segments).toEqual([segment]);
+    expect(onDirectedSegments).toHaveBeenCalledWith([segment], true);
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(concatenate).not.toHaveBeenCalled();
+  });
+
+  it('retains validated speaker turns before TTS can fail', async () => {
+    synthesize.mockRejectedValue(new Error('TTS failed'));
+    const onDirectedSegments = vi.fn().mockResolvedValue(undefined);
+    await expect(generateCloudDramaAudiobook({
+      cleanedText: 'Hello.', characterMap: map, geminiApiKey: 'test', directorModel: 'gemini-test', onDirectedSegments,
+    })).rejects.toThrow('TTS failed');
+    expect(onDirectedSegments).toHaveBeenCalledWith([segment], true);
+    expect(onDirectedSegments.mock.invocationCallOrder[0]).toBeLessThan(synthesize.mock.invocationCallOrder[0]);
   });
 
   it('stitches silence in place of a failed line and returns its review flag', async () => {

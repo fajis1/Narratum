@@ -23,6 +23,7 @@ export interface ChapterFailureLogItem {
   profileId?: string;
   sourceText?: string;
   hasDirectorDiagnostic?: boolean;
+  hasProviderDiagnostic?: boolean;
 }
 
 export interface AudiobookFailureLogResponse {
@@ -115,6 +116,10 @@ export async function GET(request: NextRequest) {
         return match ? [Number.parseInt(match[1], 10)] : [];
       }),
     );
+    const providerDiagnosticIndices = new Set(objects.flatMap((object) => {
+      const match = object.fileName.match(/^(\d+)__provider_failure\.json$/);
+      return match ? [Number.parseInt(match[1], 10) - 1] : [];
+    }));
     const failures: ChapterFailureLogItem[] = [];
     const processedIndices = new Set<number>();
 
@@ -199,6 +204,7 @@ export async function GET(request: NextRequest) {
 
     for (const failure of failures) {
       failure.hasDirectorDiagnostic = directorDiagnosticIndices.has(failure.chapterIndex);
+      failure.hasProviderDiagnostic = providerDiagnosticIndices.has(failure.chapterIndex);
     }
 
     const responseData: AudiobookFailureLogResponse = {

@@ -1,3 +1,5 @@
+import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
+import { saveDramaTtsDiagnostic } from '@/lib/server/audiobooks/drama-tts-diagnostics';
 import { processBatchRefineJob } from './refine';
 import { repairSmartAudioWorkerPronunciations, SmartAudioTargetedRepairError } from './smart-audio-targeted-repair';
 
@@ -1788,6 +1790,14 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
               directorModel: resolveDramaDirectorModel(selectedProfile),
               dramaGeminiTtsSettings: selectedProfile.dramaGeminiTtsSettings,
               priorContinuityState: continuityState,
+              onDirectedSegments: async (segments, complete) => {
+                await saveDramaSpeakerReview({ bookId, userId, chapterIndex: chapter.index,
+                  profileId: selectedProfile.id, sourceText: processedTextForTts,
+                  characterMap: resolvedDocumentSettings.smartAudioCharacters!, segments, complete, namespace: testNamespace });
+              },
+              onSynthesisFailure: (flags) => saveDramaTtsDiagnostic({
+                bookId, userId, chapterIndex: chapter.index, flags, namespace: testNamespace,
+              }),
               ttsModel: GEMINI_TTS_MODEL,
               ttsModelFallbacks: GEMINI_TTS_FALLBACK_MODELS,
             });

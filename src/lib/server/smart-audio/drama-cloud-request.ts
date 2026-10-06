@@ -1,6 +1,6 @@
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import { DRAMA_INLINE_PAUSE_EVENT_SET, DRAMA_INLINE_VOCAL_EVENT_SET } from '@/lib/shared/drama-director-schema';
-import { buildGeminiTtsRequest, GEMINI_TTS_MAX_STYLE_BYTES, GEMINI_TTS_MODEL } from './gemini-tts-client';
+import { buildGeminiTtsRequest, GEMINI_TTS_MAX_STYLE_BYTES, GEMINI_TTS_MODEL, isGeminiTtsModel } from './gemini-tts-client';
 import type { GeminiTtsModel } from './gemini-tts-client';
 import type { SmartAudioCharacterMap, SmartAudioCharacterEntry } from '@/types/document-settings';
 import { CLOUD_TTS_CHARACTER_VOICE_SET } from '@/lib/shared/google-cloud-tts-voices';
@@ -22,7 +22,7 @@ function resolveCastEntry(map: SmartAudioCharacterMap, speaker: string): SmartAu
   return entry;
 }
 
-function resolveGeminiCastEntry(map: SmartAudioCharacterMap, speaker: string): SmartAudioCharacterEntry {
+export function resolveGeminiCastEntry(map: SmartAudioCharacterMap, speaker: string): SmartAudioCharacterEntry {
   let entry = map.entries[speaker];
   if (!entry) throw new CloudTtsInputError(`Speaker ${speaker} is not in the reviewed cast.`);
   if (entry.aliasFor) entry = map.entries[entry.aliasFor];
@@ -215,7 +215,8 @@ export function buildGeminiDramaTtsRequest(input: {
   const entry = resolveGeminiCastEntry(input.characterMap, input.segment.speaker);
   const requestText = renderProviderAwareDramaText({ provider: 'gemini', sourceText: input.segment.text, events: input.segment.performance.tags });
   const style = buildGemini38SpeechStyle(input.segment, entry, input.policy);
-  const modelName = input.modelName ?? GEMINI_TTS_MODEL;
+  const modelName = input.modelName
+    ?? (entry.ttsModel && isGeminiTtsModel(entry.ttsModel) ? entry.ttsModel : GEMINI_TTS_MODEL);
   return {
     sourceText: input.segment.text,
     requestText,

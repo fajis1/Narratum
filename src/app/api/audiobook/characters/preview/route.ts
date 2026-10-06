@@ -91,12 +91,16 @@ export async function POST(request: NextRequest) {
     if (previewMode !== 'voice-only' && !entry) {
       return NextResponse.json({ error: 'Select a saved character before using this preview mode.' }, { status: 400 });
     }
-    const voiceModel = catalogVoice.model && isGeminiTtsModel(catalogVoice.model)
-      ? catalogVoice.model
-      : GEMINI_TTS_MODEL;
+    const requestedModel = typeof body.modelName === 'string' && isGeminiTtsModel(body.modelName)
+      ? body.modelName
+      : undefined;
+    const voiceModel = requestedModel
+      ?? (entry?.ttsModel && isGeminiTtsModel(entry.ttsModel) ? entry.ttsModel : undefined)
+      ?? (catalogVoice.model && isGeminiTtsModel(catalogVoice.model) ? catalogVoice.model : undefined)
+      ?? GEMINI_TTS_MODEL;
     const key = previewMode === 'voice-only'
       ? cacheKey({ kind: 'gemini-voice-only', version: GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION, voiceName, model: voiceModel })
-      : cacheKey({ userId: context.userId, documentId, profileId, voiceName, text, previewMode, characterName, sceneContext });
+      : cacheKey({ userId: context.userId, documentId, profileId, voiceName, text, previewMode, characterName, sceneContext, model: voiceModel });
     const cached = readCachedPreview(key);
     if (cached) return new NextResponse(new Uint8Array(cached), { headers: { 'Content-Type': GEMINI_TTS_AUDIO_MIME_TYPE, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'HIT' } });
     if (previewMode === 'voice-only') {
@@ -113,7 +117,7 @@ export async function POST(request: NextRequest) {
     const result = await synthesizeWithGeminiTts({
       text, voiceName, apiKey,
       style: previewStyle({ mode: previewMode, description: entry?.cloudDirection?.audioProfile || entry?.description || '', sceneContext }),
-      ...(previewMode === 'voice-only' ? { modelName: voiceModel } : {}),
+      ...(previewMode === 'voice-only' || voiceModel !== GEMINI_TTS_MODEL ? { modelName: voiceModel } : {}),
     });
     writeCachedPreview(key, result.audioBuffer);
     if (previewMode === 'voice-only') {

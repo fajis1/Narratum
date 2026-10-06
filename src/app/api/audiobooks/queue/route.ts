@@ -21,7 +21,13 @@ import {
 import { readBookLexicon } from '@/lib/server/smart-audio/book-lexicon';
 import { isKokoroCompatiblePronunciation } from '@/lib/shared/kokoro-pronunciation-policy';
 import { queuedAudiobookBatchVersion } from '@/lib/shared/audiobook-batching';
-import { AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS } from '@/lib/shared/audiobook-job-status';
+import {
+  AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
+  resolveAudiobookJobDescriptiveState,
+  isSystemResourcePause,
+  formatSystemResourcePauseMessage,
+} from '@/lib/shared/audiobook-job-status';
+import { checkSystemResources } from '@/lib/server/audiobooks/system-monitor';
 import { mergeDocumentSettings } from '@/lib/shared/document-settings';
 import {
   getCharacterMapReadiness,

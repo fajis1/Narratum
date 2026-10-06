@@ -1,3 +1,5 @@
+import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
+import { saveDramaTtsDiagnostic } from '@/lib/server/audiobooks/drama-tts-diagnostics';
 import { NextRequest, NextResponse } from 'next/server';
 import { repairSmartAudioWorkerPronunciations } from '@/lib/server/audiobooks/smart-audio-targeted-repair';
 import { savePronunciationFailure } from '@/lib/server/audiobooks/pronunciation-failures';
@@ -1102,6 +1104,14 @@ export async function POST(request: NextRequest) {
           const drama = await generateCloudDramaAudiobook({
             cleanedText: processedTextForTts,
             characterMap: cloudDramaCast,
+            onDirectedSegments: async (segments, complete) => {
+              await saveDramaSpeakerReview({ bookId, userId: storageUserId, chapterIndex,
+                profileId: selectedProfile.id, sourceText: processedTextForTts,
+                characterMap: cloudDramaCast, segments, complete, namespace: testNamespace });
+            },
+            onSynthesisFailure: (flags) => saveDramaTtsDiagnostic({
+              bookId, userId: storageUserId, chapterIndex, flags, namespace: testNamespace,
+            }),
             geminiApiKey: selectedProfile.geminiApiKey || '',
             backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
             directorModel: resolveDramaDirectorModel(selectedProfile),

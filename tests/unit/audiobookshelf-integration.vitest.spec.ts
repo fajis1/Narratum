@@ -12,6 +12,8 @@ import {
   matchAudiobookshelfCandidateWithGemini,
   tagAudiobookshelfItem,
   checkAudiobookshelfItemHasEbook,
+  fetchAudiobookshelfItemDetails,
+  updateAudiobookshelfItemChapters,
   type AudiobookshelfSearchCandidate,
 } from '@/lib/server/audiobooks/audiobookshelf';
 import {
@@ -534,6 +536,130 @@ describe('Audiobookshelf Integration', () => {
         'item-error',
       );
       expect(result).toBe(false);
+    });
+  });
+
+  describe('fetchAudiobookshelfItemDetails', () => {
+    test('retrieves and parses audio files, chapters, and ebook status from Audiobookshelf item', async () => {
+      const mockItem = {
+        id: 'item-way-of-kings',
+        title: 'The Way of Kings',
+        media: {
+          metadata: {
+            title: 'The Way of Kings',
+            authorName: 'Brandon Sanderson',
+          },
+          duration: 3600,
+          audioFiles: [
+            {
+              index: 1,
+              metadata: { filename: '0001 - Chapter 1.m4b' },
+            },
+          ],
+          chapters: [
+            {
+              id: 0,
+              title: 'Chapter 1: The Stormwall',
+              start: 0,
+              end: 3600,
+            },
+          ],
+          ebookFile: {
+            ebookFormat: 'epub',
+          },
+        },
+      };
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify(mockItem), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const details = await fetchAudiobookshelfItemDetails(
+        'http://abs.test:13378',
+        'token-123',
+        'item-way-of-kings',
+      );
+
+      expect(details).not.toBeNull();
+      expect(details?.id).toBe('item-way-of-kings');
+      expect(details?.title).toBe('The Way of Kings');
+      expect(details?.author).toBe('Brandon Sanderson');
+      expect(details?.hasAudio).toBe(true);
+      expect(details?.hasEbook).toBe(true);
+      expect(details?.numAudioFiles).toBe(1);
+      expect(details?.existingAudioFilenames).toEqual(['0001 - Chapter 1.m4b']);
+      expect(details?.existingChapters).toHaveLength(1);
+      expect(details?.existingChapters[0].title).toBe('Chapter 1: The Stormwall');
+    });
+
+    test('returns null if request fails or item is not found', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response('Not found', { status: 404 }),
+      );
+
+      const details = await fetchAudiobookshelfItemDetails(
+        'http://abs.test:13378',
+        'token-123',
+        'nonexistent-item',
+      );
+      expect(details).toBeNull();
+    });
+  });
+
+  describe('updateAudiobookshelfItemChapters', () => {
+    test('sends chapters payload to Audiobookshelf item endpoint', async () => {
+      let capturedBody: any = null;
+      vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async (_url, init) => {
+        capturedBody = JSON.parse(init?.body as string);
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      });
+
+      const success = await updateAudiobookshelfItemChapters(
+        'http://abs.test:13378',
+        'token-123',
+        'item-123',
+        [
+          { title: 'Chapter 1', start: 0, end: 120 },
+          { title: 'Chapter 2', start: 120, end: 280 },
+        ],
+      );
+
+      expect(success).toBe(true);
+      expect(capturedBody).toEqual({
+        chapters: [
+          { title: 'Chapter 1', start: 0, end: 120 },
+          { title: 'Chapter 2', start: 120, end: 280 },
+        ],
+      });
+    });
+
+    test('returns false when chapter update endpoint returns error status', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response('Forbidden', { status: 403 }),
+      );
+
+      const success = await updateAudiobookshelfItemChapters(
+        'http://abs.test:13378',
+        'token-123',
+        'item-123',
+        [{ title: 'Chapter 1', start: 0, end: 120 }],
+      );
+      expect(success).toBe(false);
+    });
+  });
+
+  describe('Chapter append formatting and upload options', () => {
+    test('formats chapter filenames numerically for multi-track Audiobookshelf compatibility', () => {
+      const chapterIndex = 1; // 0-based index for Chapter 2
+      const chapterTitle = 'Honor is Dead, But I\'ll See What I Can Do';
+      const cleanTitle = sanitizeFilenameForAudiobookshelf(chapterTitle);
+      const oneBased = String(chapterIndex + 1).padStart(4, '0');
+      const filename = `${oneBased} - ${cleanTitle}.m4b`;
+
+      expect(filename).toBe("0002 - Honor is Dead, But I'll See What I Can Do.m4b");
     });
   });
 

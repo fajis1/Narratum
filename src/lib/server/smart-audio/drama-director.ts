@@ -138,6 +138,7 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
     'You are the OpenReader Drama Director. Return JSON only: {"segments": [...]} .',
     'Partition the entire source text into ordered, contiguous segments. The concatenation of every segment.text must equal the source exactly, including spaces, punctuation, and newlines. Never rewrite, add, omit, or normalize spoken text.',
     'Use only cast names supplied below for speaker. Never choose or emit a voiceId.',
+    'Start a new segment whenever the speaker or utterance type changes. Keep narration and speech attribution in narrator segments, separate from character dialogue, internal thoughts, and squad-link turns. Never combine different speakers into one segment.',
     'Formatting is evidence, not proof of utterance type. Internal thought and squad-link may both be italicized; use narrative context. Squad-link uses the character’s natural voice, never an automatic whisper.',
     'Authority is not loudness. High intensity can be quiet and low energy. Performance can change within a thought; split at the exact source boundary when needed. Default to tags: []; use vocal cues only for localized effects. A pause applies after its segment text; split at the intended boundary for a pause inside a line.',
     `utteranceType: ${JSON.stringify(DRAMA_UTTERANCE_TYPES)}`,
