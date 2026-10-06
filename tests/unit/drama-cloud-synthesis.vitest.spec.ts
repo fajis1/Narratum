@@ -185,6 +185,97 @@ describe('Drama Cloud synthesis', () => {
     expect(GeminiTtsQuotaExhaustedError).toBeDefined();
   });
 
+  it('tries the primary model chain before the backup and preserves the same transcript and voice', async () => {
+    const wait = vi.fn();
+    const synthesize = vi.fn().mockImplementation(async (options) => {
+      if (options.apiKey === 'primary') throw new GeminiTtsApiError('quota', 429, 'quota', options.modelName, 'RESOURCE_EXHAUSTED', 18_914_000);
+      return { audioBuffer: Buffer.from('backup audio') };
+    });
+    const result = await synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize, wait });
+    expect(synthesize.mock.calls.map(([o]) => [o.apiKey, o.modelName])).toEqual([
+      ['primary', 'gemini-3.8-flash-tts'], ['primary', 'gemini-3.8-flash-lite-tts'], ['backup', 'gemini-3.8-flash-tts'],
+    ]);
+    const [first, , backup] = synthesize.mock.calls.map(([o]) => o);
+    expect(backup).toEqual({ ...first, apiKey: 'backup' });
+    expect(result.chunks[0].audioBuffer).toEqual(Buffer.from('backup audio'));
+    expect(result.reviewFlags).toEqual([expect.objectContaining({ kind: 'tts-fallback-used', attempts: 3, reason: expect.stringContaining('backup API key') })]);
+    expect(wait).not.toHaveBeenCalled();
+  });
+
+  it('tries the backup fallback model before yielding and keeps the longest Retry-After', async () => {
+    const synthesize = vi.fn().mockImplementation(async (options) => {
+      throw new GeminiTtsApiError('quota', 429, 'quota', options.modelName, 'RESOURCE_EXHAUSTED', options.apiKey === 'primary' ? 18_914_000 : 12_000);
+    });
+    await expect(synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize }))
+      .rejects.toMatchObject({ name: 'GeminiTtsQuotaExhaustedError', retryAfterMs: 18_914_000 });
+    expect(synthesize.mock.calls.map(([o]) => [o.apiKey, o.modelName])).toEqual([
+      ['primary', 'gemini-3.8-flash-tts'], ['primary', 'gemini-3.8-flash-lite-tts'],
+      ['backup', 'gemini-3.8-flash-tts'], ['backup', 'gemini-3.8-flash-lite-tts'],
+    ]);
+  });
+
+  it('can recover on the backup fallback model', async () => {
+    const synthesize = vi.fn().mockRejectedValueOnce(new GeminiTtsApiError('quota', 429, '', 'gemini-3.8-flash-tts'))
+      .mockRejectedValueOnce(new GeminiTtsApiError('quota', 429, '', 'gemini-3.8-flash-lite-tts'))
+      .mockRejectedValueOnce(new GeminiTtsApiError('missing', 404, '', 'gemini-3.8-flash-tts'))
+      .mockResolvedValueOnce({ audioBuffer: Buffer.from('audio') });
+    const result = await synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize });
+    expect(synthesize).toHaveBeenCalledTimes(4);
+    expect(result.chunks[0].needsPlaceholder).toBe(false);
+  });
+
+  it('does not turn quota exhaustion into silence when the backup has a different failure', async () => {
+    const synthesize = vi.fn().mockImplementation(async options => {
+      throw new GeminiTtsApiError('failed', options.apiKey === 'primary' ? 429 : 403, '', options.modelName, undefined, 12_000);
+    });
+    await expect(synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize }))
+      .rejects.toMatchObject({ name: 'GeminiTtsQuotaExhaustedError', retryAfterMs: 12_000 });
+    expect(synthesize).toHaveBeenCalledTimes(4);
+  });
+
+  it('uses the backup when primary access is denied', async () => {
+    const synthesize = vi.fn().mockImplementation(async options => {
+      if (options.apiKey === 'primary') throw new GeminiTtsApiError('denied', 403, '', options.modelName);
+      return { audioBuffer: Buffer.from('audio') };
+    });
+    const result = await synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize });
+    expect(result.chunks[0].needsPlaceholder).toBe(false);
+    expect(synthesize).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not use the backup when the primary succeeds', async () => {
+    const synthesize = vi.fn().mockResolvedValue({ audioBuffer: Buffer.from('audio') });
+    const result = await synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize });
+    expect(synthesize).toHaveBeenCalledOnce();
+    expect(synthesize.mock.calls[0][0].apiKey).toBe('primary');
+    expect(result.reviewFlags).toEqual([]);
+  });
+
+  it.each(['', '  ', ' primary '])('does not retry a missing or duplicate backup key (%j)', async backupApiKey => {
+    const synthesize = vi.fn().mockRejectedValue(new GeminiTtsApiError('quota', 429, '', 'gemini-3.8-flash-tts'));
+    await expect(synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey, synthesize }))
+      .rejects.toBeInstanceOf(GeminiTtsQuotaExhaustedError);
+    expect(synthesize).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not use another key for invalid input', async () => {
+    const synthesize = vi.fn().mockRejectedValue(new GeminiTtsApiError('input', 400, '', 'gemini-3.8-flash-tts'));
+    const result = await synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize });
+    expect(synthesize.mock.calls.every(([o]) => o.apiKey === 'primary')).toBe(true);
+    expect(result.reviewFlags[0].kind).toBe('cloud-tts-failed');
+  });
+
+  it('propagates cancellation without trying another model or key', async () => {
+    const controller = new AbortController();
+    const synthesize = vi.fn().mockImplementation(async () => {
+      controller.abort();
+      controller.signal.throwIfAborted();
+    });
+    await expect(synthesizeGeminiDramaSegment({ segment, characterMap, apiKey: 'primary', backupApiKey: 'backup', synthesize, signal: controller.signal }))
+      .rejects.toThrow();
+    expect(synthesize).toHaveBeenCalledOnce();
+  });
+
   it('preserves whitespace-only Director segments without making a TTS request', async () => {
     const synthesize = vi.fn();
     const text = '\n\n  \t';

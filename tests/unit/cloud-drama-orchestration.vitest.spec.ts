@@ -46,10 +46,11 @@ describe('Cloud Drama chapter orchestration', () => {
       reviewFlags: [],
     });
     const result = await generateCloudDramaAudiobook({
-      cleanedText: 'Hello.', characterMap: map, geminiApiKey: 'test', directorModel: 'gemini-test',
+      cleanedText: 'Hello.', characterMap: map, geminiApiKey: 'test', backupGeminiApiKey: 'backup', directorModel: 'gemini-test',
     });
     expect(direct).toHaveBeenCalledWith(expect.objectContaining({ sourceText: 'Hello.', castNames: ['Narrator'] }));
     expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: 'test', backupApiKey: 'backup',
       characterMap: expect.objectContaining({ entries: expect.objectContaining({ Narrator: expect.objectContaining({ voiceId: 'Kore' }) }) }),
     }));
     expect(concatenate).toHaveBeenCalledWith([Buffer.from('spoken')], undefined);

@@ -1,4 +1,6 @@
 'use client';
+import { readAudiobookGeminiCooldown, type AudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
+import { AudiobookGeminiCooldownNotice } from '@/components/audiobooks/AudiobookGeminiCooldownNotice';
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -76,6 +78,7 @@ export function AudiobookExportModal({
 }: AudiobookExportModalProps) {
   const { isLoading, isDBReady, providerRef, providerType, ttsModel, ttsInstructions, voice: configVoice, voiceSpeed, audioPlayerSpeed, smartAudioProfileId, updateConfigKey } = useConfig();
   const { availableVoices, documentLanguage } = useTTS();
+  const [geminiCooldown, setGeminiCooldown] = useState<AudiobookGeminiCooldown | null>(null);
   const { progress, setProgress, estimatedTimeRemaining } = useTimeEstimation();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -322,6 +325,8 @@ export function AudiobookExportModal({
         ));
         if (activeJob) {
           setActiveJobId(activeJob.id);
+          const cooldown = readAudiobookGeminiCooldown(activeJob.settingsJson, activeJob.status);
+          setGeminiCooldown(cooldown);
           if (activeJob.status === WAITING_FOR_VOICES_STATUS) {
             setCastingJobId(activeJob.id);
             setStartAfterCasting(false);
@@ -332,7 +337,9 @@ export function AudiobookExportModal({
             serverIsGenerating = true;
             setIsGenerating(true);
             if (activeJob.progress !== undefined) setProgress(activeJob.progress);
-            if (activeJob.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE) {
+            if (cooldown) {
+              setCurrentChapter('Waiting for Gemini cooldown. Progress is preserved.');
+            } else if (activeJob.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE) {
               setCurrentChapter('Waiting for the shared GPU. Kokoro has priority and will start automatically when the shared GPU is ready.');
             } else if (activeJob.status === 'queued' && isGeminiRateLimitPause(activeJob.error)) {
               setCurrentChapter(activeJob.error);
@@ -343,6 +350,7 @@ export function AudiobookExportModal({
           }
         } else {
           setActiveJobId(null);
+          setGeminiCooldown(null);
         }
       }
     } catch {
@@ -808,10 +816,15 @@ export function AudiobookExportModal({
 
   return (
     <>
+      {isGenerating && !isOpen && geminiCooldown && (
+        <div className="fixed inset-x-0 bottom-4 z-[60] mx-auto max-w-md px-4">
+          <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />
+        </div>
+      )}
       <ProgressPopup
         isOpen={isGenerating && !isOpen}
         progress={progress}
-        estimatedTimeRemaining={estimatedTimeRemaining || undefined}
+        estimatedTimeRemaining={geminiCooldown ? undefined : estimatedTimeRemaining || undefined}
         onCancel={handleCancel}
         cancelText="Cancel"
         operationType="audiobook"
@@ -1208,11 +1221,12 @@ export function AudiobookExportModal({
                             </IconButton>
                           </div>
                         )}
+                        {isGenerating && geminiCooldown && <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />}
                         {/* Progress Info */}
                         {isGenerating && (
                           <ProgressCard
                             progress={progress}
-                            estimatedTimeRemaining={estimatedTimeRemaining || undefined}
+                            estimatedTimeRemaining={geminiCooldown ? undefined : estimatedTimeRemaining || undefined}
                             onCancel={handleCancel}
                             operationType="audiobook"
                             currentChapter={currentChapter}

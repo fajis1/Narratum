@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { readAudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
+import { AudiobookGeminiCooldownNotice } from '@/components/audiobooks/AudiobookGeminiCooldownNotice';
 import { MultiVoiceCharacterModal } from '@/components/doclist/MultiVoiceCharacterModal';
 import { ChapterErrorLogModal } from '@/components/audiobooks/ChapterErrorLogModal';
 import {
@@ -364,6 +366,7 @@ export function JobsInlineView() {
               const isPauseRequested = job.status === AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS;
               const isWaitingForVoices = job.status === WAITING_FOR_VOICES_STATUS
                 || (job.status === 'queued' && job.error === 'waiting_for_voices');
+              const geminiCooldown = readAudiobookGeminiCooldown(job.settingsJson, job.status);
               const isWaitingForGpu = job.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE;
               const isFinished = job.status === 'completed' || job.status === 'error';
               const isGeminiDramaJob = profileWorkerModes[jobProfileId(job)] === DRAMA_GEMINI_TTS_WORKER_MODE;
@@ -394,7 +397,7 @@ export function JobsInlineView() {
                       <div className="flex items-center flex-wrap gap-y-1">
                         Status:{' '}
                         <span className={`uppercase font-semibold ml-1 ${
-                          job.status === 'completed'
+                          geminiCooldown ? 'text-warning' : job.status === 'completed'
                             ? 'text-success'
                             : job.status === 'error'
                             ? 'text-danger'
@@ -402,8 +405,9 @@ export function JobsInlineView() {
                             ? 'text-accent'
                             : 'text-warning'
                         }`}>
-                          {isGeminiRateLimitPause(job.error) && job.status === 'queued' ? 'paused (rate limit)' : job.status}
+                          {geminiCooldown ? 'waiting for Gemini' : isGeminiRateLimitPause(job.error) && job.status === 'queued' ? 'paused (rate limit)' : job.status}
                         </span>
+                        {geminiCooldown && <span className="ml-3 text-warning">{Math.round(job.progress || 0)}% complete · progress preserved</span>}
                         {isWaitingForGpu && (
                           <span className="ml-2 uppercase font-semibold text-warning">· Waiting for GPU</span>
                         )}
@@ -415,7 +419,7 @@ export function JobsInlineView() {
                             (~{queueEtaStr} remaining before processing)
                           </span>
                         ) : null}
-                        {!isWaitingForGpu && (job.status === 'running' || isPauseRequested) && job.startedAt && typeof job.progress === 'number' ? (
+                        {!geminiCooldown && !isWaitingForGpu && (job.status === 'running' || isPauseRequested) && job.startedAt && typeof job.progress === 'number' ? (
                           <span className="ml-3 text-faint">
                             ({Math.round(job.progress || 0)}% done &bull; ~{formatMs(getRemainingMs(now, job.startedAt, job.updatedAt || job.startedAt, job.progress))} remaining)
                           </span>
@@ -435,7 +439,8 @@ export function JobsInlineView() {
                           Your audiobook progress is preserved. Kokoro will continue automatically when the shared GPU is ready.
                         </p>
                       )}
-                      {isGeminiDramaStarting && (
+                      {geminiCooldown && <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />}
+                      {!geminiCooldown && isGeminiDramaStarting && (
                         <div className="max-w-2xl rounded border border-warning/30 bg-warning/10 p-3 text-warning">
                           <p className="font-semibold">Waiting for Google Gemini to finish the first Drama chapter</p>
                           <p className="mt-1 text-xs leading-relaxed">

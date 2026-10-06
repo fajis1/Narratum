@@ -1,3 +1,5 @@
+import { withGeminiRecoveryContext, setGeminiRecoveryChapter, publishGeminiRecoveryCooldown } from '@/lib/server/smart-audio/gemini-recovery-context';
+import { writeAudiobookGeminiCooldown, type AudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
 import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
 import { saveDramaTtsDiagnostic } from '@/lib/server/audiobooks/drama-tts-diagnostics';
 import { processBatchRefineJob } from './refine';
@@ -653,6 +655,22 @@ export async function processAudiobookQueue(context?: TaskContext) {
 }
 
 async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect) {
+  const publish = async (cooldown: AudiobookGeminiCooldown | null) => {
+    const [current] = await db.select({ settingsJson: audiobookJobs.settingsJson })
+      .from(audiobookJobs).where(and(eq(audiobookJobs.id, job.id), eq(audiobookJobs.status, 'running'))).limit(1);
+    if (!current) return;
+    await updateAudiobookJobIfStatus(job.id, 'running', {
+      settingsJson: JSON.stringify(writeAudiobookGeminiCooldown(current.settingsJson, cooldown)),
+      updatedAt: Date.now(),
+    });
+  };
+  await withGeminiRecoveryContext(publish, async () => {
+    await publishGeminiRecoveryCooldown(null);
+    return processSingleAudiobookJobWithRecovery(job);
+  });
+}
+
+async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$inferSelect) {
   const updateProgress = async (progress: number) => {
     await updateClaimedAudiobookJob(job.id, 'running', { progress, updatedAt: Date.now() });
   };
@@ -1290,6 +1308,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
     };
 
     for (const chapter of chapters) {
+      setGeminiRecoveryChapter(chapter.index);
       // ABORT CHECK: If user cancelled/deleted the job from the UI, abort processing
       if (!await workerStillOwnsAudiobookJob(job.id)) {
         serverLogger.info({ event: 'audiobook.queue.aborted', jobId: job.id }, 'Job was paused, cancelled, or deleted. Aborting worker loop.');

@@ -356,6 +356,7 @@ export async function synthesizeGeminiDramaSegment(input: {
   segment: DramaDirectorSegment;
   characterMap: SmartAudioCharacterMap;
   apiKey: string;
+  backupApiKey?: string;
   policy?: DramaDirectorPolicy;
   maxAttempts?: number;
   modelName?: GeminiTtsModel;
@@ -390,6 +391,10 @@ export async function synthesizeGeminiDramaSegment(input: {
     .filter((model, index, all) => all.indexOf(model) === index);
   const attemptsLimit = Math.min(Math.max(input.maxAttempts ?? 3, 1), 5);
 
+  const keys = [input.apiKey.trim(), input.backupApiKey?.trim()]
+    .filter((key): key is string => Boolean(key))
+    .filter((key, index, all) => all.indexOf(key) === index);
+
   for (const [index, sourceText] of sourceChunks.entries()) {
     // Preserve source separators without submitting an empty spoken transcript.
     if (!sourceText.trim()) {
@@ -399,46 +404,67 @@ export async function synthesizeGeminiDramaSegment(input: {
     let lastError: unknown;
     let attempts = 0;
     let succeeded = false;
-    for (const [modelIndex, modelName] of models.entries()) {
-      for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
-        attempts += 1;
-        try {
-          const built = buildGeminiDramaTtsRequest({
-            segment: { ...input.segment, text: sourceText, performance: {
-              ...input.segment.performance,
-              tags: index === 0 ? input.segment.performance.tags : [],
-            } },
-            characterMap: input.characterMap,
-            policy: input.policy,
-            modelName,
-          });
-          const result = await synthesize({
-            apiKey: input.apiKey,
-            text: built.requestText,
-            style: built.style,
-            voiceName: built.voiceName,
-            modelName,
-            signal: input.signal,
-          });
-          chunks.push({ sourceText, requestText: built.requestText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
-          if (modelIndex > 0) reviewFlags.push({ kind: 'tts-fallback-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts, reason: `Gemini TTS fell back to model ${modelName}.` });
-          else if (attempt > 1) reviewFlags.push({ kind: 'tts-retry-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts: attempt, reason: 'Gemini TTS succeeded after a transient retry.' });
-          succeeded = true;
-          break;
-        } catch (error) {
-          lastError = error;
-          if (!isGeminiRetryable(error) || attempt === attemptsLimit) break;
-          await wait(250 * 2 ** (attempt - 1));
+    let quotaRetryAfterMs: number | undefined;
+    let quotaError: GeminiTtsApiError | undefined;
+    for (const [keyIndex, apiKey] of keys.entries()) {
+      if (keyIndex > 0) serverLogger.warn({
+        event: 'gemini.tts.failover.backup_key', chunkIndex: index, requestedModel,
+      }, 'Primary Gemini TTS model chain exhausted; switching to the backup API key');
+      for (const [modelIndex, modelName] of models.entries()) {
+        for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
+          input.signal?.throwIfAborted();
+          attempts += 1;
+          try {
+            const built = buildGeminiDramaTtsRequest({
+              segment: { ...input.segment, text: sourceText, performance: {
+                ...input.segment.performance,
+                tags: index === 0 ? input.segment.performance.tags : [],
+              } },
+              characterMap: input.characterMap,
+              policy: input.policy,
+              modelName,
+            });
+            const result = await synthesize({
+              apiKey,
+              text: built.requestText,
+              style: built.style,
+              voiceName: built.voiceName,
+              modelName,
+              signal: input.signal,
+            });
+            chunks.push({ sourceText, requestText: built.requestText, audioBuffer: result.audioBuffer, needsPlaceholder: false, omitted: false });
+            if (keyIndex > 0) reviewFlags.push({ kind: 'tts-fallback-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts, reason: `Gemini TTS used the backup API key with model ${modelName}.` });
+            else if (modelIndex > 0) reviewFlags.push({ kind: 'tts-fallback-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts, reason: `Gemini TTS fell back to model ${modelName}.` });
+            else if (attempt > 1) reviewFlags.push({ kind: 'tts-retry-used', speaker: input.segment.speaker, sourceText, chunkIndex: index, attempts: attempt, reason: 'Gemini TTS succeeded after a transient retry.' });
+            succeeded = true;
+            break;
+          } catch (error) {
+            input.signal?.throwIfAborted();
+            lastError = error;
+            if (error instanceof GeminiTtsApiError && (error.statusCode === 429 || error.providerStatus === 'RESOURCE_EXHAUSTED')) {
+              quotaError = error;
+              if (error.retryAfterMs !== undefined) quotaRetryAfterMs = Math.max(quotaRetryAfterMs ?? 0, error.retryAfterMs);
+              // Quota retries on the same key/model cannot recover before Retry-After.
+              // Try independent models/credentials, then let the durable worker schedule recovery.
+              break;
+            }
+            if (!isGeminiRetryable(error) || attempt === attemptsLimit) break;
+            await wait(250 * 2 ** (attempt - 1));
+          }
         }
+        if (succeeded) break;
       }
       if (succeeded) break;
+      // Input/schema failures are not repaired by changing credentials.
+      if (!(lastError instanceof GeminiTtsTransportError) && !(lastError instanceof GeminiTtsApiError &&
+          ([401, 402, 403, 404, 429, 500, 502, 503, 504].includes(lastError.statusCode) || lastError.providerStatus === 'RESOURCE_EXHAUSTED'))) break;
     }
     if (!succeeded) {
-      if (lastError instanceof GeminiTtsApiError && (lastError.statusCode === 429 || lastError.providerStatus === 'RESOURCE_EXHAUSTED')) {
+      if (quotaError) {
         throw new GeminiTtsQuotaExhaustedError(
-          `Gemini TTS quota or rate limit exhausted (HTTP ${lastError.statusCode}).`,
-          lastError.statusCode,
-          lastError.retryAfterMs,
+          `Gemini TTS quota or rate limit exhausted after available key/model fallbacks (HTTP ${quotaError.statusCode}).`,
+          quotaError.statusCode,
+          quotaRetryAfterMs,
         );
       }
       chunks.push({ sourceText, requestText: sourceText, audioBuffer: null, needsPlaceholder: true, omitted: false });

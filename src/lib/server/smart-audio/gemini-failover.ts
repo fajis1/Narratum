@@ -1,3 +1,5 @@
+import { publishGeminiRecoveryCooldown } from './gemini-recovery-context';
+import type { GeminiErrorDetails } from './gemini-error-details';
 import { serverLogger } from '@/lib/server/logger';
 import { setTimeout as delay } from 'node:timers/promises';
 import { geminiErrorDetails } from './gemini-error-details';
@@ -17,10 +19,20 @@ export const GEMINI_MODEL_FALLBACKS: Readonly<Record<string, readonly string[]>>
   'gemini-2.5-flash-lite': ['gemini-2.5-flash'],
 };
 
-const sleep = async (ms: number, signal?: AbortSignal) => {
+const sleep = async (ms: number, signal?: AbortSignal, details?: GeminiErrorDetails, model?: string) => {
   signal?.throwIfAborted();
-  if (process.env.NODE_ENV !== 'test') await delay(ms, undefined, { signal });
-  signal?.throwIfAborted();
+  const startedAt = Date.now();
+  await publishGeminiRecoveryCooldown({
+    reason: details && [429, 402, 403].includes(details.status) ? 'rate_limit' : details ? 'unavailable' : 'network',
+    startedAt, retryAt: startedAt + ms, model, httpStatus: details?.status,
+    serverDirected: Boolean(details?.retryAfterMs && details.retryAfterMs >= ms),
+  });
+  try {
+    if (process.env.NODE_ENV !== 'test') await delay(Math.max(0, startedAt + ms - Date.now()), undefined, { signal });
+    signal?.throwIfAborted();
+  } finally {
+    await publishGeminiRecoveryCooldown(null);
+  }
 };
 
 export interface GeminiFallbackOptions {
@@ -54,12 +66,14 @@ async function fetchWithExponentialBackoff(
   maxAttempts = MAX_ATTEMPTS,
   retryQuotaErrors = false,
   maxOverloadAttempts?: number,
+  model?: string,
 ): Promise<Response> {
   let delayMs = customInitialDelayMs ?? INITIAL_DELAY_MS;
   const maskedKey = apiKey.length >= 4 ? `...${apiKey.slice(-4)}` : 'Key';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     signal?.throwIfAborted();
+    let cooldownDetails: GeminiErrorDetails | undefined;
     try {
       const response = await request(apiKey);
       if (!BACKUP_ELIGIBLE_STATUSES.has(response.status) || attempt === maxAttempts) {
@@ -79,6 +93,7 @@ async function fetchWithExponentialBackoff(
       // Opt-in callers pace every request, including key/model transitions.
       if (retryQuotaErrors) continue;
       const details = await geminiErrorDetails(response);
+      cooldownDetails = details;
       // Long server delays belong in the durable caller, not a sleeping request.
       if ((details.retryAfterMs || 0) > MAX_DELAY_MS) return response;
       delayMs = Math.max(delayMs, details.retryAfterMs || 0);
@@ -137,7 +152,7 @@ async function fetchWithExponentialBackoff(
         await onStatusUpdate(msg);
       }
     }
-    await sleep(delayMs, signal);
+    await sleep(delayMs, signal, cooldownDetails, model);
     delayMs = Math.min(delayMs * 2, MAX_DELAY_MS);
   }
   return request(apiKey);
@@ -150,7 +165,7 @@ async function fetchGeminiWithKeyFallback(
   const backupApiKey = (input.backupApiKey || '').trim();
   input.signal?.throwIfAborted();
   if (!primaryApiKey && backupApiKey) {
-    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels, input.maxOverloadAttempts), usedBackup: true };
+    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels, input.maxOverloadAttempts, input.requestedModel), usedBackup: true };
   }
 
   let primaryResponse: Response;
@@ -164,11 +179,12 @@ async function fetchGeminiWithKeyFallback(
     input.maxAttempts,
     input.retryRateLimitedModels,
     input.maxOverloadAttempts,
+    input.requestedModel,
   ); } catch (error) {
     input.signal?.throwIfAborted();
     if (!backupApiKey || backupApiKey === primaryApiKey || (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))) throw error;
     await input.onStatusUpdate?.('Gemini network retries exhausted; trying the backup key.');
-    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels, input.maxOverloadAttempts), usedBackup: true };
+    return { response: await fetchWithExponentialBackoff(backupApiKey, 'backup', input.request, input.onStatusUpdate, input.initialDelayMs, input.signal, input.maxAttempts, input.retryRateLimitedModels, input.maxOverloadAttempts, input.requestedModel), usedBackup: true };
   }
 
   if (
@@ -202,6 +218,7 @@ async function fetchGeminiWithKeyFallback(
     input.maxAttempts,
     input.retryRateLimitedModels,
     input.maxOverloadAttempts,
+    input.requestedModel,
   );
 
   return {
@@ -259,23 +276,30 @@ export async function fetchGeminiWithRateLimitFallback(
   let lastError: unknown;
   let nextDelayMs = Math.min(input.initialDelayMs ?? INITIAL_DELAY_MS, MAX_DELAY_MS);
   let pendingDelayMs = 0;
+  let pendingDetails: GeminiErrorDetails | undefined;
+  let pendingModel: string | undefined;
   const pacedRequest = async (apiKey: string, model?: string) => {
     if (pendingDelayMs > 0) {
       serverLogger.warn({ event: 'gemini.recovery.cooldown', model, nextDelaySeconds: Math.ceil(pendingDelayMs / 1000) }, 'Pacing Gemini recovery across retries, keys and models');
       await input.onStatusUpdate?.(`Gemini recovery cooldown: waiting ${Math.ceil(pendingDelayMs / 1000)}s before the next request.`);
-      await sleep(pendingDelayMs, input.signal);
+      await sleep(pendingDelayMs, input.signal, pendingDetails, pendingModel);
     }
     pendingDelayMs = 0;
+    pendingDetails = undefined;
     try {
       const response = await input.request(apiKey, model);
       if (BACKUP_ELIGIBLE_STATUSES.has(response.status)) {
         const details = await geminiErrorDetails(response);
+        pendingDetails = details;
+        pendingModel = model;
         // Never shorten a server-specified cooldown, even beyond our local cap.
         pendingDelayMs = Math.max(nextDelayMs, details.retryAfterMs ?? 0);
         nextDelayMs = Math.min(pendingDelayMs * 2, MAX_DELAY_MS);
       }
       return response;
     } catch (error) {
+      pendingDetails = undefined;
+      pendingModel = model;
       pendingDelayMs = nextDelayMs;
       nextDelayMs = Math.min(nextDelayMs * 2, MAX_DELAY_MS);
       throw error;
@@ -303,6 +327,7 @@ export async function fetchGeminiWithRateLimitFallback(
         const keyResult = await fetchGeminiWithKeyFallback({
           ...input,
           primaryApiKey: keyChain.apiKey,
+          requestedModel: candidateModel,
           backupApiKey: undefined,
           maxOverloadAttempts: effectiveMaxOverloadAttempts,
           request: (apiKey) => input.retryRateLimitedModels ? pacedRequest(apiKey, candidateModel) : candidateModel

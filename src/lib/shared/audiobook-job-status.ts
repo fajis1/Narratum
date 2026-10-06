@@ -1,3 +1,4 @@
+import { readAudiobookGeminiCooldown, geminiCooldownExplanation } from './audiobook-gemini-cooldown';
 export const GEMINI_RATE_LIMIT_PAUSE_MESSAGE =
   'Gemini API limits paused this audiobook. Completed chapters are preserved, and OpenReader will retry automatically when API capacity becomes available.';
 
@@ -56,6 +57,7 @@ export function resolveAudiobookJobDescriptiveState(
     progress?: number | null;
     error?: string | null;
     phase?: string | null;
+    settingsJson?: unknown;
     globalQueuePosition?: number | null;
   },
   context?: {
@@ -91,6 +93,12 @@ export function resolveAudiobookJobDescriptiveState(
       badgeVariant: 'danger',
     };
   }
+
+  const cooldown = readAudiobookGeminiCooldown(job.settingsJson, job.status);
+  if (cooldown) return {
+    reason: geminiCooldownExplanation(cooldown), category: 'waiting', isPaused: false,
+    isDegraded: false, badgeText: 'Waiting for Gemini', badgeVariant: 'warning',
+  };
 
   if (job.status === 'running' || isPauseRequested) {
     if (isWaitingForGpu) {

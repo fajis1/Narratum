@@ -86,6 +86,7 @@ export async function generateCloudDramaAudiobook(input: {
       const result = await synthesizeGeminiDramaSegment({
         segment, characterMap: readiness.map,
         apiKey: input.geminiApiKey,
+        backupApiKey: input.backupGeminiApiKey,
         policy,
         modelName: segmentModel,
         fallbackModels: input.ttsModelFallbacks as readonly import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel[] | undefined,
