@@ -23,6 +23,7 @@ describe('Drama Director prompt and validation', () => {
     expect(DRAMA_DIRECTOR_PROMPT_EXAMPLES.map((e) => e.number)).toEqual([1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 15]);
     expect(DRAMA_DIRECTOR_EVALUATION_EXAMPLES.map((e) => e.number)).toEqual([6, 10, 13, 14]);
     const prompt = buildDramaDirectorPrompt(input);
+    expect(prompt).toContain('Start a new segment whenever the speaker or utterance type changes.');
     for (const example of DRAMA_DIRECTOR_PROMPT_EXAMPLES) expect(prompt).toContain(example.text);
     for (const example of DRAMA_DIRECTOR_EVALUATION_EXAMPLES) expect(prompt).not.toContain(example.text);
   });

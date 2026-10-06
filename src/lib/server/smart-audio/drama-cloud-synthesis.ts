@@ -1,5 +1,5 @@
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
-import { buildGeminiDramaTtsRequest } from './drama-cloud-request';
+import { buildGeminiDramaTtsRequest, resolveGeminiCastEntry } from './drama-cloud-request';
 import { GEMINI_TTS_FALLBACK_MODELS, GEMINI_TTS_MODEL, GeminiTtsApiError, GeminiTtsQuotaExhaustedError, GeminiTtsTransportError, isGeminiTtsModel, synthesizeWithGeminiTts } from './gemini-tts-client';
 import type { GeminiTtsModel, GeminiTtsSynthesisOptions, GeminiTtsSynthesisResult } from './gemini-tts-client';
 import { DRAMA_ONE_SHOT_TAGS, DRAMA_PAUSE_TAGS, DRAMA_STYLE_TAGS } from '@/lib/shared/drama-director-schema';
@@ -372,9 +372,18 @@ export async function synthesizeGeminiDramaSegment(input: {
   const reviewFlags: DramaSynthesisReviewFlag[] = [];
   const synthesize = input.synthesize ?? synthesizeWithGeminiTts;
   const wait = input.wait ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  let characterModel: GeminiTtsModel | undefined;
+  try {
+    const entry = resolveGeminiCastEntry(input.characterMap, input.segment.speaker);
+    if (entry.ttsModel && isGeminiTtsModel(entry.ttsModel)) {
+      characterModel = entry.ttsModel;
+    }
+  } catch {
+    // If resolve fails (e.g. omitted segment or stub), fallback to default model
+  }
   const requestedModel = input.modelName && isGeminiTtsModel(input.modelName)
     ? input.modelName
-    : GEMINI_TTS_MODEL;
+    : (characterModel ?? GEMINI_TTS_MODEL);
   const fallbackModels = (input.fallbackModels ?? GEMINI_TTS_FALLBACK_MODELS)
     .filter((model): model is GeminiTtsModel => isGeminiTtsModel(model));
   const models = [requestedModel, ...fallbackModels]
@@ -382,22 +391,27 @@ export async function synthesizeGeminiDramaSegment(input: {
   const attemptsLimit = Math.min(Math.max(input.maxAttempts ?? 3, 1), 5);
 
   for (const [index, sourceText] of sourceChunks.entries()) {
+    // Preserve source separators without submitting an empty spoken transcript.
+    if (!sourceText.trim()) {
+      chunks.push({ sourceText, requestText: '', audioBuffer: null, needsPlaceholder: false, omitted: true });
+      continue;
+    }
     let lastError: unknown;
     let attempts = 0;
     let succeeded = false;
     for (const [modelIndex, modelName] of models.entries()) {
-      const built = buildGeminiDramaTtsRequest({
-        segment: { ...input.segment, text: sourceText, performance: {
-          ...input.segment.performance,
-          tags: index === 0 ? input.segment.performance.tags : [],
-        } },
-        characterMap: input.characterMap,
-        policy: input.policy,
-        modelName,
-      });
       for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
         attempts += 1;
         try {
+          const built = buildGeminiDramaTtsRequest({
+            segment: { ...input.segment, text: sourceText, performance: {
+              ...input.segment.performance,
+              tags: index === 0 ? input.segment.performance.tags : [],
+            } },
+            characterMap: input.characterMap,
+            policy: input.policy,
+            modelName,
+          });
           const result = await synthesize({
             apiKey: input.apiKey,
             text: built.requestText,

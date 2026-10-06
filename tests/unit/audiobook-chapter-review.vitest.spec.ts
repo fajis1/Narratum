@@ -188,13 +188,16 @@ describe('Audiobook Review Route & Component Contracts', () => {
 
   test('ChapterErrorLogModal component categorizes errors and provides diagnostics', () => {
     const modalSource = readSource('src/components/audiobooks/ChapterErrorLogModal.tsx');
-    expect(modalSource).toContain('Drama Director Validation Failure');
-    expect(modalSource).toContain('Content Safety Filter Block');
-    expect(modalSource).toContain('Upstream Quota or Rate Limit');
-    expect(modalSource).toContain('Audio Synthesis or Remux Failure');
+    const categorySource = readSource('src/lib/shared/audiobook-error-category.ts');
+    expect(categorySource).toContain('Drama Director Validation Failure');
+    expect(categorySource).toContain('Content Safety Filter Block');
+    expect(categorySource).toContain('Upstream Quota or Rate Limit');
+    expect(categorySource).toContain('Audio Synthesis or Remux Failure');
     expect(modalSource).toContain('navigator.clipboard.writeText');
     expect(modalSource).toContain('Copy Diagnostic Log');
-    expect(modalSource).toContain('failure.hasDirectorDiagnostic');
+    expect(modalSource).toContain('{failure.chapterIndex != null && failure.hasDirectorDiagnostic && (');
+    expect(modalSource).toContain('categorizeErrors(failure.errors, effectiveJobError, failure.hasDirectorDiagnostic)');
+    expect(modalSource).toContain('failure.hasProviderDiagnostic');
     expect(modalSource).toContain('No retained Gemini response is available for this failure');
   });
 
@@ -210,6 +213,17 @@ describe('Audiobook Review Route & Component Contracts', () => {
     expect(reviewSource).toContain('CLOUD_DRAMA_REVIEW_KINDS');
     expect(reviewSource).toContain('flag.chapterIndex === input.chapterIndex');
     expect(reviewSource).not.toContain('if (!input.flags.length) return');
+  });
+
+  test('Gemini review uses persisted speaker turns while retaining the full-text editor', () => {
+    const listenSource = readSource('src/app/(app)/listen/[bookId]/page.tsx');
+    const reviewSource = readSource('src/components/audiobooks/GeminiDramaSpeakerReview.tsx');
+    expect(listenSource).toContain('<GeminiDramaSpeakerReview');
+    expect(listenSource).toContain("'Speaker turns' : 'Edit full text'");
+    expect(reviewSource).toContain('getMatchingDramaSpeakerReview(savedReview, chapterText)');
+    expect(reviewSource).toContain('review.segments.map');
+    expect(reviewSource).toContain('Prepare speaker review');
+    expect(reviewSource).toContain('/api/audiobook/characters/preview');
   });
 
   test('JobsInlineView connects error log modal to failed background jobs', () => {

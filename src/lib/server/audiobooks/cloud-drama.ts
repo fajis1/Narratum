@@ -1,3 +1,4 @@
+import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { directDramaWithGemini } from '@/lib/server/smart-audio/drama-director';
 import { splitDramaTextByUtf8, synthesizeGeminiDramaSegment } from '@/lib/server/smart-audio/drama-cloud-synthesis';
@@ -9,6 +10,7 @@ import { buildDramaDirectorPolicy, normalizeDramaGeminiTtsProfileSettings } from
 export interface CloudDramaAudiobookResult {
   audioBuffer: Buffer;
   reviewFlags: DramaSynthesisReviewFlag[];
+  segments: DramaDirectorSegment[];
 }
 
 export class CloudDramaGenerationError extends Error {
@@ -33,6 +35,9 @@ export async function generateCloudDramaAudiobook(input: {
   onModelFallback?: (fromModel: string, toModel: string, reason: string) => void;
   /** Caller-owned structured lifecycle logging; payloads contain no source text or credentials. */
   onLifecycle?: (event: string, fields?: Record<string, unknown>) => void;
+  onSynthesisFailure?: (flags: readonly DramaSynthesisReviewFlag[]) => Promise<void>;
+  onDirectedSegments?: (segments: readonly DramaDirectorSegment[], complete: boolean) => Promise<void>;
+  directionOnly?: boolean;
 }): Promise<CloudDramaAudiobookResult> {
   const readiness = await getGeminiTtsCharacterMapReadiness({
     value: input.characterMap,
@@ -41,6 +46,7 @@ export async function generateCloudDramaAudiobook(input: {
   if (!readiness.ready || !readiness.map) throw new Error('Gemini Drama cast is not ready.')
   if (!input.geminiApiKey.trim()) throw new Error('A Gemini API key is required for the Drama Director.');
   const audioSegments: Buffer[] = [];
+  const segments: DramaDirectorSegment[] = [];
   const reviewFlags: DramaSynthesisReviewFlag[] = [];
   const profileSettings = normalizeDramaGeminiTtsProfileSettings(input.dramaGeminiTtsSettings);
   const policy = buildDramaDirectorPolicy(profileSettings);
@@ -67,16 +73,21 @@ export async function generateCloudDramaAudiobook(input: {
     });
     input.onLifecycle?.('director.response', { batchIndex, model: input.directorModel, segmentCount: directed.length });
     continuityState = directed.at(-1)?.sceneContext || continuityState;
+    segments.push(...directed);
+    await input.onDirectedSegments?.(segments, batchIndex === sourceBatches.length - 1);
+    if (input.directionOnly) continue;
     for (const segment of directed) {
       if (input.signal?.aborted) throw new Error('ABORTED');
       segmentNumber += 1;
       const voice = readiness.map.entries[segment.speaker]?.voiceId ?? undefined;
-      input.onLifecycle?.('tts.segment.start', { segmentNumber, speaker: segment.speaker, voice, model: input.ttsModel });
+      const speakerEntry = readiness.map?.entries[segment.speaker];
+      const segmentModel = (speakerEntry?.ttsModel ?? input.ttsModel) as import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel | undefined;
+      input.onLifecycle?.('tts.segment.start', { segmentNumber, speaker: segment.speaker, voice, model: segmentModel });
       const result = await synthesizeGeminiDramaSegment({
         segment, characterMap: readiness.map,
         apiKey: input.geminiApiKey,
         policy,
-        modelName: input.ttsModel as import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel | undefined,
+        modelName: segmentModel,
         fallbackModels: input.ttsModelFallbacks as readonly import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel[] | undefined,
         signal: input.signal,
       });
@@ -84,10 +95,11 @@ export async function generateCloudDramaAudiobook(input: {
       const audioBytes = result.chunks.reduce((total, chunk) => total + (chunk.audioBuffer?.length || 0), 0);
       const failed = result.reviewFlags.some((flag) => flag.kind === 'cloud-tts-failed');
       input.onLifecycle?.(failed ? 'tts.segment.failure' : 'tts.segment.success', {
-        segmentNumber, speaker: segment.speaker, voice, model: input.ttsModel,
+        segmentNumber, speaker: segment.speaker, voice, model: segmentModel,
         chunkCount: result.chunks.length, audioBytes,
       });
       const failures = result.reviewFlags.filter((flag) => flag.kind === 'cloud-tts-failed');
+      if (failures.length) await input.onSynthesisFailure?.(reviewFlags.filter((flag) => flag.kind === 'cloud-tts-failed'));
       if (failures.length && profileSettings.failedSegmentBehavior === 'stop-job') {
         throw new CloudDramaGenerationError(
           `Cloud Drama stopped after ${failures.length} failed segment(s).`,
@@ -104,6 +116,7 @@ export async function generateCloudDramaAudiobook(input: {
       }
     }
   }
+  if (input.directionOnly) return { audioBuffer: Buffer.alloc(0), reviewFlags, segments };
   if (!audioSegments.length) throw new Error('Cloud Drama produced no audio segments.');
   input.onLifecycle?.('chapter.audio_aggregation.start', { audioSegmentCount: audioSegments.length });
   const audioBuffer = await concatenateWavSegmentsToMp3(audioSegments, input.signal);
@@ -111,5 +124,6 @@ export async function generateCloudDramaAudiobook(input: {
   return {
     audioBuffer,
     reviewFlags,
+    segments,
   };
 }

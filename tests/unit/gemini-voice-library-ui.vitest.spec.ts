@@ -34,7 +34,7 @@ describe('Gemini Voice Library filters', () => {
 
   it('separates primary Flash voices from Lite fallback voices while preserving a current choice', () => {
     expect(filterGeminiVoicesByModelTier(voices, 'flash').map((entry) => entry.id)).toEqual(['Algenib', 'Neutral']);
-    expect(filterGeminiVoicesByModelTier(voices, 'flash-lite').map((entry) => entry.id)).toEqual(['Bright']);
+    expect(filterGeminiVoicesByModelTier(voices, 'flash-lite').map((entry) => entry.id)).toEqual(['Bright', 'Neutral']);
     expect(filterGeminiVoicesByModelTier(voices, 'flash', 'Bright').map((entry) => entry.id)).toEqual(['Algenib', 'Bright', 'Neutral']);
   });
 

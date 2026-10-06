@@ -43,6 +43,10 @@ export interface AudiobookshelfSearchCandidate {
   folderName: string;
   hasAudio: boolean;
   hasEbook: boolean;
+  numAudioFiles?: number;
+  numChapters?: number;
+  existingAudioFilenames?: string[];
+  existingChapters?: Array<{ id: number | string; title: string; start?: number; end?: number }>;
 }
 
 export interface MatchCandidateResult {
@@ -74,6 +78,8 @@ export interface AudiobookshelfUploadOptions {
   targetItemId?: string;            // optional manual override from UI
   targetFolderName?: string;        // optional manual override from UI
   model?: string;                   // optional AI model override (defaults to gemini-3.1-flash-lite)
+  uploadMode?: 'complete' | 'chapters'; // 'complete' (default) or 'chapters'
+  selectedChapterIndices?: number[];   // 0-based indices of chapters to upload in chapter mode
 }
 
 export interface AudiobookshelfUploadResult {
@@ -87,6 +93,8 @@ export interface AudiobookshelfUploadResult {
   matchedItemId?: string | null;
   matchedFolderName?: string | null;
   unified?: boolean;
+  mode?: 'complete' | 'chapters';
+  chaptersAppended?: Array<{ index: number; title: string; fileName?: string }>;
 }
 
 /**
@@ -367,6 +375,16 @@ export async function searchAudiobookshelfCandidates(
           media.hasEbook
         );
 
+        const audioFiles = Array.isArray(media.audioFiles) ? media.audioFiles : [];
+        const existingAudioFilenames = audioFiles
+          .map((af: unknown) => {
+            if (!af || typeof af !== 'object') return '';
+            const rec = af as Record<string, unknown>;
+            const meta = (rec.metadata as Record<string, unknown>) || {};
+            return String(meta.filename || rec.filename || '');
+          })
+          .filter(Boolean);
+
         candidateMap.set(itemId, {
           id: itemId,
           title: itemTitle,
@@ -374,6 +392,9 @@ export async function searchAudiobookshelfCandidates(
           folderName,
           hasAudio,
           hasEbook,
+          numAudioFiles: audioFiles.length || Number(media.numAudioFiles || 0),
+          numChapters: Array.isArray(media.chapters) ? media.chapters.length : Number(media.numChapters || 0),
+          existingAudioFilenames,
         });
 
         if (candidateMap.size >= 6) break;
@@ -706,6 +727,121 @@ export async function tagAudiobookshelfItem(
   }
 }
 
+export interface AudiobookshelfItemDetails {
+  id: string;
+  title: string;
+  author: string;
+  hasAudio: boolean;
+  hasEbook: boolean;
+  numAudioFiles: number;
+  numChapters: number;
+  duration: number;
+  existingAudioFilenames: string[];
+  existingChapters: Array<{ id: number | string; title: string; start: number; end: number }>;
+}
+
+/**
+ * Retrieves rich metadata and media structure for an existing Audiobookshelf library item.
+ */
+export async function fetchAudiobookshelfItemDetails(
+  url: string,
+  token: string,
+  itemId: string,
+): Promise<AudiobookshelfItemDetails | null> {
+  try {
+    const normalizedUrl = url.trim().replace(/\/+$/, '');
+    const res = await fetch(`${normalizedUrl}/api/items/${encodeURIComponent(itemId)}?expanded=1`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const itemData = (await res.json()) as Record<string, unknown>;
+    const media = (itemData?.media as Record<string, unknown>) || {};
+    const metadata = (media?.metadata as Record<string, unknown>) || {};
+    const audioFiles = Array.isArray(media?.audioFiles) ? media.audioFiles : [];
+    const chapters = Array.isArray(media?.chapters) ? media.chapters : [];
+
+    const existingAudioFilenames: string[] = audioFiles
+      .map((af: unknown) => {
+        if (!af || typeof af !== 'object') return '';
+        const rec = af as Record<string, unknown>;
+        const meta = (rec.metadata as Record<string, unknown>) || {};
+        return String(meta.filename || rec.filename || '');
+      })
+      .filter(Boolean);
+
+    const existingChapters = chapters.map((ch: unknown, idx: number) => {
+      const rec = (ch && typeof ch === 'object' ? ch : {}) as Record<string, unknown>;
+      return {
+        id: (rec.id !== undefined && rec.id !== null) ? (rec.id as number | string) : idx,
+        title: String(rec.title || `Chapter ${idx + 1}`),
+        start: typeof rec.start === 'number' ? rec.start : 0,
+        end: typeof rec.end === 'number' ? rec.end : 0,
+      };
+    });
+
+    const hasAudio = Boolean(
+      audioFiles.length > 0 ||
+      (Array.isArray(media?.tracks) && media.tracks.length > 0) ||
+      (typeof media?.numTracks === 'number' && media.numTracks > 0) ||
+      (typeof media?.duration === 'number' && media.duration > 0)
+    );
+
+    const hasEbook = Boolean(
+      media?.ebookFile ||
+      (Array.isArray(media?.ebookFiles) && media.ebookFiles.length > 0) ||
+      media?.hasEbook
+    );
+
+    return {
+      id: String(itemData.id || itemId),
+      title: String(metadata.title || itemData.title || 'Untitled'),
+      author: String(metadata.authorName || metadata.author || ''),
+      hasAudio,
+      hasEbook,
+      numAudioFiles: audioFiles.length || Number(media.numAudioFiles || 0),
+      numChapters: chapters.length || Number(media.numChapters || 0),
+      duration: typeof media.duration === 'number' ? media.duration : 0,
+      existingAudioFilenames,
+      existingChapters,
+    };
+  } catch (err) {
+    serverLogger.warn(
+      { event: 'audiobookshelf.fetch_item_details.failed', error: errorToLog(err), itemId },
+      'Failed to query Audiobookshelf item details',
+    );
+    return null;
+  }
+}
+
+/**
+ * Updates chapters metadata for an existing item in Audiobookshelf.
+ */
+export async function updateAudiobookshelfItemChapters(
+  url: string,
+  token: string,
+  itemId: string,
+  chapters: Array<{ title: string; start: number; end: number }>,
+): Promise<boolean> {
+  try {
+    const normalizedUrl = url.trim().replace(/\/+$/, '');
+    const res = await fetch(`${normalizedUrl}/api/items/${encodeURIComponent(itemId)}/chapters`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ chapters }),
+    });
+    return res.ok;
+  } catch (err) {
+    serverLogger.warn(
+      { event: 'audiobookshelf.update_chapters.failed', error: errorToLog(err), itemId },
+      'Failed to update chapters for Audiobookshelf item',
+    );
+    return false;
+  }
+}
+
 /**
  * Uploads an audiobook file and companion original document into Audiobookshelf.
  */
@@ -754,15 +890,12 @@ export async function uploadBookToAudiobookshelf(
     .where(and(eq(documents.id, bookId), eq(documents.userId, userId)));
   const doc = docRows[0] || null;
 
-  // 2. Check for held/rejected chapters
   const objects = await listAudiobookObjects(bookId, userId, namespace);
   const objectNames = objects.map((item) => item.fileName);
-  const failedChapters = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name));
-  if (failedChapters.length > 0) {
-    throw new Error(
-      `${failedChapters.length} chapter(s) require review and successful replacement recording before uploading to Audiobookshelf.`,
-    );
-  }
+
+  const isChapterMode = options.uploadMode === 'chapters' &&
+    Array.isArray(options.selectedChapterIndices) &&
+    options.selectedChapterIndices.length > 0;
 
   const chapters = listChapterObjects(objectNames);
   if (chapters.length === 0) {
@@ -785,33 +918,86 @@ export async function uploadBookToAudiobookshelf(
     if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
   }
 
-  const signature = chapters.map((chapter) => ({
-    index: chapter.index,
-    fileName: chapter.fileName,
-    title: titleByIndex.get(chapter.index) ?? chapter.title,
-  }));
+  // 2. Check for held/rejected chapters
+  const targetChapterIndices = isChapterMode ? new Set(options.selectedChapterIndices) : null;
+  const targetChapters = isChapterMode
+    ? chapters.filter((c) => targetChapterIndices!.has(c.index))
+    : chapters;
 
-  // 3. Ensure combined audio exists
-  let audioBuffer: Buffer | null = null;
-  if (objectNames.includes(completeAudioName) && objectNames.includes(manifestName)) {
-    try {
-      const manifestRaw = await getAudiobookObjectBuffer(bookId, userId, manifestName, namespace);
-      const manifest = JSON.parse(manifestRaw.toString('utf8'));
-      if (JSON.stringify(manifest) === JSON.stringify(signature)) {
-        audioBuffer = await getAudiobookObjectBuffer(bookId, userId, completeAudioName, namespace);
+  if (isChapterMode) {
+    if (targetChapters.length === 0) {
+      throw new Error('None of the selected chapters have generated audio files available.');
+    }
+    for (const chap of targetChapters) {
+      const oneBasedPrefix = `${String(chap.index + 1).padStart(4, '0')}__`;
+      const isRejected = objectNames.some((n) => n.startsWith(oneBasedPrefix) && n.endsWith('rejected.txt'));
+      if (isRejected) {
+        throw new Error(`Chapter ${chap.index + 1} ("${titleByIndex.get(chap.index) || chap.title}") requires review and replacement before uploading to Audiobookshelf.`);
       }
-    } catch {
-      audioBuffer = null;
+    }
+  } else {
+    const failedChapters = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name));
+    if (failedChapters.length > 0) {
+      throw new Error(
+        `${failedChapters.length} chapter(s) require review and successful replacement recording before uploading to Audiobookshelf.`,
+      );
     }
   }
 
-  if (!audioBuffer) {
-    serverLogger.info(
-      { event: 'audiobookshelf.combining_before_upload', bookId },
-      'Assembling complete audiobook before Audiobookshelf upload',
-    );
-    await executeAudiobookCombine(bookId, userId, format, namespace);
-    audioBuffer = await getAudiobookObjectBuffer(bookId, userId, completeAudioName, namespace);
+  interface ChapterPayload {
+    index: number;
+    title: string;
+    buffer: Buffer;
+    fileName: string;
+    mime: string;
+  }
+  const chapterPayloads: ChapterPayload[] = [];
+  let audioBuffer: Buffer | null = null;
+
+  if (isChapterMode) {
+    for (const chap of targetChapters) {
+      const chapBuffer = await getAudiobookObjectBuffer(bookId, userId, chap.fileName, namespace);
+      const oneBased = String(chap.index + 1).padStart(4, '0');
+      const chapTitle = sanitizeFilenameForAudiobookshelf(titleByIndex.get(chap.index) || chap.title || `Chapter ${chap.index + 1}`);
+      const ext = chap.format || format;
+      const fileName = `${oneBased} - ${chapTitle}.${ext}`;
+      const mime = ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4';
+      chapterPayloads.push({
+        index: chap.index,
+        title: titleByIndex.get(chap.index) || chap.title || `Chapter ${chap.index + 1}`,
+        buffer: chapBuffer,
+        fileName,
+        mime,
+      });
+    }
+  } else {
+    const signature = chapters.map((chapter) => ({
+      index: chapter.index,
+      fileName: chapter.fileName,
+      title: titleByIndex.get(chapter.index) ?? chapter.title,
+    }));
+
+    // 3. Ensure combined audio exists
+    if (objectNames.includes(completeAudioName) && objectNames.includes(manifestName)) {
+      try {
+        const manifestRaw = await getAudiobookObjectBuffer(bookId, userId, manifestName, namespace);
+        const manifest = JSON.parse(manifestRaw.toString('utf8'));
+        if (JSON.stringify(manifest) === JSON.stringify(signature)) {
+          audioBuffer = await getAudiobookObjectBuffer(bookId, userId, completeAudioName, namespace);
+        }
+      } catch {
+        audioBuffer = null;
+      }
+    }
+
+    if (!audioBuffer) {
+      serverLogger.info(
+        { event: 'audiobookshelf.combining_before_upload', bookId },
+        'Assembling complete audiobook before Audiobookshelf upload',
+      );
+      await executeAudiobookCombine(bookId, userId, format, namespace);
+      audioBuffer = await getAudiobookObjectBuffer(bookId, userId, completeAudioName, namespace);
+    }
   }
 
   const cleanTitle = sanitizeFilenameForAudiobookshelf(options.title || bookRows[0].title || 'Audiobook');
@@ -821,7 +1007,7 @@ export async function uploadBookToAudiobookshelf(
   const audioFileName = `${cleanTitle}.${format}`;
   const audioMime = format === 'mp3' ? 'audio/mpeg' : 'audio/mp4';
 
-  const filesUploaded: string[] = [audioFileName];
+  const filesUploaded: string[] = [];
 
   // 4. Check for smart match unification with existing Audiobookshelf book
   let destinationFolderTitle = cleanTitle;
@@ -975,8 +1161,17 @@ export async function uploadBookToAudiobookshelf(
     formData.append('series', cleanSeries);
   }
 
-  const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: audioMime });
-  formData.append('file', audioBlob, audioFileName);
+  if (isChapterMode) {
+    for (const cp of chapterPayloads) {
+      const chapterBlob = new Blob([new Uint8Array(cp.buffer)], { type: cp.mime });
+      formData.append(`file_${cp.index}`, chapterBlob, cp.fileName);
+      filesUploaded.push(cp.fileName);
+    }
+  } else if (audioBuffer) {
+    const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: audioMime });
+    formData.append('file', audioBlob, audioFileName);
+    filesUploaded.push(audioFileName);
+  }
 
   if (companionBuffer && companionFileName) {
     const companionBlob = new Blob([new Uint8Array(companionBuffer)], { type: companionMime });
@@ -994,6 +1189,7 @@ export async function uploadBookToAudiobookshelf(
       author: cleanAuthor,
       files: filesUploaded,
       isUnified,
+      mode: isChapterMode ? 'chapters' : 'complete',
     },
     'Uploading audiobook to Audiobookshelf',
   );
@@ -1040,6 +1236,7 @@ export async function uploadBookToAudiobookshelf(
       scanTriggered,
       isUnified,
       matchedItemId,
+      mode: isChapterMode ? 'chapters' : 'complete',
     },
     'Successfully uploaded audiobook to Audiobookshelf',
   );
@@ -1055,5 +1252,7 @@ export async function uploadBookToAudiobookshelf(
     matchedItemId,
     matchedFolderName: isUnified ? destinationFolderTitle : null,
     unified: isUnified,
+    mode: isChapterMode ? 'chapters' : 'complete',
+    chaptersAppended: isChapterMode ? chapterPayloads.map(c => ({ index: c.index, title: c.title, fileName: c.fileName })) : undefined,
   };
 }

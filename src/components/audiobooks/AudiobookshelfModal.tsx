@@ -14,6 +14,15 @@ export interface AudiobookshelfModalProps {
   initialAuthor?: string;
   documentType?: string;
   onReviewChapters?: () => void;
+  initialUploadMode?: 'complete' | 'chapters';
+  initialSelectedChapterIndices?: number[];
+  chapters?: Array<{
+    index: number;
+    title: string;
+    duration?: number;
+    status?: string;
+    hasAudio?: boolean;
+  }>;
 }
 
 interface AudiobookshelfFolder {
@@ -45,6 +54,10 @@ interface MatchCandidate {
   folderName: string;
   hasAudio: boolean;
   hasEbook: boolean;
+  numAudioFiles?: number;
+  numChapters?: number;
+  existingAudioFilenames?: string[];
+  existingChapters?: Array<{ id: number | string; title: string; start?: number; end?: number }>;
 }
 
 interface MatchResult {
@@ -71,6 +84,9 @@ export function AudiobookshelfModal({
   initialAuthor = '',
   documentType = 'pdf',
   onReviewChapters,
+  initialUploadMode,
+  initialSelectedChapterIndices,
+  chapters: propChapters,
 }: AudiobookshelfModalProps) {
   const router = useRouter();
   const [config, setConfig] = useState<AudiobookshelfConfigResponse | null>(null);
@@ -82,6 +98,21 @@ export function AudiobookshelfModal({
   const [folderId, setFolderId] = useState('');
   const [includeCompanion, setIncludeCompanion] = useState(true);
 
+  const [availableChapters, setAvailableChapters] = useState<Array<{
+    index: number;
+    title: string;
+    duration?: number;
+    status?: string;
+    hasAudio?: boolean;
+  }>>(propChapters || []);
+
+  const [uploadMode, setUploadMode] = useState<'complete' | 'chapters'>(
+    initialUploadMode || 'complete',
+  );
+  const [selectedChapterIndices, setSelectedChapterIndices] = useState<number[]>(
+    initialSelectedChapterIndices || [],
+  );
+
   const [aiModel, setAiModel] = useState('gemini-3.1-flash-lite');
   const [isCheckingMatch, setIsCheckingMatch] = useState(false);
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
@@ -92,18 +123,60 @@ export function AudiobookshelfModal({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Sync initial title/author when opening
+  const completedChapters = useMemo(
+    () => availableChapters.filter((c) => c.status === 'completed' || c.hasAudio),
+    [availableChapters],
+  );
+
+  // Sync available chapters from prop or status API
+  useEffect(() => {
+    if (!open || !bookId) return;
+    if (propChapters && propChapters.length > 0) {
+      setAvailableChapters(propChapters);
+    } else {
+      fetch(`/api/audiobook/status?bookId=${encodeURIComponent(bookId)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data?.chapters)) {
+            setAvailableChapters(data.chapters);
+          }
+        })
+        .catch((err) => {
+          console.warn('Failed to load chapters for ABS modal:', err);
+        });
+    }
+  }, [open, bookId, propChapters]);
+
+  // Sync initial title/author/mode when opening
   useEffect(() => {
     if (open) {
       if (initialTitle) setTitle(initialTitle);
       if (initialAuthor) setAuthor(initialAuthor);
+      if (initialUploadMode) setUploadMode(initialUploadMode);
+      if (initialSelectedChapterIndices && initialSelectedChapterIndices.length > 0) {
+        setSelectedChapterIndices(initialSelectedChapterIndices);
+      }
       setStatusMessage(null);
       setMatchResult(null);
       setUploadError(null);
     } else {
       setUploadError(null);
     }
-  }, [open, initialTitle, initialAuthor]);
+  }, [open, initialTitle, initialAuthor, initialUploadMode, initialSelectedChapterIndices]);
+
+  // When switching to chapters mode, ensure at least one chapter is selected if available
+  useEffect(() => {
+    if (uploadMode === 'chapters' && selectedChapterIndices.length === 0 && completedChapters.length > 0) {
+      setSelectedChapterIndices([completedChapters[completedChapters.length - 1].index]);
+    }
+  }, [uploadMode, completedChapters, selectedChapterIndices.length]);
+
+  const formatDuration = (seconds?: number): string => {
+    if (!seconds || seconds <= 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   const runCheckExistingBook = useCallback(
     async (targetTitle: string, targetAuthor?: string, targetLibId?: string, modelToUse = aiModel) => {
@@ -250,15 +323,23 @@ export function AudiobookshelfModal({
       toast.error('Please specify a title for the audiobook.');
       return;
     }
+    if (uploadMode === 'chapters' && selectedChapterIndices.length === 0) {
+      toast.error('Please select at least one chapter to append.');
+      return;
+    }
 
     setIsUploading(true);
     setUploadError(null);
-    setStatusMessage('Assembling audio and uploading to Audiobookshelf... (this may take a minute)');
+    setStatusMessage(
+      uploadMode === 'chapters'
+        ? 'Preparing and uploading chapter(s) to Audiobookshelf...'
+        : 'Assembling audio and uploading to Audiobookshelf... (this may take a minute)'
+    );
 
     try {
       const candidateHasEbook = Boolean(mergeIntoExisting && matchResult?.matchFound && matchResult.candidate?.hasEbook);
       const isUnifiedMerge = mergeIntoExisting && matchResult?.matchFound && Boolean(matchResult.candidate);
-      const effectiveIncludeCompanion = candidateHasEbook ? false : includeCompanion;
+      const effectiveIncludeCompanion = (uploadMode === 'chapters' || candidateHasEbook) ? false : includeCompanion;
       const res = await fetch('/api/audiobook/audiobookshelf', {
         method: 'POST',
         headers: {
@@ -277,6 +358,8 @@ export function AudiobookshelfModal({
           targetItemId: isUnifiedMerge ? matchResult?.candidate?.id : undefined,
           targetFolderName: isUnifiedMerge ? matchResult?.candidate?.folderName : undefined,
           model: aiModel,
+          uploadMode,
+          selectedChapterIndices: uploadMode === 'chapters' ? selectedChapterIndices : undefined,
         }),
       });
 
@@ -499,6 +582,11 @@ export function AudiobookshelfModal({
                     <p className="text-[11px] text-muted italic mt-0.5">&ldquo;{matchResult.reasoning}&rdquo;</p>
                   )}
                 </div>
+                {matchResult.candidate.numAudioFiles !== undefined && matchResult.candidate.numAudioFiles > 0 && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-emerald-300 bg-emerald-500/15 px-2 py-1 rounded border border-emerald-500/25">
+                    <span>🎵 Audiobookshelf item already contains {matchResult.candidate.numAudioFiles} audio file{matchResult.candidate.numAudioFiles === 1 ? '' : 's'}.</span>
+                  </div>
+                )}
                 <div className="pt-2 border-t border-emerald-500/20">
                   <label className="flex items-start gap-2 cursor-pointer">
                     <input
@@ -522,6 +610,139 @@ export function AudiobookshelfModal({
                 </div>
               </div>
             ) : null}
+
+            {/* Export Mode / Chapter Append Selector */}
+            <div className="space-y-2 pt-2 border-t border-line-soft">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-foreground">Upload Mode</label>
+                <span className="text-[11px] text-muted">
+                  {uploadMode === 'chapters' ? 'Appending individual chapter file(s)' : 'Single unified audiobook file'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setUploadMode('complete')}
+                  disabled={isUploading}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    uploadMode === 'complete'
+                      ? 'border-accent bg-accent/10 text-foreground ring-1 ring-accent'
+                      : 'border-line-soft bg-surface-raised hover:bg-surface-sunken text-muted'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-foreground">Full Audiobook</span>
+                    {uploadMode === 'complete' && <span className="text-accent text-xs">●</span>}
+                  </div>
+                  <p className="text-[11px] text-muted mt-1">
+                    Combines all completed chapters into a single master file for this book.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setUploadMode('chapters')}
+                  disabled={isUploading}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    uploadMode === 'chapters'
+                      ? 'border-accent bg-accent/10 text-foreground ring-1 ring-accent'
+                      : 'border-line-soft bg-surface-raised hover:bg-surface-sunken text-muted'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-foreground">Append Chapter(s)</span>
+                    {uploadMode === 'chapters' && <span className="text-accent text-xs">●</span>}
+                  </div>
+                  <p className="text-[11px] text-muted mt-1">
+                    Add another chapter on top of existing chapters in Audiobookshelf.
+                  </p>
+                </button>
+              </div>
+
+              {uploadMode === 'chapters' && (
+                <div className="space-y-2 p-3 rounded-lg border border-accent/20 bg-accent/5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-foreground">Select Chapter(s) to Append</label>
+                    <span className="text-[11px] text-muted">
+                      {selectedChapterIndices.length} chapter(s) selected
+                    </span>
+                  </div>
+
+                  {completedChapters.length === 0 ? (
+                    <p className="text-xs text-amber-400">
+                      No completed chapters found with recorded audio. Please generate a chapter first.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between text-[11px] text-muted pb-1">
+                        <p>Select chapter file(s) to send to Audiobookshelf:</p>
+                        {completedChapters.length > 1 && (
+                          <div className="flex items-center gap-2 text-accent">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedChapterIndices(completedChapters.map((c) => c.index))}
+                              className="hover:underline font-medium"
+                            >
+                              Select All
+                            </button>
+                            <span>•</span>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedChapterIndices([])}
+                              className="hover:underline font-medium"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="max-h-44 overflow-y-auto space-y-1 pr-1">
+                        {completedChapters.map((ch) => {
+                          const isSelected = selectedChapterIndices.includes(ch.index);
+                          const oneBased = ch.index + 1;
+                          return (
+                            <label
+                              key={ch.index}
+                              className={`flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs cursor-pointer border transition-colors ${
+                                isSelected
+                                  ? 'border-accent/40 bg-accent/15 text-foreground font-medium'
+                                  : 'border-line-soft/60 bg-surface-raised hover:bg-surface-sunken text-soft'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 truncate">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedChapterIndices((prev) => [...prev, ch.index].sort((a, b) => a - b));
+                                    } else {
+                                      setSelectedChapterIndices((prev) => prev.filter((i) => i !== ch.index));
+                                    }
+                                  }}
+                                  disabled={isUploading}
+                                  className="rounded border-line-soft text-accent focus:ring-accent"
+                                />
+                                <span className="truncate">
+                                  Chapter {oneBased}: {ch.title}
+                                </span>
+                              </div>
+                              {ch.duration ? (
+                                <span className="text-[10px] text-muted font-mono ml-2 shrink-0">
+                                  {formatDuration(ch.duration)}
+                                </span>
+                              ) : null}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Library & Folder selectors */}
             {libraries.length > 0 && (
@@ -562,12 +783,12 @@ export function AudiobookshelfModal({
 
             {/* Include companion eBook (.epub) checkbox */}
             <div className="pt-2 border-t border-line-soft">
-              <label className={`flex items-start gap-2.5 ${candidateHasEbook ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'} text-xs text-foreground`}>
+              <label className={`flex items-start gap-2.5 ${(candidateHasEbook || uploadMode === 'chapters') ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'} text-xs text-foreground`}>
                 <input
                   type="checkbox"
-                  checked={!candidateHasEbook && includeCompanion}
+                  checked={!candidateHasEbook && uploadMode !== 'chapters' && includeCompanion}
                   onChange={(e) => setIncludeCompanion(e.target.checked)}
-                  disabled={isUploading || candidateHasEbook}
+                  disabled={isUploading || candidateHasEbook || uploadMode === 'chapters'}
                   className="mt-0.5 rounded border-line-soft text-accent focus:ring-accent disabled:opacity-50"
                 />
                 <div>
@@ -575,16 +796,22 @@ export function AudiobookshelfModal({
                     <span className="font-medium">
                       Include companion eBook (.epub)
                     </span>
-                    {candidateHasEbook && (
+                    {uploadMode === 'chapters' ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-surface-raised text-muted border border-line-soft">
+                        Not applicable when appending chapters
+                      </span>
+                    ) : candidateHasEbook ? (
                       <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-400 font-semibold border border-emerald-500/30">
                         ✓ Existing eBook already in Audiobookshelf (will not overwrite)
                       </span>
-                    )}
+                    ) : null}
                   </div>
                   <p className="text-[11px] text-muted mt-0.5">
-                    {candidateHasEbook
-                      ? 'The matched book in Audiobookshelf already has an eBook/PDF. OpenReader will attach the new audiobook while keeping your existing eBook intact.'
-                      : 'Compiles a reflowable publication-grade .epub with digital table of contents and cover so Audiobookshelf pairs the text with the audio for seamless read & listen.'}
+                    {uploadMode === 'chapters'
+                      ? 'Companion eBooks are associated with the full book and are not needed when appending individual chapter files.'
+                      : candidateHasEbook
+                        ? 'The matched book in Audiobookshelf already has an eBook/PDF. OpenReader will attach the new audiobook while keeping your existing eBook intact.'
+                        : 'Compiles a reflowable publication-grade .epub with digital table of contents and cover so Audiobookshelf pairs the text with the audio for seamless read & listen.'}
                   </p>
                 </div>
               </label>
@@ -608,9 +835,13 @@ export function AudiobookshelfModal({
             variant="primary"
             size="sm"
             onClick={handleUpload}
-            disabled={isUploading || !config?.configured || !title.trim()}
+            disabled={isUploading || !config?.configured || !title.trim() || (uploadMode === 'chapters' && selectedChapterIndices.length === 0)}
           >
-            {isUploading ? 'Exporting...' : 'Send to Audiobookshelf'}
+            {isUploading
+              ? 'Exporting...'
+              : uploadMode === 'chapters'
+                ? `Append ${selectedChapterIndices.length > 0 ? (selectedChapterIndices.length === 1 ? `Chapter ${selectedChapterIndices[0] + 1}` : `${selectedChapterIndices.length} Chapters`) : 'Chapter'} to Audiobookshelf`
+                : 'Send to Audiobookshelf'}
           </Button>
         </div>
       </div>

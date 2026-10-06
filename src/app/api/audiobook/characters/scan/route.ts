@@ -136,6 +136,7 @@ async function rememberGeminiDramaCast(input: {
       name: entry.name,
       voiceId: entry.voiceId,
       savedAt: Date.now(),
+      ...(entry.ttsModel ? { ttsModel: entry.ttsModel } : {}),
       ...(entry.cloudDirection ? { cloudDirection: entry.cloudDirection } : {}),
       ...(entry.castingTraits ? { castingTraits: entry.castingTraits } : {}),
       ...(entry.voiceAssignment ? { voiceAssignment: entry.voiceAssignment } : {}),

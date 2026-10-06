@@ -71,6 +71,8 @@ export async function POST(req: NextRequest) {
       targetItemId?: string;
       targetFolderName?: string;
       model?: string;
+      uploadMode?: 'complete' | 'chapters';
+      selectedChapterIndices?: number[];
     };
 
     const bookId = body.bookId;
@@ -125,6 +127,8 @@ export async function POST(req: NextRequest) {
       targetItemId: body.targetItemId?.trim(),
       targetFolderName: body.targetFolderName?.trim(),
       model: body.model?.trim(),
+      uploadMode: body.uploadMode,
+      selectedChapterIndices: body.selectedChapterIndices,
       namespace,
     });
 
@@ -143,9 +147,16 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const successMessage = result.unified
+    let successMessage = result.unified
       ? `Successfully unified "${result.title}" with existing Audiobookshelf book!`
       : `Successfully uploaded "${result.title}" to Audiobookshelf!`;
+
+    if (result.mode === 'chapters') {
+      const count = result.files.length;
+      successMessage = count === 1
+        ? `Successfully appended 1 chapter to "${result.title}" in Audiobookshelf!`
+        : `Successfully appended ${count} chapters to "${result.title}" in Audiobookshelf!`;
+    }
 
     return NextResponse.json({
       success: true,

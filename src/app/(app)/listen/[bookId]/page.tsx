@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { HTMLViewer } from "@/components/views/HTMLViewer";
 import { parseHtmlBlocks } from "@/lib/client/html/blocks";
 import { BookPronunciationInspectorModal } from "@/components/doclist/BookPronunciationInspectorModal";
+import { GeminiDramaSpeakerReview } from "@/components/audiobooks/GeminiDramaSpeakerReview";
 import { MultiVoiceReviewStudio } from "@/components/audiobooks/MultiVoiceReviewStudio";
 import { MobileReviewPlayer } from "@/components/audiobooks/MobileReviewPlayer";
 import { BatchRefineReviewModal } from "@/components/audiobooks/BatchRefineReviewModal";
@@ -82,6 +83,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [newAbbrevVal, setNewAbbrevVal] = useState('');
   const [selectedText, setSelectedText] = useState("");
   
+  const [showGeminiFullText, setShowGeminiFullText] = useState(false);
   const [showMultiVoiceStudio, setShowMultiVoiceStudio] = useState(false);
   const [showMobilePlayer, setShowMobilePlayer] = useState(false);
   const [smartAudioProfiles, setSmartAudioProfiles] = useState<any[]>([]);
@@ -1507,11 +1509,19 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           <div className="w-full md:w-1/3 flex flex-col bg-surface-raised border-l border-line-soft h-1/3 md:h-full">
             <div className="p-4 border-b border-line-soft flex justify-between items-center bg-surface shrink-0">
               <h2 className="font-semibold text-text-strong truncate pr-2" title="Edit text (after Smart AI Processing)">
-                Edit text (after Smart AI Processing)
+                {isGeminiDrama && !showGeminiFullText ? 'Gemini Drama · Speaker Review' : 'Edit text (after Smart AI Processing)'}
               </h2>
+              {isGeminiDrama && <button type="button" onClick={() => setShowGeminiFullText((value) => !value)}
+                className="shrink-0 rounded border border-line-soft px-2 py-1 text-xs text-text-strong">
+                {showGeminiFullText ? 'Speaker turns' : 'Edit full text'}
+              </button>}
             </div>
-            <div className="flex-1 p-4 overflow-hidden relative">
-              <textarea
+            <div className={`flex-1 p-4 relative ${isGeminiDrama && !showGeminiFullText ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+              {isGeminiDrama && !showGeminiFullText && currentChapter ? (
+                <GeminiDramaSpeakerReview key={`${bookId}-${currentChapter.index}`} bookId={bookId}
+                  chapterIndex={currentChapter.index} profileId={selectedSmartAudioProfile?.id || selectedProfileId}
+                  chapterText={chapterText} hasEditedText={hasEditedText} />
+              ) : <textarea
                 value={chapterText}
                 onChange={(e) => {
                   setHasEditedText(true);
@@ -1531,7 +1541,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                 }}
                 className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] bg-surface border border-line-soft rounded-lg text-text-strong p-4 text-sm font-mono leading-relaxed resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
                 placeholder="Edit the text here..."
-              />
+              />}
             </div>
             <div className="p-4 text-xs text-text-soft bg-surface border-t border-line-soft shrink-0">
               Changes to the text will not be heard until you click "Save to Audiobook" to rebuild the MP3 file.
@@ -1892,6 +1902,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         open={showAudiobookshelfModal}
         onClose={() => setShowAudiobookshelfModal(false)}
         bookId={bookId}
+        chapters={chapters}
         onReviewChapters={() => {
           setChapterFilter('needs_review');
           setShowLeftPane(true);

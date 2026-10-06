@@ -805,4 +805,26 @@ describe('Dynamic Voice Library Part 3 casting metadata', () => {
     expect(result.entries.Narrator.castingTraits).toEqual({ pitchPreference: 'low' });
     expect(result.entries.Narrator.voiceAssignment?.assignmentSource).toBe('user');
   });
+
+  test('preserves ttsModel override on characters and Narrator through normalization and rescan', () => {
+    const rawMap = {
+      schemaVersion: 1, status: 'complete', scannedAt: 1, entries: {
+        Narrator: { name: 'Narrator', description: 'Narration', sampleText: '', voiceId: 'Kore', ttsModel: 'gemini-3.8-flash-lite-tts' },
+        Bob: { name: 'Bob', description: 'An extra', sampleText: '', voiceId: 'Fenrir', ttsModel: 'gemini-3.8-flash-lite-tts' },
+      },
+    };
+    const normalized = normalizeSmartAudioCharacterMap(rawMap, { validVoiceSet: new Set(['Kore', 'Fenrir']) });
+    expect(normalized?.entries.Narrator.ttsModel).toBe('gemini-3.8-flash-lite-tts');
+    expect(normalized?.entries.Bob.ttsModel).toBe('gemini-3.8-flash-lite-tts');
+
+    const rescanned = mergeExtractedCharacters({
+      previous: normalized,
+      characters: [{ name: 'Bob', description: 'An extra', sample_text: '' }],
+      profileId: 'gemini',
+      sourceFingerprint: 'source-fp',
+      validVoiceSet: new Set(['Kore', 'Fenrir']),
+    });
+    expect(rescanned.entries.Narrator.ttsModel).toBe('gemini-3.8-flash-lite-tts');
+    expect(rescanned.entries.Bob.ttsModel).toBe('gemini-3.8-flash-lite-tts');
+  });
 });

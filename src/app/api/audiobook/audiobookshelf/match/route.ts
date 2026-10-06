@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { audiobooks, documents } from '@/db/schema';
 import { requireAuthContext } from '@/lib/server/auth/auth';
 import {
+  fetchAudiobookshelfItemDetails,
   fetchAudiobookshelfLibraries,
   matchAudiobookshelfCandidateWithGemini,
   resolveAudiobookshelfConfig,
@@ -154,6 +155,22 @@ export async function POST(req: NextRequest) {
     const matchedCandidate = matchResult.isMatch && matchResult.matchedItemId
       ? candidates.find((c) => c.id === matchResult.matchedItemId) || null
       : null;
+
+    if (matchedCandidate && config.url && config.token) {
+      try {
+        const details = await fetchAudiobookshelfItemDetails(config.url, config.token, matchedCandidate.id);
+        if (details) {
+          matchedCandidate.numAudioFiles = details.numAudioFiles;
+          matchedCandidate.numChapters = details.numChapters;
+          matchedCandidate.existingAudioFilenames = details.existingAudioFilenames;
+          matchedCandidate.existingChapters = details.existingChapters;
+          matchedCandidate.hasAudio = details.hasAudio;
+          matchedCandidate.hasEbook = details.hasEbook;
+        }
+      } catch {
+        // non-fatal enrichment
+      }
+    }
 
     return NextResponse.json({
       matchFound: matchResult.isMatch && Boolean(matchedCandidate),

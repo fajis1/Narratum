@@ -1,4 +1,4 @@
-import { isGeminiRateLimitPause } from '@/lib/shared/audiobook-job-status';
+import { isGeminiRateLimitPause, isSystemResourcePause } from '@/lib/shared/audiobook-job-status';
 
 export interface AudiobookJobCandidate {
   id: string;
@@ -15,6 +15,8 @@ export interface AudiobookJobCandidate {
  * - If a job encountered a Gemini rate limit and has nextAttemptAt set in settingsJson,
  *   it is paused cooperatively until nextAttemptAt expires, freeing worker slots for other jobs.
  * - If a job encountered a legacy rate limit without nextAttemptAt, it adheres to the 24h backoff.
+ * - If a job was marked with a system resource pause, reaching this function means system
+ *   resources have recovered (checked prior to eligibility evaluation), so it is immediately eligible.
  * - Otherwise (normal job or manual resume/requeue where error is null), it is immediately eligible.
  */
 export function isAudiobookJobEligibleToRun(
@@ -31,6 +33,9 @@ export function isAudiobookJobEligibleToRun(
         return settings.nextAttemptAt <= now;
       }
       return row.updatedAt < backoffThreshold;
+    }
+    if (isSystemResourcePause(row.error)) {
+      return true;
     }
     return true;
   } catch {

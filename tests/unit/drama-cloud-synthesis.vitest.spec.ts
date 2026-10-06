@@ -185,6 +185,33 @@ describe('Drama Cloud synthesis', () => {
     expect(GeminiTtsQuotaExhaustedError).toBeDefined();
   });
 
+  it('preserves whitespace-only Director segments without making a TTS request', async () => {
+    const synthesize = vi.fn();
+    const text = '\n\n  \t';
+    const result = await synthesizeGeminiDramaSegment({ segment: { ...segment, text }, characterMap, apiKey: 'test', synthesize });
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(result.chunks.map((chunk) => chunk.sourceText).join('')).toBe(text);
+    expect(result.chunks[0]).toMatchObject({ omitted: true, needsPlaceholder: false });
+    expect(result.reviewFlags).toEqual([]);
+  });
+
+  it('preserves trailing whitespace chunks without an empty request', async () => {
+    const text = 'Hello.' + ' '.repeat(4000);
+    const synthesize = vi.fn().mockResolvedValue({ audioBuffer: Buffer.from('audio') });
+    const result = await synthesizeGeminiDramaSegment({ segment: { ...segment, text }, characterMap, apiKey: 'test', synthesize });
+    expect(result.chunks.map((chunk) => chunk.sourceText).join('')).toBe(text);
+    expect(synthesize).toHaveBeenCalledOnce();
+    expect(result.reviewFlags).toEqual([]);
+  });
+
+  it('retains request-building errors as explicit failed chunks', async () => {
+    const synthesize = vi.fn();
+    const result = await synthesizeGeminiDramaSegment({ segment, characterMap: { ...characterMap, entries: {} }, apiKey: 'test', synthesize });
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(result.chunks[0]).toMatchObject({ sourceText: segment.text, needsPlaceholder: true });
+    expect(result.reviewFlags).toEqual([expect.objectContaining({ kind: 'cloud-tts-failed' })]);
+  });
+
   it('flags preflight failures without losing source text', async () => {
     const result = await synthesizeDramaSegment({ segment: { ...segment, text: '[quest] Go.' }, characterMap });
     expect(result.chunks[0].sourceText).toBe('[quest] Go.');

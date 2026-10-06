@@ -328,7 +328,7 @@ export function MultiVoiceCharacterModal({
         reason: next.reasons.length ? `Gemini catalog recommendation: ${next.reasons.join('; ')}.` : 'Gemini catalog recommendation.',
       };
     });
-    void handlePreview(name, 'voice-only', next.voice.id);
+    void handlePreview(name, 'voice-only', next.voice.id, characterMap?.entries[name]?.ttsModel);
   };
 
   const updateEntry = (name: string, update: (entry: SmartAudioCharacterMap['entries'][string]) => void) => {
@@ -345,6 +345,7 @@ export function MultiVoiceCharacterModal({
   const applySavedCastVoice = (characterName: string, saved: ReusableDramaCastEntry) => {
     updateEntry(characterName, (entry) => {
       entry.voiceId = saved.voiceId;
+      if (saved.ttsModel) entry.ttsModel = saved.ttsModel;
       if (saved.cloudDirection) entry.cloudDirection = saved.cloudDirection;
       entry.voiceAssignment = saved.voiceAssignment
         ? { ...saved.voiceAssignment, assignedAt: Date.now(), assignmentSource: 'user', reason: `Reused from saved cast member ${saved.name}.` }
@@ -398,7 +399,12 @@ export function MultiVoiceCharacterModal({
     });
   };
 
-  const handlePreview = async (name: string, requestedMode?: 'voice-only' | 'character' | 'scene', voiceOverride?: string) => {
+  const handlePreview = async (
+    name: string,
+    requestedMode?: 'voice-only' | 'character' | 'scene',
+    voiceOverride?: string,
+    modelOverride?: 'gemini-3.8-flash-tts' | 'gemini-3.8-flash-lite-tts',
+  ) => {
     const entry = characterMap?.entries[name];
     const voiceId = voiceOverride || entry?.voiceId;
     if (!voiceId) return;
@@ -414,6 +420,10 @@ export function MultiVoiceCharacterModal({
     setError(null);
     try {
       const previewText = previewTextByCharacter[name] || entry?.sampleText || `${name} is ready for the adventure.`;
+      const modelName = modelOverride
+        || (voiceOverride && previewMode === 'voice-only'
+          ? (voiceModelTier === 'flash-lite' ? 'gemini-3.8-flash-lite-tts' : 'gemini-3.8-flash-tts')
+          : (entry?.ttsModel || (previewMode === 'voice-only' && voiceModelTier === 'flash-lite' ? 'gemini-3.8-flash-lite-tts' : 'gemini-3.8-flash-tts')));
       const response = await fetch(isCloudDrama ? '/api/audiobook/characters/preview' : '/api/tts/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -429,6 +439,7 @@ export function MultiVoiceCharacterModal({
               voiceName: voiceId,
               cloudDirection: entry?.cloudDirection,
               audioProfile: previewMode === 'voice-only' ? '' : entry?.cloudDirection?.audioProfile,
+              modelName,
             }
           : { text: previewText, voice: voiceId }),
       });
@@ -588,7 +599,7 @@ export function MultiVoiceCharacterModal({
                     Flash 3.8 ({primaryGeminiVoices.length})
                   </button>
                   <button type="button" onClick={() => setVoiceModelTier('flash-lite')} className={`rounded px-3 py-1.5 font-semibold ${voiceModelTier === 'flash-lite' ? 'bg-warning text-black' : 'text-text-soft'}`}>
-                    Flash 3.8 Lite fallback ({liteGeminiVoices.length})
+                    Flash 3.8 Lite ({liteGeminiVoices.length})
                   </button>
                 </div>
                 <label className="min-w-52 flex-1 text-xs text-text-soft">Search Gemini Voice Library
@@ -617,7 +628,7 @@ export function MultiVoiceCharacterModal({
                 <label className="flex items-center gap-2 pb-2 text-xs text-text-soft"><input aria-label="Hide voices already in use" type="checkbox" checked={hideUsedVoices} onChange={(event) => setHideUsedVoices(event.target.checked)} /> Hide voices in use</label>
               </div>
               <p className="mt-2 text-xs text-text-soft">
-                Showing {visibleGeminiVoices().length} of {voiceModelTier === 'flash' ? primaryGeminiVoices.length : liteGeminiVoices.length} {voiceModelTier === 'flash' ? 'Flash 3.8 primary' : 'Flash 3.8 Lite fallback'} voices. A currently selected voice always remains visible.
+                Showing {visibleGeminiVoices().length} of {voiceModelTier === 'flash' ? primaryGeminiVoices.length : liteGeminiVoices.length} {voiceModelTier === 'flash' ? 'Flash 3.8' : 'Flash 3.8 Lite'} voices. A currently selected voice always remains visible.
               </p>
             </div>
           )}
@@ -714,7 +725,7 @@ export function MultiVoiceCharacterModal({
                           {recommendation.reasons.length ? recommendation.reasons.map((reason) => <li key={reason}>{reason}</li>) : <li>Best available catalog match for this character.</li>}
                         </ul>
                         <div className="mt-2 flex flex-wrap gap-2">
-                          <button type="button" onClick={() => void handlePreview(character.name, 'voice-only', voice.id)} className="rounded border border-accent px-2 py-1 text-xs text-accent">
+                          <button type="button" onClick={() => void handlePreview(character.name, 'voice-only', voice.id, character.ttsModel)} className="rounded border border-accent px-2 py-1 text-xs text-accent">
                             {isPlaying === character.name && playingVoiceId === voice.id ? 'Stop preview' : 'Preview'}
                           </button>
                           <button type="button" onClick={() => applyGeminiVoice(character.name, voice)} className="rounded bg-accent px-2 py-1 text-xs font-medium text-background">Use this voice</button>
@@ -767,7 +778,7 @@ export function MultiVoiceCharacterModal({
                               }
                             });
                             if (chosenVoice) {
-                              void handlePreview(character.name, isCloudDrama ? 'voice-only' : undefined, chosenVoice);
+                              void handlePreview(character.name, isCloudDrama ? 'voice-only' : undefined, chosenVoice, character.ttsModel);
                             }
                           }}
                           className="min-w-0 flex-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground"
@@ -786,6 +797,26 @@ export function MultiVoiceCharacterModal({
                           {isPlaying === character.name ? '…' : '▶'}
                         </button>
                       </div>
+                      {isCloudDrama && (
+                        <div className="flex items-center gap-2">
+                          <label htmlFor={`tts-model-${character.name}`} className="shrink-0 text-xs text-text-soft">Model</label>
+                          <select
+                            id={`tts-model-${character.name}`}
+                            aria-label={`TTS Model for ${character.name}`}
+                            value={character.ttsModel || 'gemini-3.8-flash-tts'}
+                            onChange={(event) => {
+                              const chosenModel = event.target.value as 'gemini-3.8-flash-tts' | 'gemini-3.8-flash-lite-tts';
+                              updateEntry(character.name, (entry) => {
+                                entry.ttsModel = chosenModel;
+                              });
+                            }}
+                            className="min-w-0 flex-1 rounded-lg border border-line bg-background p-1.5 text-xs text-foreground"
+                          >
+                            <option value="gemini-3.8-flash-tts">Gemini 3.8 Flash (Default)</option>
+                            <option value="gemini-3.8-flash-lite-tts">Gemini 3.8 Flash-Lite</option>
+                          </select>
+                        </div>
+                      )}
                       <p className="text-[11px] text-text-soft">
                         {isCloudDrama ? `Gemini Voice Library${geminiVoiceSource ? ` (${geminiVoiceSource})` : ''}. ` : ''}Voices marked “chosen by” are already in use but remain selectable for intentional sharing.
                       </p>
@@ -801,7 +832,7 @@ export function MultiVoiceCharacterModal({
                                 <article key={voice.id} className={`rounded border p-2 ${isRecommended ? 'border-accent-line bg-accent-wash' : 'border-line bg-surface'}`}>
                                   <div className="flex items-start justify-between gap-2">
                                     <div className="min-w-0"><p className="text-xs font-semibold text-text-strong">{isRecommended && 'Recommended: '}{voice.displayName}</p><p className="text-[11px] text-text-soft">{formatGeminiVoiceMetadata(voice)}</p></div>
-                                    <div className="flex shrink-0 gap-1"><button type="button" onClick={() => void handlePreview(character.name, 'voice-only', voice.id)} className="rounded border border-accent px-2 py-1 text-[11px] text-accent">{isPreviewing ? 'Stop' : 'Preview'}</button><button type="button" onClick={() => applyGeminiVoice(character.name, voice)} className="rounded bg-accent px-2 py-1 text-[11px] font-medium text-background">Use voice</button></div>
+                                    <div className="flex shrink-0 gap-1"><button type="button" onClick={() => void handlePreview(character.name, 'voice-only', voice.id, voiceModelTier === 'flash-lite' ? 'gemini-3.8-flash-lite-tts' : 'gemini-3.8-flash-tts')} className="rounded border border-accent px-2 py-1 text-[11px] text-accent">{isPreviewing ? 'Stop' : 'Preview'}</button><button type="button" onClick={() => applyGeminiVoice(character.name, voice)} className="rounded bg-accent px-2 py-1 text-[11px] font-medium text-background">Use voice</button></div>
                                   </div>
                                   {voice.description && <p className="mt-1 text-[11px] text-text-soft">{voice.description}</p>}
                                   {users.length > 0 && <p className="mt-1 text-[11px] text-warning">In use by: {users.join(', ')}</p>}

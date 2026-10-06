@@ -129,6 +129,11 @@ export interface SmartAudioCharacterEntry {
    */
   importance?: 'main' | 'minor';
   /**
+   * Optional Gemini TTS model override for this character.
+   * Defaults to Gemini 3.8 Flash (gemini-3.8-flash-tts) when omitted.
+   */
+  ttsModel?: 'gemini-3.8-flash-tts' | 'gemini-3.8-flash-lite-tts';
+  /**
    * Optional per-character direction for the `drama-gemini-tts` mode.
    * Not present on Kokoro Drama cast entries — the Kokoro path ignores this field.
    */
@@ -154,6 +159,7 @@ export interface ReusableDramaCastEntry {
   name: string;
   voiceId: string;
   savedAt: number;
+  ttsModel?: 'gemini-3.8-flash-tts' | 'gemini-3.8-flash-lite-tts';
   cloudDirection?: DramaCharacterDirection | null;
   castingTraits?: SmartAudioCastingTraits;
   voiceAssignment?: SavedGeminiVoiceAssignment;
