@@ -34,6 +34,7 @@ export default defineConfig({
     reporters: process.env.CI ? ['default', 'github-actions'] : ['default'],
     projects: [
       {
+        oxc: { jsx: { runtime: 'automatic' } },
         resolve: {
           alias,
         },

@@ -9,6 +9,8 @@ import {
   normalizeSmartAudioCharacterMap,
 } from '@/lib/shared/multi-voice';
 import toast from 'react-hot-toast';
+import { Button, ModalFrame, ModalTitle } from '@/components/ui';
+import { GEMINI_VOICE_AUDITION_URL, hasAcknowledgedGeminiPreviewQuota, acknowledgeGeminiPreviewQuota } from '@/lib/client/gemini-preview-consent';
 import type { ReusableDramaCastEntry, SmartAudioCharacterMap } from '@/types/document-settings';
 import type { GeminiVoiceCatalogEntry } from '@/lib/shared/gemini-voice-catalog';
 import { autoAssignGeminiMinorVoices, recommendAnotherGeminiVoice, recommendGeminiVoices } from '@/lib/shared/gemini-voice-matching';
@@ -69,6 +71,8 @@ export function MultiVoiceCharacterModal({
   const [isLoading, setIsLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [pendingPreview, setPendingPreview] = useState<{ documentId: string; profileId: string; name: string; mode?: 'voice-only' | 'character' | 'scene'; voice?: string; model?: 'gemini-3.8-flash-tts' | 'gemini-3.8-flash-lite-tts' } | null>(null);
+  const previewQuotaAcknowledged = useRef(false);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [previewModeByCharacter, setPreviewModeByCharacter] = useState<Record<string, 'voice-only' | 'character' | 'scene'>>({});
@@ -328,7 +332,6 @@ export function MultiVoiceCharacterModal({
         reason: next.reasons.length ? `Gemini catalog recommendation: ${next.reasons.join('; ')}.` : 'Gemini catalog recommendation.',
       };
     });
-    void handlePreview(name, 'voice-only', next.voice.id, characterMap?.entries[name]?.ttsModel);
   };
 
   const updateEntry = (name: string, update: (entry: SmartAudioCharacterMap['entries'][string]) => void) => {
@@ -399,7 +402,7 @@ export function MultiVoiceCharacterModal({
     });
   };
 
-  const handlePreview = async (
+  const performPreview = async (
     name: string,
     requestedMode?: 'voice-only' | 'character' | 'scene',
     voiceOverride?: string,
@@ -458,6 +461,36 @@ export function MultiVoiceCharacterModal({
       stopPreview();
     }
   };
+
+  const handlePreview = async (
+    name: string,
+    mode?: 'voice-only' | 'character' | 'scene',
+    voice?: string,
+    model?: 'gemini-3.8-flash-tts' | 'gemini-3.8-flash-lite-tts',
+  ) => {
+    const voiceId = voice || characterMap?.entries[name]?.voiceId;
+    if (!voiceId) return;
+    if (isPlaying === name && playingVoiceId === voiceId) {
+      stopPreview();
+      return;
+    }
+    if (isCloudDrama && !previewQuotaAcknowledged.current && !hasAcknowledgedGeminiPreviewQuota()) {
+      setPendingPreview({ documentId, profileId, name, mode, voice, model });
+      return;
+    }
+    await performPreview(name, mode, voice, model);
+  };
+
+  const confirmPreview = () => {
+    const pending = pendingPreview;
+    setPendingPreview(null);
+    if (!pending || pending.documentId !== documentId || pending.profileId !== profileId) return;
+    previewQuotaAcknowledged.current = true;
+    acknowledgeGeminiPreviewQuota();
+    void performPreview(pending.name, pending.mode, pending.voice, pending.model);
+  };
+
+  useEffect(() => { setPendingPreview(null); }, [isOpen, documentId, profileId, workerMode]);
 
   const addCharacter = () => {
     if (!characterMap) return;
@@ -550,12 +583,24 @@ export function MultiVoiceCharacterModal({
   if (!isOpen) return null;
 
   return (
+    <>
+    <ModalFrame open={Boolean(pendingPreview)} onClose={() => setPendingPreview(null)} className="z-[80]">
+      <ModalTitle>Voice previews use your daily Gemini TTS quota</ModalTitle>
+      <p className="mt-3 text-sm text-text-soft">Generating this preview uses 1 Gemini TTS API request. If your free allowance is 10 uses per day, that is 1 of those 10 uses. Cached previews do not make a new synthesis request. Your actual allowance depends on your Google project and tier.</p>
+      <p className="mt-3 text-sm text-text-soft">We recommend auditioning voices in Google AI Studio first, then assigning your chosen voice here.</p>
+      <a href={GEMINI_VOICE_AUDITION_URL} target="_blank" rel="noopener noreferrer" className="mt-3 inline-block text-sm font-semibold text-accent hover:underline">Hear voices in Google AI Studio ↗</a>
+      <div className="mt-5 flex justify-end gap-3">
+        <Button variant="outline" onClick={() => setPendingPreview(null)}>Cancel</Button>
+        <Button onClick={confirmPreview}>Play preview using API quota</Button>
+      </div>
+    </ModalFrame>
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-line p-5">
           <div>
             <h2 className="text-xl font-bold text-text-strong">{isCloudDrama ? 'Gemini Drama Cast' : 'Audio Drama Character Pre-Scan'}</h2>
             <p className="mt-1 text-sm text-text-soft">Find and review the speaking cast before Audio Drama generation.</p>
+            {isCloudDrama && <p className="mt-2 text-xs text-text-soft">Assigning voices does not play audio. Preview buttons use Gemini TTS API quota. <a href={GEMINI_VOICE_AUDITION_URL} target="_blank" rel="noopener noreferrer" className="font-semibold text-accent hover:underline">Audition voices in Google AI Studio ↗</a></p>}
           </div>
           <button type="button" onClick={onClose} className="rounded-full p-2 text-text-soft hover:bg-surface-raised hover:text-text-strong" aria-label="Close casting dialog">✕</button>
         </div>
@@ -777,9 +822,6 @@ export function MultiVoiceCharacterModal({
                                 delete entry.voiceAssignment;
                               }
                             });
-                            if (chosenVoice) {
-                              void handlePreview(character.name, isCloudDrama ? 'voice-only' : undefined, chosenVoice, character.ttsModel);
-                            }
                           }}
                           className="min-w-0 flex-1 rounded-lg border border-line bg-background p-2 text-sm text-foreground"
                         >
@@ -1044,5 +1086,6 @@ export function MultiVoiceCharacterModal({
         </div>
       </div>
     </div>
+    </>
   );
 }
