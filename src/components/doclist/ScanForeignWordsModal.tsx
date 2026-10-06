@@ -10,6 +10,7 @@ import {
   isFlaggedForReview,
   readGeminiManualReviewTerms,
   selectGeminiManualReviewWords,
+  GeminiManualReviewRowsMissingError,
   isMissingPronunciation,
   prepareForeignWordScanRows,
   sortForeignWordScanRows,
@@ -593,10 +594,24 @@ export function ScanForeignWordsModal({
     toast.success('Exported all words JSON and companion AI-INSTRUCTIONS.md.');
   };
 
-  const manualReviewWords = useMemo(() => {
-    try { return selectGeminiManualReviewWords(words, scanJobManualReviewTerms ?? []); }
-    catch { return null; }
+  const manualReviewSelection = useMemo(() => {
+    try {
+      return { words: selectGeminiManualReviewWords(words, scanJobManualReviewTerms ?? []), error: null };
+    } catch (error) {
+      if (!(error instanceof GeminiManualReviewRowsMissingError)) throw error;
+      return { words: null, error };
+    }
   }, [words, scanJobManualReviewTerms]);
+  const manualReviewWords = manualReviewSelection.words;
+  const manualReviewUnavailableReason = manualReviewSelection.error?.message;
+  useEffect(() => {
+    if (!isOpen || loading || scanJobStatus !== 'completed' || !manualReviewSelection.error) return;
+    console.warn('Gemini manual-review export unavailable', {
+      documentId: activeDocId, scanJobId,
+      missingTermCount: manualReviewSelection.error.missingTerms.length,
+      missingTerms: manualReviewSelection.error.missingTerms,
+    });
+  }, [isOpen, loading, scanJobStatus, activeDocId, scanJobId, manualReviewSelection]);
   const manualReviewCount = scanJobManualReviewTerms?.length
     ?? Math.max(0, scanJobProgress.completed - scanJobResolved);
   const downloadManualReviewJson = () => {
@@ -1159,8 +1174,13 @@ export function ScanForeignWordsModal({
                   {manualReviewCount > 0 && scanJobManualReviewTerms === null && (
                     <p className="text-xs text-soft">Legacy count is approximate. Rerun the pre-scan to populate the exact manual-review export.</p>
                   )}
+                  {manualReviewUnavailableReason && (
+                    <p role="status" id="manual-review-export-unavailable" className="text-xs text-text-soft">
+                      {manualReviewUnavailableReason}
+                    </p>
+                  )}
                   {Boolean(scanJobManualReviewTerms?.length) && (
-                    <button type="button" onClick={downloadManualReviewJson} disabled={!manualReviewWords || !activeDocId}
+                    <button aria-describedby={manualReviewUnavailableReason ? 'manual-review-export-unavailable' : undefined} type="button" onClick={downloadManualReviewJson} disabled={!manualReviewWords || !activeDocId}
                       className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
                       Export Manual Review JSON ({manualReviewCount})
                     </button>

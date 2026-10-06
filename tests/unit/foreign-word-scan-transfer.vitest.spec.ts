@@ -282,7 +282,7 @@ it('exports exactly 15 unresolved rows in queue order independently of 139 flags
   payload.words[0].omitDefinition = true;
   expect(parseForeignWordScanImport(payload, documentId, new Set(all.map((row) => row.word))))
     .toEqual([{ word: terms[0], definition: null }]);
-  expect(() => exportGeminiManualReviewScan(documentId, [], terms)).toThrow('row unavailable');
+  expect(() => exportGeminiManualReviewScan(documentId, [], terms)).toThrow('15 persisted terms could not be matched to the scan results. Rerun the pre-scan.');
   const guide = generateForeignWordAiInstructions({ exportMode: 'gemini_manual_review', totalWords: 15 });
   expect(guide).toContain('did not receive a resolved usable result');
   expect(guide).not.toContain('Handling Flagged Words');

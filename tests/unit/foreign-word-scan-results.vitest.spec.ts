@@ -1,4 +1,4 @@
-import { getGeminiManualReviewState, readGeminiManualReviewTerms, selectGeminiManualReviewWords } from '@/lib/shared/foreign-word-scan-results';
+import { GeminiManualReviewRowsMissingError, getGeminiManualReviewState, readGeminiManualReviewTerms, selectGeminiManualReviewWords } from '@/lib/shared/foreign-word-scan-results';
 import { describe, expect, test } from 'vitest';
 import {
   getAutomaticForeignWordIgnoreReason,
@@ -108,3 +108,19 @@ describe('foreign-word scan result preparation', () => {
   expect(readGeminiManualReviewTerms(undefined)).toBeNull();
   expect(readGeminiManualReviewTerms(['B', null, 3, 'D'])).toEqual(['B', 'D']);
  });
+
+
+test('reports every unmatched persisted term and refuses partial manual-review export', () => {
+  const rows = [{ word: 'available' }];
+  try {
+    selectGeminiManualReviewWords(rows, ['missing-one', 'available', 'missing-two']);
+    throw new Error('Expected incomplete export rejection');
+  } catch (error) {
+    expect(error).toBeInstanceOf(GeminiManualReviewRowsMissingError);
+    expect((error as GeminiManualReviewRowsMissingError).missingTerms).toEqual(['missing-one', 'missing-two']);
+    expect((error as Error).message).toBe('Manual-review export is unavailable because 2 persisted terms could not be matched to the scan results. Rerun the pre-scan.');
+  }
+  expect(() => selectGeminiManualReviewWords(rows, ['missing-one'])).toThrow('1 persisted term could not be matched');
+  expect(selectGeminiManualReviewWords(rows, [])).toEqual([]);
+  expect(selectGeminiManualReviewWords(rows, ['available'])).toEqual(rows);
+});

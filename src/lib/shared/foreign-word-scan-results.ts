@@ -213,16 +213,23 @@ export function getGeminiManualReviewState(queue: readonly string[], resolved: R
   return { manualReviewTerms, manualReviewCount: manualReviewTerms.length };
 }
 
+/** Exact export failures expose all unmatched terms without exporting a partial set. */
+export class GeminiManualReviewRowsMissingError extends Error {
+  constructor(public readonly missingTerms: readonly string[]) {
+    const count = missingTerms.length;
+    super(`Manual-review export is unavailable because ${count} persisted ${count === 1 ? 'term' : 'terms'} could not be matched to the scan results. Rerun the pre-scan.`);
+    this.name = 'GeminiManualReviewRowsMissingError';
+  }
+}
+
 /** Missing rows must never silently produce an incomplete allegedly exact export. */
 export function selectGeminiManualReviewWords<T extends ForeignWordScanResultRow>(
   words: readonly T[], terms: readonly string[],
 ): T[] {
   const byTerm = new Map(words.map((word) => [word.word, word]));
-  return terms.map((term) => {
-    const row = byTerm.get(term);
-    if (!row) throw new Error(`Manual review row unavailable: ${term}`);
-    return row;
-  });
+  const missingTerms = terms.filter((term) => !byTerm.has(term));
+  if (missingTerms.length) throw new GeminiManualReviewRowsMissingError(missingTerms);
+  return terms.map((term) => byTerm.get(term)!);
 }
 
 export function readGeminiManualReviewTerms(value: unknown): string[] | null {
