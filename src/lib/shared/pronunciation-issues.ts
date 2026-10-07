@@ -2,6 +2,7 @@ import { getKokoroPronunciationQualityWarnings, isKokoroSafePronunciation } from
 import { expandScholarEditorialWords, hasSplitScholarEditorialWord } from './scholar-editorial-words';
 import { validateSmartAudioOutput } from './smart-audio-cleanup';
 import { contextualPronunciationWord, normalizeRepairMarkup, pronunciationMarkupRegions } from './pronunciation-repair-markup';
+import { classifyForeignNarrationToken, containsForeignLexicalLetter, type ForeignNarrationTokenClassification } from './foreign-narration-token';
 
 export const PRONUNCIATION_REPAIR_RULE = 'pronunciation-repair:v1';
 export type PronunciationIssue = {
@@ -14,6 +15,7 @@ export type PronunciationIssue = {
   kind: 'formatting' | 'missing_pronunciation' | 'ocr_source' | 'contextual' | 'unsafe_pronunciation' | 'structural';
   replacement?: string;
   dictionaryWord?: string;
+  tokenClassification?: ForeignNarrationTokenClassification;
 };
 export type PronunciationPatch = { id: string; replacement: string };
 const TAG = /\[([^\]\r\n]+)\]\(\/([^/\r\n]+)\/\)/gu;
@@ -82,6 +84,7 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
   // retained outer brackets would manufacture nested pronunciation markup.
   // Restrict this to foreign text; exclude ordinary Markdown links.
   for (const match of text.matchAll(/\[[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ]+(?:[ \t]+[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ]+)*\](?!\()/gu)) {
+    if (!containsForeignLexicalLetter(match[0])) continue;
     add(match.index, match.index + match[0].length, 'Foreign word has brackets but no pronunciation.');
   }
   // Mask markup without shifting offsets, so bare-script and punctuation
@@ -98,7 +101,7 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
       if (adjacent && FOREIGN.test(adjacent[1])) add(tag.index, adjacent.index + adjacent[0].length, 'A complete foreign word is split across pronunciation markup.');
     }
     const expanded = contextualPronunciationWord(word) || expandScholarEditorialWords(word.replace(/\\/gu, ''));
-    const warnings = getKokoroPronunciationQualityWarnings(expanded, `/${tag[2]}/`);
+    const warnings = getKokoroPronunciationQualityWarnings(expanded, `/${tag[2]}/`, { mode: 'inline', text, start: tag.index, end: tag.index + tag[0].length });
     if (word.includes('\\')) warnings.push('Stray backslash in pronunciation label.');
     if (warnings.length) add(tag.index, tag.index + tag[0].length, warnings.join(' '));
     try { validateSmartAudioOutput(tag[0], { requirePronunciationTagsForForeignScripts: false }); }
@@ -114,10 +117,10 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
   for (const token of text.matchAll(/[^\s<>]+/gu)) {
     if (hasSplitScholarEditorialWord(token[0])) add(token.index, token.index + token[0].length, 'An editorial word is split across pronunciation tags.');
   }
-  for (const match of masked.matchAll(/[\p{Script=Greek}\p{Script=Hebrew}][\p{Script=Greek}\p{Script=Hebrew}\p{Mark}'’᾽᾿ʼ]*(?:\([\p{Script=Greek}\p{Script=Hebrew}\p{Mark}]+\)[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}'’᾽᾿ʼ]*)*/gu)) {
-    // A detached Greek elision mark is punctuation, not a pronounceable
-    // foreign word. Preserve it exactly and scan only lexical text.
-    if (/^[᾿᾽'’ʼ]+$/u.test(match[0])) continue;
+  for (const match of masked.matchAll(/[\p{Letter}][\p{Letter}\p{Mark}'’᾽᾿ʼ]*(?:\([\p{Letter}\p{Mark}]+\)[\p{Letter}\p{Mark}'’᾽᾿ʼ]*)*/gu)) {
+    // Unicode Script=Hebrew includes punctuation (maqaf, sof pasuq, etc.).
+    // Punctuation and unattached marks never start or join lexical findings.
+    if (!containsForeignLexicalLetter(match[0])) continue;
     add(match.index, match.index + match[0].length, 'Greek or Hebrew is outside a pronunciation tag.');
   }
   for (const match of masked.matchAll(/\(\s*\)|\\+(?=[\p{Script=Greek}\p{Script=Hebrew}])|\[[^\]\r\n]*\]\(\/[^\r\n)\]]*(?:\)|\]|$)/gu)) {
@@ -138,14 +141,20 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
     const value = text.slice(region.start, region.end);
     let replacement: string | undefined;
     let dictionaryWord: string | undefined;
+    let tokenClassification: ForeignNarrationTokenClassification | undefined;
     if (/^\(\s*\)$/u.test(value)) replacement = '';
     else {
       const formatted = normalizeRepairMarkup(value);
       const visible = formatted.replace(TAG, '$1').replace(/\\/gu, '').replace(/^\[([\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ]+)\]$/u, '$1');
+      tokenClassification = classifyForeignNarrationToken(visible, text, region.start, region.end);
       const expanded = expandScholarEditorialWords(visible);
       if (dictionary[expanded]) dictionaryWord = expanded;
       const pronunciation = lookup(expanded, dictionary);
-      if (pronunciation && !/[\s<>]/u.test(visible)) replacement = `[${visible}](${pronunciation})`;
+      if (tokenClassification.kind === 'contextual_letter_reference' && tokenClassification.pronunciation) {
+        replacement = `[${visible}](${tokenClassification.pronunciation})`;
+        dictionaryWord = undefined; // Local convention, never lexical provenance.
+      }
+      else if (pronunciation && !/[\s<>]/u.test(visible)) replacement = `[${visible}](${pronunciation})`;
       else if (/^\[[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}'’᾽᾿ʼ]+(?:[ \t]+[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}'’᾽᾿ʼ]+)+\]$/u.test(value)) {
         const words = value.slice(1, -1).split(/([ \t]+)/u);
         const tagged = words.map(word => {
@@ -165,14 +174,14 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
       // IPA-as-label nesting: [word](/[word](/ipa/)/) → [word](/ipa/).
       // Extract the innermost clean tag from a doubly-wrapped label.
       else {
-        const innerTag = /^\[[^\[\]\r\n]+\]\(\/\[([^\[\]\r\n]+)\]\(\/([^/\r\n]+)\/\)\/\)$/u.exec(value);
-        if (innerTag) {
-          const candidate = `[${innerTag[1]}](/${innerTag[2]}/)`;
+        const innerTag = /^\[([^\[\]\r\n]+)\]\(\/\[([^\[\]\r\n]+)\]\(\/([^/\r\n]+)\/\)\/\)$/u.exec(value);
+        if (innerTag && innerTag[1] === innerTag[2]) {
+          const candidate = `[${innerTag[2]}](/${innerTag[3]}/)`;
           if (!scanPronunciationIssues(candidate).length) replacement = candidate;
         }
       }
     }
-    const kind: PronunciationIssue['kind'] = /Mixed-script OCR|bare IPA/iu.test(region.reason)
+    const kind: PronunciationIssue['kind'] = tokenClassification?.kind === 'contextual_letter_reference' ? 'contextual' : /Mixed-script OCR|bare IPA|unsupported or mixed writing system|mixes writing systems/iu.test(region.reason)
       ? 'ocr_source'
       : /Grammatical suffix|elision/iu.test(region.reason) || /^[γδ][’'᾽᾿ʼ]$/u.test(value) || /^\[[γδ][’'᾽᾿ʼ]\]/u.test(value)
         ? 'contextual'
@@ -183,7 +192,7 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
             : /Kokoro|pronunciation covers|Dictionary word|standalone|stress|syllable/iu.test(region.reason)
               ? 'unsafe_pronunciation'
               : 'structural';
-    return { ...region, id: String(index), text: value, kind, dictionaryWord, context: text.slice(Math.max(0, region.start - 180), Math.min(text.length, region.end + 180)), ...(replacement !== undefined ? { replacement } : {}) };
+    return { ...region, id: String(index), text: value, kind, dictionaryWord, tokenClassification, context: text.slice(Math.max(0, region.start - 180), Math.min(text.length, region.end + 180)), ...(replacement !== undefined ? { replacement } : {}) };
   });
 }
 
@@ -230,9 +239,13 @@ function isMalformedMarkupLexicallyEquivalent(issue: PronunciationIssue, replace
 
 export type RepairValidationOptions = { sourceText?: string; allowRemaining?: boolean; allowSourceEvidenceOverride?: boolean | ((issue: PronunciationIssue) => boolean) };
 
-function visibleForeign(text: string): string {
-  return normalizeRepairMarkup(text).replace(TAG, '$1').replace(/\[([^\]\r\n]+)\]\(\/[^\r\n)]*(?:\)|$)/gu, '$1')
-    .normalize('NFC').match(/[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}]+/gu)?.join(' ') || '';
+function visibleSource(text: string): string {
+  // Keep all source scripts, punctuation and whitespace significant. Only
+  // recognized pronunciation syntax may disappear, including heteronym tags.
+  return normalizeRepairMarkup(text).replace(TAG, '$1')
+    .replace(/\[([^\]\r\n]+)\]\(!?\/[^\r\n)]*(?:\)|$)/gu, '$1')
+    .replace(/^\[([\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ \t]+)\]$/u, '$1')
+    .normalize('NFC');
 }
 
 function nestedSourceReconstruction(original: string, replacement: string, sourceText = ''): boolean {
@@ -267,11 +280,14 @@ function assertSourceWords(original: string, replacement: string, sourceText?: s
     // Structural deduplication: [word](/[word](/ipa/)/) → [word](/ipa/).
     // The IPA slot itself contains a complete tag; collapsing to that inner tag
     // changes nothing semantically. No source-text evidence is required.
-    const innerTag = /^\[[^\[\]\r\n]+\]\(\/\[([^\[\]\r\n]+)\]\(\/([^/\r\n]+)\/\)\/\)$/u.exec(original);
-    if (innerTag && replacement === `[${innerTag[1]}](/${innerTag[2]}/)` && !scanPronunciationIssues(replacement).length) return;
+    const innerTag = /^\[([^\[\]\r\n]+)\]\(\/\[([^\[\]\r\n]+)\]\(\/([^/\r\n]+)\/\)\/\)$/u.exec(original);
+    if (innerTag && innerTag[1] === innerTag[2] && replacement === `[${innerTag[2]}](/${innerTag[3]}/)` && !scanPronunciationIssues(replacement).length) return;
     throw new Error('Nested repair requires verified source evidence for the complete word sequence.');
   }
-  if (visibleForeign(original) === visibleForeign(replacement)) return;
+  if (visibleSource(original) === visibleSource(replacement)) return;
+  // Existing narrowly defined structural fixes do not modify lexical text.
+  if (/^\(\s*\)$/u.test(original) && replacement === '') return;
+  if (original.startsWith('[[') && original.slice(1) === replacement) return;
   if (sourceSupportedReconstruction(original, replacement, sourceText) || nestedSourceReconstruction(original, replacement, sourceText)) return;
   throw new Error('Repair changed source words or word order without verified source evidence.');
 }

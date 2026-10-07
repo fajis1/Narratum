@@ -20,3 +20,13 @@ test('uses retained rejected source and never allows partial output into recordi
   expect(mocks.read).toHaveBeenCalledWith('book', 'owner', '0001__pronunciation_failure.json', null);
   await expect(assertStoredPronunciationRepair({ ...input, previous: 'τὸ θεῷ', proposed: '[τὸ](/toʊ/) θεῷ' })).rejects.toThrow('remain');
 });
+
+test('approval/recording accepts contextual letter names and preserves Hebrew punctuation', async () => {
+  const previous = 'The Θ edition: [ולא](/vəloʊ/)־למדתי׃';
+  const proposed = 'The [Θ](/θeɪtə/) edition: [ולא](/vəloʊ/)־[למדתי](/lɑmɑdti/)׃';
+  await expect(assertStoredPronunciationRepair({ ...input, previous, proposed })).resolves.toBeUndefined();
+  expect(mocks.read).not.toHaveBeenCalled();
+  for (const changed of [proposed.replace('־', '-'), proposed.replace('׃', '.'), proposed.replace('למדתי', 'בינת'), proposed.replace('Θ', 'Σ')]) {
+    await expect(assertStoredPronunciationRepair({ ...input, previous, proposed: changed })).rejects.toThrow();
+  }
+});

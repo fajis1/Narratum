@@ -143,3 +143,25 @@ test('retains the original chapter failure if diagnostic storage itself fails', 
   const stored = mocks.updates.filter(update => update.settingsJson).at(-1)!.settingsJson as { results: { diagnosticsUnavailable: string }[] };
   expect(stored.results[0].diagnosticsUnavailable).toContain('Diagnostic storage failed');
 });
+
+test('finalizes an all-accounted-for 100% checkpoint with failures and no retry', async () => {
+  const checkpoint = { ...job(), progress: 100, completedAt: null, settingsJson: { ...settings(), results: [
+    { fileName: chapters[0].fileName, runId: 'complete', requestId: 'one' },
+    { fileName: chapters[1].fileName, error: 'Validation failed', requestId: 'two' },
+  ] } };
+  await processPronunciationRepairJob(checkpoint);
+  expect(mocks.propose).not.toHaveBeenCalled();
+  expect(mocks.updates.at(-1)).toMatchObject({ status: 'error', progress: 100, completedAt: expect.any(Number), error: '1 chapter repairs failed; review individual errors and retry those chapters.' });
+  expect(mocks.updates.at(-1)?.settingsJson).not.toHaveProperty('nextAttemptAt');
+});
+
+test('a blocked final chapter remains queued with a real future retry and no completion timestamp', async () => {
+  const checkpoint = { ...job(), completedAt: 123, settingsJson: { ...settings(), results: [{ fileName: chapters[0].fileName, runId: 'complete', requestId: 'one' }] } };
+  mocks.propose.mockImplementation(async ({ onDiagnostics }) => {
+    onDiagnostics({ version: 1, promptVersion: 9, stage: 'gemini-response', apiBlocked: true, nextAttemptAt: Date.now() + 3600000 });
+    throw new Error('Unavailable');
+  });
+  await processPronunciationRepairJob(checkpoint);
+  expect(mocks.updates.at(-1)).toMatchObject({ status: 'queued', completedAt: null, error: 'Gemini API blocked; repairs deferred until the saved retry time.' });
+  expect((mocks.updates.at(-1)?.settingsJson as { nextAttemptAt: number }).nextAttemptAt).toBeGreaterThan(Date.now() + 3500000);
+});

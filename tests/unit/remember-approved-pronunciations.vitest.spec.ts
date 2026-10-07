@@ -72,3 +72,7 @@ test('overwrites broken dictionary entries containing whitespace or malformed IP
   const saved = JSON.parse(mocks.update.mock.calls[0][0].dataJson);
   expect(saved.smartAudioLexicon.entries['λόγος'].pronunciation).toBe('/lɒɡɒs/');
 });
+
+test('approved contextual sigla never become reusable lexical dictionary entries', () => {
+  expect(approvedPronunciationCandidates([{ previousText: 'The Θ edition and Σ manuscript.', proposedText: 'The [Θ](/θeɪtə/) edition and [Σ](/sɪɡmə/) manuscript.' }]).entries).toEqual({});
+});

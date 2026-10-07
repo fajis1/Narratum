@@ -320,3 +320,47 @@ describe('pronunciation repair service', () => {
     await expect(resumeRepairedPronunciationJob('book', 'user', '0107__rejected.txt')).rejects.toThrow('wait for its recording');
   });
 });
+
+test('repairs repeated contextual sigla before resolving keys or calling Gemini', async () => {
+  const original = Array.from({ length: 24 }, (_, index) => `Reference ${index}: the Θ edition.`).join('\n');
+  const input = seed(original);
+  mocks.profile.pronunciations = { Θ: '/bad/' };
+  let diagnostics: import('@/lib/server/audiobooks/pronunciation-repair-diagnostics').RepairDiagnostics | undefined;
+  const result = await proposePronunciationRepair({ ...input, onDiagnostics: value => { diagnostics = value; } });
+  expect(result.unresolvedCount).toBe(0);
+  expect(mocks.gemini).not.toHaveBeenCalled();
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  expect(diagnostics?.findings).toHaveLength(24);
+  expect(diagnostics?.findings?.every(finding => finding.outcome === 'resolved' && finding.source === 'contextual-letter-name' && finding.validationScope === 'contextual-only' && !finding.dictionaryWord)).toBe(true);
+  const saved = mocks.insert.mock.calls[0][0].proposedText as string;
+  expect(saved.replace(/\[([^\]]+)\]\(\/[^/]+\/\)/gu, '$1')).toBe(original);
+});
+
+test.each(['׃ ־ ׀ ׆', '[אדע](/ɑdɑ/)׃'])('punctuation-only false positives never invoke Gemini: %s', text => {
+  return expect(proposePronunciationRepair(seed(text))).rejects.toThrow('No pronunciation issues').then(() => {
+    expect(mocks.gemini).not.toHaveBeenCalled();
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  });
+});
+
+test('approved dictionary repairs retain maqaf and sof pasuq without Gemini', async () => {
+  mocks.profile.pronunciations = { 'למדתי': '/lɑmɑdti/', 'בינת': '/binɑt/' };
+  const input = seed('[ולא](/vəloʊ/)־למדתי׃ ־בינת');
+  expect((await proposePronunciationRepair(input)).unresolvedCount).toBe(0);
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  expect(mocks.insert.mock.calls[0][0].proposedText).toBe('[ולא](/vəloʊ/)־[למדתי](/lɑmɑdti/)׃ ־[בינת](/binɑt/)');
+});
+
+test.each([
+  [503, 'UNAVAILABLE', '120'],
+  [429, 'RESOURCE_EXHAUSTED', '7200'],
+])('HTTP %s remains API-blocked, with provider retry timing rather than linguistic ambiguity', async (status, apiStatus, retryAfter) => {
+  const onDiagnostics = vi.fn();
+  mocks.fetch.mockResolvedValue(Response.json({ error: { code: status, status: apiStatus, message: 'private provider message' } }, { status, headers: { 'Retry-After': retryAfter } }));
+  await expect(proposePronunciationRepair({ ...seed('Read θεῷ.'), onDiagnostics })).rejects.toThrow('Gemini API blocked');
+  const diagnostics = onDiagnostics.mock.calls[0][0];
+  expect(diagnostics).toMatchObject({ requestedModel: expect.any(String), httpStatus: status, apiBlocked: true, findings: [{ outcome: 'api_blocked' }], attempts: [{ keyRole: 'primary', status, errorDetails: { apiStatus, retryAfterMs: Number(retryAfter) * 1000 } }] });
+  expect(diagnostics.findings[0].reasons).toEqual(['No usable replacement obtained because the Gemini request was blocked. This does not establish linguistic ambiguity.']);
+  expect(diagnostics.nextAttemptAt).toBeGreaterThan(Date.now() + Math.max(299000, Number(retryAfter) * 1000 - 1000));
+  expect(diagnostics.rounds).toEqual([{ round: 1, outcome: 'api_blocked' }]);
+});

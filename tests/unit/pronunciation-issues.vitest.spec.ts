@@ -392,3 +392,60 @@ describe('targeted pronunciation scan and patches', () => {
   });
 
 });
+
+describe('scholarly references and lexical Unicode scanning', () => {
+  test.each(['The statement is distinctive to the Θ edition.', 'Dan. Θ', 'Daniel chapter 4 verse 33 Θ', 'manuscript Σ', 'the letter θ'])('repairs a letter reference locally and preserves source: %s', original => {
+    const issues = scanPronunciationIssues(original);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ kind: 'contextual', tokenClassification: { kind: 'contextual_letter_reference' } });
+    expect(issues[0].dictionaryWord).toBeUndefined();
+    expect(issues[0].replacement).toBeDefined();
+    const proposed = applyPronunciationPatches(original, issues, [{ id: '0', replacement: issues[0].replacement! }]);
+    expect(proposed.replace(/\[([^\]]+)\]\(\/[^/]+\/\)/gu, '$1')).toBe(original);
+    expect(scanPronunciationIssues(proposed)).toEqual([]);
+    expect(() => assertPronunciationRepair(original, proposed)).not.toThrow();
+  });
+  test('does not classify a random OCR consonant as a letter name', () => {
+    expect(scanPronunciationIssues('Broken θ fragment.')[0]).toMatchObject({ kind: 'missing_pronunciation' });
+    expect(scanPronunciationIssues('Broken θ fragment.')[0].replacement).toBeUndefined();
+    expect(scanPronunciationIssues('Broken [θ](/θeɪtə/) fragment.')[0].reason).toContain('single stray Greek consonant');
+    expect(scanPronunciationIssues('the [Θ](/sɪɡmə/) edition')[0].reason).toContain('requires its spoken letter name');
+  });
+  test.each(['׃', '־', '׀', '׆', '\u05b0', '\u0313', '᾿', '׃ ־ ׀ ׆'])('never flags nonlexical punctuation or combining marks: %s', text => {
+    expect(scanPronunciationIssues(text)).toEqual([]);
+  });
+  test.each([['למדתי', '/lɑmɑdti/'], ['בינת', '/binɑt/']])('preserves Hebrew separators around lexical %s', (word, ipa) => {
+    const original = `"([ולא](/vəloʊ/)־${word})", [אדע](/ɑdɑ/)׃`;
+    const issues = scanPronunciationIssues(original);
+    expect(issues.map(issue => issue.text)).toEqual([word]);
+    const proposed = applyPronunciationPatches(original, issues, [{ id: '0', replacement: `[${word}](${ipa})` }]);
+    expect(proposed).toBe(`"([ולא](/vəloʊ/)־[${word}](${ipa}))", [אדע](/ɑdɑ/)׃`);
+    expect(() => assertPronunciationRepair(original, proposed)).not.toThrow();
+    for (const punctuation of ['־', '׃', ',', '"', '(', ')']) {
+      expect(() => assertPronunciationRepair(original, proposed.replace(punctuation, ''))).toThrow();
+    }
+  });
+  test('recognizes combining marks without normalizing the saved source', () => {
+    const text = 'Read שָׁלוֹם and α\u0313νεμος.';
+    expect(scanPronunciationIssues(text).map(issue => issue.text)).toEqual(['שָׁלוֹם', 'α\u0313νεμος']);
+  });
+  test('retains partial-word and unsupported-script safety', () => {
+    expect(scanPronunciationIssues('[περι](/pɛr/)')[0].reason).toContain('covers only part');
+    const original = '[кардиа](/kɑrdiɑ/)';
+    expect(scanPronunciationIssues(original)[0]).toMatchObject({ kind: 'ocr_source', tokenClassification: { kind: 'source_damaged' } });
+    expect(() => assertPronunciationRepair(original, '[καρδια](/kɑrdiɑ/)')).toThrow('source');
+    expect(() => applyPronunciationPatches(original, scanPronunciationIssues(original), [{ id: '0', replacement: '[καρδια](/kɑrdiɑ/)' }])).toThrow('source');
+  });
+  test('cannot change punctuation inside a malformed phrase repair region', () => {
+    const original = '[שלום, שלום](/ʃɑloʊm/)';
+    const issues = scanPronunciationIssues(original);
+    expect(() => applyPronunciationPatches(original, issues, [{ id: '0', replacement: '[שלום](/ʃɑloʊm/) [שלום](/ʃɑloʊm/)' }])).toThrow('source');
+  });
+});
+
+test('nested structural deduplication cannot substitute a different source label', () => {
+  const original = '[καρδια](/[περι](/pɛri/)/)';
+  const issues = scanPronunciationIssues(original);
+  expect(issues[0].replacement).toBeUndefined();
+  expect(() => applyPronunciationPatches(original, issues, [{ id: '0', replacement: '[περι](/pɛri/)' }])).toThrow('verified source evidence');
+});

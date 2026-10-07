@@ -157,7 +157,7 @@ export async function processPronunciationRepairJob(job: typeof audiobookJobs.$i
         if (exhausted) delete settings.nextAttemptAt;
         await db.update(audiobookJobs).set({ settingsJson: settings, status: exhausted ? 'error' : 'queued',
           error: exhausted ? `Gemini retry limit reached—${settings.chapters.length - settings.results.length} chapters still unprocessed, plus an API-blocked chapter. Saved proposals are retained; resume pending repairs when ready.` : 'Gemini API blocked; repairs deferred until the saved retry time.',
-          updatedAt: Date.now(), ...(exhausted ? { completedAt: Date.now() } : {}) }).where(ownedWhere);
+          updatedAt: Date.now(), completedAt: exhausted ? Date.now() : null }).where(ownedWhere);
         return;
       }
     }

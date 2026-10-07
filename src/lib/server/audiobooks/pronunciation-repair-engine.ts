@@ -126,7 +126,7 @@ export async function repairPronunciationText(input: {
     dictionaryWord: issues.find(issue => issue.id === finding.id)?.dictionaryWord,
     dictionarySource: provenance[issues.find(issue => issue.id === finding.id)?.dictionaryWord || ''],
     dictionaryPronunciation: dictionary[issues.find(issue => issue.id === finding.id)?.dictionaryWord || ''],
-    source: manual.has(finding.id) ? 'manual' : aiIds.has(finding.id) ? 'gemini' : provenance[issues.find(issue => issue.id === finding.id)?.dictionaryWord || ''] || 'formatting',
+    source: manual.has(finding.id) ? 'manual' : aiIds.has(finding.id) ? 'gemini' : provenance[issues.find(issue => issue.id === finding.id)?.dictionaryWord || ''] || (issues.find(issue => issue.id === finding.id)?.tokenClassification?.kind === 'contextual_letter_reference' ? 'contextual-letter-name' : 'formatting'),
     reasons: finding.reasons.length && diagnostics.findings?.find(old => old.id === finding.id)?.reasons.length
       ? diagnostics.findings.find(old => old.id === finding.id)!.reasons : finding.reasons,
   }));

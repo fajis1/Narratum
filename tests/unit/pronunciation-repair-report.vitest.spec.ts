@@ -55,3 +55,12 @@ test('does not count retained failed proposals or advertise a retry for a termin
   expect(report?.nextAttemptAt).toBeUndefined();
   expect(report?.chapters[0]).toMatchObject({ outcome: 'failed', proposalAction: 'retained', proposalRunId: 'old' });
 });
+
+test('preserves optional contextual classification while reading legacy diagnostic artifacts', async () => {
+  const file = `pronunciation_repair_${id}.json`;
+  mocks.rows = [{ id, status: 'completed', progress: 100, settingsJson: { jobType: 'pronunciation-repair', chapters: [{}], results: [{ fileName: '0001__text.txt', runId: 'saved', unresolvedCount: 0, diagnosticsFile: file }] } }];
+  mocks.get.mockResolvedValue(Buffer.from(JSON.stringify({ version: 1, promptVersion: 9, stage: 'complete', findings: [{ id: '0', start: 4, end: 5, original: 'Θ', context: 'The Θ edition.', scanReason: 'Greek or Hebrew is outside a pronunciation tag.', issueKind: 'contextual', source: 'contextual-letter-name', validationScope: 'contextual-only', tokenClassification: { kind: 'contextual_letter_reference', script: 'Greek', reason: 'Adjacent scholarly label.' }, reasons: [], outcome: 'resolved' }] })));
+  const report = await pronunciationRepairReport('book', 'owner', id);
+  expect(report?.chapters[0]).toMatchObject({ unresolvedCount: 0, needsReview: false, diagnostics: { findings: [{ validationScope: 'contextual-only', tokenClassification: { kind: 'contextual_letter_reference' } }] } });
+  expect(report?.retryScheduleActive).toBe(false);
+});

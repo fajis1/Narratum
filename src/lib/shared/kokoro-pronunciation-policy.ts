@@ -1,5 +1,6 @@
 import { getSupportedSourceScripts, hasUnsupportedSourceLetters, isForeignSourceWord, getForeignWordSourceRepairReasons } from './foreign-word-source-integrity';
 import type { SmartAudioProfile } from '@/types/client';
+import { classifyForeignNarrationToken } from './foreign-narration-token';
 
 export const KOKORO_PRONUNCIATION_POLICY_VERSION = 6;
 
@@ -167,10 +168,25 @@ function pronunciationTokens(pronunciation: string): string[] {
     .map((token) => token.toLowerCase());
 }
 
+export type PronunciationValidationContext =
+  | { mode: 'dictionary' }
+  | { mode: 'inline'; text: string; start: number; end: number };
+
 export function getKokoroPronunciationQualityWarnings(
   word: string,
   pronunciation: unknown,
+  context: PronunciationValidationContext = { mode: 'dictionary' },
 ): string[] {
+  // Context is recomputed from the chapter, never accepted as an AI assertion.
+  // Dictionary callers retain every lexical/OCR safeguard below.
+  if (context.mode === 'inline') {
+    const token = classifyForeignNarrationToken(word, context.text, context.start, context.end);
+    if (token.kind === 'contextual_letter_reference' && token.pronunciation) {
+      const warnings = getKokoroPronunciationCompatibilityErrors(pronunciation);
+      if (pronunciation !== token.pronunciation) warnings.push('Contextual Greek letter reference requires its spoken letter name.');
+      return warnings;
+    }
+  }
   const warnings = [
     ...getKokoroPronunciationWordWarnings(word),
     ...getKokoroPronunciationCompatibilityErrors(pronunciation),

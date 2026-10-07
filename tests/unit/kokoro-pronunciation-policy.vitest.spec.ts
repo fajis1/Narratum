@@ -259,3 +259,17 @@ describe('Kokoro pronunciation policy', () => {
   expect(scanRoute).toContain('const prompt = `${buildKokoroPronunciationInstructions(activeProfile)}');
   expect(getKokoroPronunciationCompatibilityErrors('/kuˌlo/')).toContain('Secondary stress marker ˌ is not supported.');
  });
+
+test('keeps dictionary letter keys strict while validating proven inline letter references', () => {
+  const text = 'The Θ edition.';
+  const context = { mode: 'inline' as const, text, start: 4, end: 5 };
+  expect(getKokoroPronunciationWordWarnings('Θ')).toContain('Dictionary word is a single stray Greek consonant.');
+  expect(isKokoroSafePronunciation('Θ', '/θeɪtə/')).toBe(false);
+  expect(filterKokoroCompatiblePronunciationRecord({ Θ: '/θeɪtə/' })).toEqual({});
+  expect(getKokoroPronunciationQualityWarnings('Θ', '/θeɪtə/', context)).toEqual([]);
+  expect(getKokoroPronunciationQualityWarnings('Θ', '/ˈθeɪtə/', context)).toContain('Primary stress marker ˈ is not supported.');
+  expect(getKokoroPronunciationQualityWarnings('Θ', '/sɪɡmə/', context)).toContain('Contextual Greek letter reference requires its spoken letter name.');
+  expect(getKokoroPronunciationQualityWarnings('θ', '/θeɪtə/', { mode: 'inline', text: 'Broken θ fragment.', start: 7, end: 8 })).toContain('Dictionary word is a single stray Greek consonant.');
+  for (const [word, ipa] of [['μορφη', '/mɒrfeɪ/'], ['μου', '/mu/']]) expect(getKokoroPronunciationQualityWarnings(word, ipa)).toEqual([]);
+  expect(getKokoroPronunciationQualityWarnings('περι', '/pɛr/')).toContain('Pronunciation covers only part of the Greek source word.');
+});

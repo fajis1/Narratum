@@ -55,3 +55,14 @@ test('redacts credentials and marks bounded captures as truncated', () => {
   expect(JSON.stringify(report)).not.toContain('hidden');
   expect(report.validatorReason!.length).toBeLessThan(17000);
 });
+
+test('contextual checks use real chapter context and retain classification/validator diagnostics', () => {
+  const text = 'The Θ edition.';
+  const issues = scanPronunciationIssues(text);
+  const good = inspectRepairPatches(text, issues, [{ id: '0', replacement: '[Θ](/θeɪtə/)' }], new Set());
+  expect(good[0]).toMatchObject({ reasons: [], source: 'contextual-letter-name', validationScope: 'contextual-only', tokenClassification: { kind: 'contextual_letter_reference', script: 'Greek', reason: expect.any(String) } });
+  const bad = inspectRepairPatches(text, issues, [{ id: '0', replacement: '[Θ](/sɪɡmə/)' }], new Set(['0']));
+  expect(bad[0].reasons).toContain('Contextual Greek letter reference requires its spoken letter name.');
+  const fake = { ...scanPronunciationIssues('Broken θ fragment.')[0], tokenClassification: issues[0].tokenClassification };
+  expect(inspectRepairPatches('Broken θ fragment.', [fake], [{ id: '0', replacement: '[θ](/θeɪtə/)' }], new Set(['0']))[0].reasons.join(' ')).toContain('single stray Greek consonant');
+});
