@@ -167,7 +167,7 @@ describe('Smart Audio data-integrity guards', () => {
   test('exposes the Batch Refine changelog beside the active Review progress banner', () => {
     const listener = source('src/app/(app)/listen/[bookId]/page.tsx');
     expect(listener).toContain('<ReviewJobStatus');
-    expect(listener).toContain("reviewChanges={activeJobSettings.jobType === 'batch-refine'}");
+    expect(listener).toContain("reviewChanges={jobPresentation.reviewChanges}");
     expect(listener).toContain('/api/audiobooks/batch-refine/changelog?bookId=');
     expect(listener).toContain('onCancel={() => void cancelActiveJob()}');
     // Render/menu interaction contracts live in audiobook-review-components and

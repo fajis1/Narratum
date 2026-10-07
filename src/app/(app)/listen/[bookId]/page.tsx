@@ -1,4 +1,6 @@
 "use client";
+import { submittedChapterIsCurrent } from '@/components/audiobooks/review/review-editor-snapshot';
+import { reviewJobPresentation, isActiveReviewJob } from '@/components/audiobooks/review/review-job-presentation';
 
 import { useState, useEffect, useRef, use, useMemo, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -99,6 +101,8 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [isTextLoading, setIsTextLoading] = useState(false);
   const [audioRevision, setAudioRevision] = useState(0);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isAiCleaning, setIsAiCleaning] = useState(false);
+  const [confirmOriginalClean, setConfirmOriginalClean] = useState(false);
   const [isRebuildingAll, setIsRebuildingAll] = useState(false);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isPronunciationModalOpen, setIsPronunciationModalOpen] = useState(false);
@@ -196,6 +200,8 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     }
     return activeJob.settingsJson as Record<string, unknown>;
   }, [activeJob]);
+  const jobPresentation = reviewJobPresentation(activeJobSettings.jobType);
+  const hasActiveBookJob = isActiveReviewJob(activeJob?.status);
   const activeBatchRefineRunId = typeof activeJobSettings.batchRefineRunId === 'string'
     ? activeJobSettings.batchRefineRunId
     : batchRefineRunId;
@@ -492,6 +498,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   const handleRegenerate = async (textOverride?: string) => {
+    if (isAiCleaning || isRegenerating) return false;
     const textToRecord = textOverride ?? textWithSpeakerDrafts();
     if (!textToRecord || !currentChapter) return false;
     const submittedIndex = currentChapter.index;
@@ -522,8 +529,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       
       setAudioRevision(value => value + 1);
       toast.success("Saved chapter text and queued re-recording");
-      if (editorSnapshot.current.index === submittedIndex && (editorSnapshot.current.text === submittedEditor || (textOverride !== undefined && editorSnapshot.current.text === textOverride))
-        && speakerDraftSnapshot.current === submittedDrafts) {
+      if (submittedChapterIsCurrent(editorSnapshot.current, { index: submittedIndex, text: submittedEditor, drafts: submittedDrafts }, speakerDraftSnapshot.current, textOverride)) {
         savedChapterText.current = textToRecord;
         editorSnapshot.current = { index: submittedIndex, text: textToRecord, dirty: false };
         setChapterText(textToRecord);
@@ -687,6 +693,10 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   const handleRebuildAllModified = async () => {
+    if (editorSnapshot.current.dirty || hasActiveBookJob || isAiCleaning || isRegenerating || isFixingAll || isRebuildingAll) {
+      toast.error("Save or discard chapter changes and wait for the current operation to finish first.");
+      return;
+    }
     setIsRebuildingAll(true);
     try {
       const res = await fetch('/api/audiobooks/batch-regenerate', { 
@@ -698,6 +708,10 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         const data = await res.json();
         if (data.needsRegeneration && data.needsRegeneration.length > 0) {
            const chunkCount = data.needsRegeneration[0].modifiedChunks;
+           if (editorSnapshot.current.dirty) {
+             toast.error("Save or discard this chapter's changes before recording saved text.");
+             return;
+           }
            const startRes = await fetch('/api/audiobooks/batch-regenerate', { 
              method: 'POST', 
              headers: { 'Content-Type': 'application/json' },
@@ -740,6 +754,10 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   const handleBatchRefine = async () => {
+    if (editorSnapshot.current.dirty || hasActiveBookJob || isAiCleaning || isRegenerating || isFixingAll || isRebuildingAll) {
+      toast.error("Save or discard chapter changes and wait for the current operation to finish first.");
+      return;
+    }
     if (!batchRefineRule.trim()) return toast.error("Please enter a rule.");
     setIsBatchRefining(true);
     try {
@@ -784,6 +802,10 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   const handleForceRebuildAll = async () => {
+    if (editorSnapshot.current.dirty || hasActiveBookJob || isAiCleaning || isRegenerating || isFixingAll || isRebuildingAll) {
+      toast.error("Save or discard chapter changes and wait for the current operation to finish first.");
+      return;
+    }
     setShowForceRecord(false);
     setIsRebuildingAll(true);
     try {
@@ -806,6 +828,10 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   const handleFixAllAbbreviations = async () => {
+    if (editorSnapshot.current.dirty || hasActiveBookJob || isAiCleaning || isRegenerating || isFixingAll || isRebuildingAll) {
+      toast.error("Save or discard chapter changes and wait for the current operation to finish first.");
+      return;
+    }
     setIsFixingAll(true);
     try {
       const res = await fetch('/api/audiobooks/fix-abbreviations-all', {
@@ -833,35 +859,49 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     }
   };
 
-  const handleAiClean = () => {
-    const textToSend = cleanTarget === 'edited' ? textWithSpeakerDrafts() : (originalText || chapterText);
-    if (!textToSend) return;
-    setIsRegenerating(true);
-    fetch(`/api/audiobook/chapter`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        bookId,
-        documentId: bookId,
-        chapterIndex: currentChapter.index,
-        chapterTitle: currentChapter.title,
-        text: textToSend,
-        useSmartAudio: true,
-        settings: { smartAudioProfileId: selectedProfileId, scholarAutoScan: true },
-        format: currentChapter.format,
-      }),
-              }).then(async res => {
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      console.error("API error text:", txt);
-      throw new Error(`Failed to queue AI cleanup: ${res.status} ${txt.substring(0, 100)}`);
+  const handleAiClean = async (confirmedOriginal = false) => {
+    if (isAiCleaning || isRegenerating) return;
+    if (cleanTarget === 'original' && isDirty && !confirmedOriginal) {
+      setConfirmOriginalClean(true);
+      return;
     }
-    toast.success("Queued for AI Cleanup! (Waiting for worker...)");
-        setShowAiClean(false);
-              }).catch(err => {
-    console.error(err);
-    toast.error(err.message || "Failed to trigger AI cleanup");
-              }).finally(() => setIsRegenerating(false));
+    const textToSend = cleanTarget === 'edited' ? textWithSpeakerDrafts() : originalText;
+    if (!textToSend || !currentChapter) return;
+    const submitted = { index: currentChapter.index, text: chapterText, drafts: JSON.stringify(speakerTextDrafts) };
+    setConfirmOriginalClean(false);
+    setIsAiCleaning(true);
+    try {
+      const response = await fetch('/api/audiobook/chapter', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bookId, documentId: bookId, chapterIndex: submitted.index,
+          chapterTitle: currentChapter.title, text: textToSend, useSmartAudio: true,
+          settings: { smartAudioProfileId: selectedProfileId, scholarAutoScan: true }, format: currentChapter.format }),
+      });
+      if (!response.ok) throw new Error(`AI Clean failed (${response.status}). Your edits have been preserved.`);
+      const saved = await fetch(`/api/audiobook/text?bookId=${encodeURIComponent(bookId)}&chapterIndex=${submitted.index}`, { cache: 'no-store' });
+      if (!saved.ok) throw new Error('The chapter was cleaned, but its saved text could not be reloaded. Your local edits have been preserved.');
+      const authoritativeText = await saved.text();
+      setAudioRevision(value => value + 1);
+      // A newer local edit stays dirty, but Revert must still use the latest saved version.
+      if (editorSnapshot.current.index === submitted.index) savedChapterText.current = authoritativeText;
+      if (submittedChapterIsCurrent(editorSnapshot.current, submitted, speakerDraftSnapshot.current)) {
+        // Invalidate any earlier poll before installing the authoritative result.
+        textRequestSequence.current += 1;
+        savedChapterText.current = authoritativeText;
+        editorSnapshot.current = { index: submitted.index, text: authoritativeText, dirty: false };
+        setChapterText(authoritativeText);
+        setHasEditedText(false);
+        setHasSpeakerChanges(false);
+        setSpeakerTextDrafts({});
+      }
+      setShowAiClean(false);
+      toast.success('Chapter cleaned and audio refreshed.');
+    } catch (error) {
+      setShowAiClean(true);
+      toast.error(error instanceof Error ? error.message : 'AI Clean failed. Your edits have been preserved.');
+    } finally {
+      setIsAiCleaning(false);
+    }
   };
 
   const revertEdits = () => {
@@ -928,33 +968,34 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       <ReviewHeader title={currentChapter.title}
         position={`Chunk ${currentChapter.index + 1} · ${chapterFilter === 'needs_review' ? `Flagged ${currentVisibleIndex >= 0 ? currentVisibleIndex + 1 : '—'} of ${visibleChapters.length}` : `Item ${currentChapterPosition + 1} of ${chapters.length}`}`}
         needsReview={isChapterNeedingReview(currentChapter)} dirty={isDirty} recording={isRegenerating}
-        processing={isTextLoading} filtered={chapterFilter === 'needs_review'}
+        processing={isTextLoading || isAiCleaning} filtered={chapterFilter === 'needs_review'}
         canPrevious={canGoPrev} canNext={canGoNext} onPrevious={handlePrevChapter} onNext={handleNextChapter}
         bookTools={<ReviewBookMenu onScan={() => setShowPronunciationIssues(true)}
           onReviewChanges={() => setShowBatchRefineReview(true)} onFixAll={() => void handleFixAllAbbreviations()}
           onBatchRefine={() => void handleOpenBatchRefine()} onRecordModified={() => void handleRebuildAllModified()}
           onExport={() => setShowAudiobookshelfModal(true)} onForceRecord={() => setShowForceRecord(true)}
           fixing={isFixingAll} rebuilding={isRebuildingAll} empty={!chapters.length}
-          showReviewChanges={!(activeJob && ['running', 'queued'].includes(activeJob.status) && activeJobSettings.jobType === 'batch-refine')} />}
+          dirty={isDirty} activeJob={hasActiveBookJob || isRegenerating || isAiCleaning}
+          showReviewChanges={Boolean(activeBatchRefineRunId) && !(hasActiveBookJob && jobPresentation.reviewChanges)} />}
       />
-      {activeJob && ['running', 'queued', 'waiting_for_pdf', 'pausing'].includes(activeJob.status) && <ReviewJobStatus
-        label={activeJobSettings.jobType === 'batch-refine' ? 'AI Batch Refine' : 'Generating audiobook'}
+      {activeJob && hasActiveBookJob && <ReviewJobStatus
+        label={jobPresentation.label}
         progress={activeJob.progress || 0} waiting={isWaitingForGpu}
-        reviewChanges={activeJobSettings.jobType === 'batch-refine'} onReview={() => setShowBatchRefineReview(true)}
+        reviewChanges={jobPresentation.reviewChanges} onReview={() => setShowBatchRefineReview(true)}
         changelogUrl={`/api/audiobooks/batch-refine/changelog?bookId=${encodeURIComponent(bookId)}${activeBatchRefineRunId ? `&runId=${encodeURIComponent(activeBatchRefineRunId)}` : ''}`}
         onCancel={() => void cancelActiveJob()} />}
       <ReviewWorkspaceToolbar panes={{ chapters: showLeftPane, original: showMiddlePane, edit: showRightPane }}
         onToggle={pane => { if (pane === 'chapters') setShowLeftPane(v => !v); else if (pane === 'original') setShowMiddlePane(v => !v); else setShowRightPane(v => !v); }}
         drama={isMultiVoice && !isGeminiDrama} onDrama={() => setShowMultiVoiceStudio(true)} onMobileAudio={() => setShowMobilePlayer(true)}
         onClean={() => setShowAiClean(true)} dirty={isDirty} speakerDirty={hasSpeakerEdits && !hasEditedText && showLeftPane && currentVisibleIndex >= 0}
-        busy={isRegenerating || isTextLoading} onSave={() => void handleRegenerate()}
+        busy={isRegenerating || isAiCleaning || isTextLoading} onSave={() => void handleRegenerate()}
         chapterTools={<ReviewChapterMenu onDictionary={() => setIsPronunciationModalOpen(true)}
           onAbbreviation={() => { setNewAbbrevKey(''); setNewAbbrevVal(''); setIsQuickAbbrevModalOpen(true); }}
           onFixAbbreviations={handleFixAbbreviations} onSettings={() => setIsSettingsModalOpen(true)}
           onErrorLog={() => setErrorLogModalChapter({ index: currentChapter.index, title: currentChapter.title })}
           onDrama={isMultiVoice && !isGeminiDrama ? () => setShowMultiVoiceStudio(true) : undefined}
           onRecord={() => void handleRegenerate()} hasError={Boolean(currentChapter.status === 'error' || currentChapter.hasFailure || currentChapter.hasRejected || reviewFlags.some(f => f.chapterIndex === currentChapter.index))}
-          dirty={isDirty} busy={isRegenerating || isTextLoading} />} />
+          dirty={isDirty} busy={isRegenerating || isAiCleaning || isTextLoading} />} />
       <ReviewMobilePaneSelector value={mobilePane} onChange={setMobilePane} />
       <ReviewIssuesPanel key={currentChapter.index} chapterIndex={currentChapter.index} flags={reviewFlags} error={reviewFlagsError}
         needsAttention={isChapterNeedingReview(currentChapter)} onChapterDetails={() => setErrorLogModalChapter({ index: currentChapter.index, title: currentChapter.title })}
@@ -1505,7 +1546,12 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
 
       <ReviewAiCleanDialog open={showAiClean} onClose={() => setShowAiClean(false)} target={cleanTarget}
         onTarget={setCleanTarget} profiles={smartAudioProfiles} profileId={selectedProfileId} onProfile={setSelectedProfileId}
-        onSettings={() => { setShowAiClean(false); setIsSettingsModalOpen(true); }} onClean={handleAiClean} busy={isRegenerating || isTextLoading} />
+        onSettings={() => { setShowAiClean(false); setIsSettingsModalOpen(true); }} onClean={() => void handleAiClean()} busy={isRegenerating || isAiCleaning || isTextLoading} />
+      <ModalFrame open={confirmOriginalClean} onClose={() => setConfirmOriginalClean(false)} size="sm" className="z-[80]">
+        <ModalTitle>Clean from Original text?</ModalTitle>
+        <p className="my-4 text-sm text-foreground">You have unsaved edits. Cleaning from Original text will ignore those current edits and replace the saved chapter with a newly cleaned version based on the original text.</p>
+        <div className="flex justify-end gap-2"><Button onClick={() => setConfirmOriginalClean(false)}>Go Back</Button><Button variant="primary" onClick={() => void handleAiClean(true)}>Clean from Original</Button></div>
+      </ModalFrame>
       <ReviewUnsavedChangesDialog open={pendingChapterIndex !== null} title={currentChapter.title} busy={isRegenerating}
         onStay={() => setPendingChapterIndex(null)} onDiscard={discardAndNavigate} onSave={() => void saveAndNavigate()} />
       <ModalFrame open={showForceRecord} onClose={() => setShowForceRecord(false)} size="sm">

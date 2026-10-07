@@ -18,7 +18,7 @@ export function ReviewAiCleanDialog({ open, onClose, target, onTarget, profileId
         {profiles.length ? profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>) : <option value="">Default profile</option>}
       </select>
     </label>
-    <div className="mt-4 flex justify-end gap-2"><Button className="min-h-11" onClick={onClose} disabled={busy}>Cancel</Button><Button variant="primary" className="min-h-11" onClick={onClean} disabled={busy}>{busy ? 'Queuing…' : 'Clean Chapter'}</Button></div>
+    <div className="mt-4 flex justify-end gap-2"><Button className="min-h-11" onClick={onClose} disabled={busy}>Cancel</Button><Button variant="primary" className="min-h-11" onClick={onClean} disabled={busy}>{busy ? 'Cleaning…' : 'Clean Chapter'}</Button></div>
     <div className="mt-4 border-t border-line-soft pt-2"><Button variant="ghost" onClick={onSettings}>AI Settings…</Button></div>
   </ModalFrame>;
 }

@@ -1,3 +1,5 @@
+import { submittedChapterIsCurrent } from '@/components/audiobooks/review/review-editor-snapshot';
+import { reviewJobPresentation, isActiveReviewJob } from '@/components/audiobooks/review/review-job-presentation';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test, vi } from 'vitest';
@@ -68,5 +70,29 @@ describe('review workspace presentation', () => {
     expect(chapterNeedsReview(chapters[0])).toBe(true);
     expect(filterAndSortChapters(chapters, 'needs_review', 'default').map(c => c.index)).toEqual([9]);
     expect(chapters.map(c => c.index)).toEqual([9, 2]);
+  });
+});
+
+describe('review hardening boundaries', () => {
+  test('job labels and batch-only capabilities are explicit', () => {
+    expect(reviewJobPresentation('batch-refine')).toEqual({ label: 'AI Batch Refine', reviewChanges: true });
+    expect(reviewJobPresentation('pronunciation-repair')).toEqual({ label: 'Pronunciation Repair', reviewChanges: false });
+    expect(reviewJobPresentation('future-job')).toEqual({ label: 'Background Job', reviewChanges: false });
+    expect(reviewJobPresentation(undefined).label).toBe('Generating audiobook');
+    for (const status of ['queued', 'running', 'waiting_for_pdf', 'pausing']) expect(isActiveReviewJob(status)).toBe(true);
+    expect(isActiveReviewJob('completed')).toBe(false);
+  });
+  test.each([{ dirty: true }, { activeJob: true }])('saved-content operations are blocked, review remains available: %j', flags => {
+    const noop = () => {};
+    const actions = bookToolSections({ onScan: noop, onReviewChanges: noop, onFixAll: noop, onBatchRefine: noop, onRecordModified: noop, onExport: noop, onForceRecord: noop, fixing: false, rebuilding: false, empty: false, showReviewChanges: true, ...flags }).flatMap(section => section.actions);
+    expect(actions.filter(a => a.label !== 'Review AI Changes').every(a => a.disabled && a.description)).toBe(true);
+    expect(actions.find(a => a.label === 'Review AI Changes')?.disabled).toBeUndefined();
+  });
+  test('shared snapshot boundary rejects newer text, drafts, or chapter selection', () => {
+    const submitted = { index: 2, text: 'submitted', drafts: '{}' };
+    expect(submittedChapterIsCurrent({ index: 2, text: 'submitted' }, submitted, '{}')).toBe(true);
+    expect(submittedChapterIsCurrent({ index: 2, text: 'new' }, submitted, '{}')).toBe(false);
+    expect(submittedChapterIsCurrent({ index: 2, text: 'submitted' }, submitted, '{"0":"new"}')).toBe(false);
+    expect(submittedChapterIsCurrent({ index: 7, text: 'submitted' }, submitted, '{}')).toBe(false);
   });
 });

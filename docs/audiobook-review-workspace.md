@@ -81,3 +81,25 @@ Verified locally on 2026-10-07:
 - Responsive screenshot/keyboard checks passed at 1280 / 1024 / 768 / 390px in light and dark themes. Desktop header + tools ≤112px; active job strip ≤48px. Dirty multi-voice toolbar verified at 1280 / 1024 / 768px; Studio moves into Chapter Tools at tablet width. No horizontal overflow.
 
 Limitations: browser verification mocked media and provider/export requests; no live TTS, Gemini, Audiobookshelf upload or worker deployment was performed. Specialized modals retain their existing internal UX. Arbitrary SPA route interception is not introduced; browser reload/exit and every chapter-selection route are protected. Local full-suite verification includes pre-existing unrelated working-tree work, which was preserved and excluded from this UX change.
+
+## Pre-merge state hardening (2026-10-07)
+
+Review job presentation is centralized: legacy generation/batch-regeneration jobs omit `jobType`; batch refine and pronunciation repair have distinct labels, combine has its own label, and unknown types show Background Job. Only batch refine exposes its review/changelog controls. Standalone Review AI Changes requires a known run ID; the Batch Refine dialog retains Review Existing Changes for historical discovery.
+
+AI Clean shares the Save & Re-record snapshot predicate. Successful requests reload authoritative chapter text and refresh the audio revision. Only the same chapter/editor/speaker-draft snapshot can be replaced and cleared; newer typing remains dirty. Original-source cleanup with dirty text requires explicit confirmation. Failed requests retain local edits and reopen the configuration dialog.
+
+Book command safety:
+
+| Command | While dirty / incompatible book job active |
+| --- | --- |
+| Fix All Abbreviations | Disabled: processes saved text |
+| AI Batch Refine | Disabled: processes saved text |
+| Re-record Modified Chapters | Disabled: records saved text |
+| Force Re-record All | Disabled: records saved text |
+| Scan Pronunciation Issues | Disabled: scans saved text and opens repair workflow |
+| Add to Audiobookshelf | Disabled: exports saved audio/content |
+| Review AI Changes | Read-only entry remains available when a run is known; existing approval protections remain authoritative |
+
+Disabled menu items display the reason. Mutating book handlers also check the boundary again before submitting, including dialogs opened before state changed and the Studio recording entry point. Queued, running, waiting_for_pdf and pausing jobs block new saved-content operations; issue inspection, logs and navigation remain available.
+
+Hardening verification: focused Review/Smart Audio integrity suites passed (62 tests); full unit suite passed after final edits (202 files / 1,719 tests); TypeScript and affected-file ESLint with zero warnings passed. The complete Chromium suite passed (19 tests), followed by six affected-case checks after tightening Revert's saved baseline. Browser coverage includes authoritative AI-clean reload/audio revision, preservation of newer typing, Revert to the newly saved result, Original confirmation/back/submit, failure recovery, disabled saved-content commands and pronunciation-job labels/capabilities. Provider/media/export calls remain mocked.

@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 // Render the real Next.js page/components. All browser APIs are intercepted;
 // these interaction tests never enqueue production TTS/AI jobs or modify books.
-async function setupReview(page: Page, options: { flags?: boolean; job?: boolean; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean } = {}) {
+async function setupReview(page: Page, options: { flags?: boolean; job?: boolean; jobType?: string; cleanedText?: string; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean } = {}) {
   await page.addInitScript(() => localStorage.setItem('cookie-consent', 'declined'));
   const chapters = [
     { index: 2, title: 'Opening', format: 'mp3', hasAudio: true },
@@ -37,7 +37,7 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
       if (request.method() === 'POST') {
         if (options.delayedSave) await new Promise<void>(resolve => { releaseSave = resolve; });
         if (saveFails) return json({ error: 'Recording could not be saved' }, 503);
-        texts[Number(body?.chapterIndex)] = String(body?.text);
+        texts[Number(body?.chapterIndex)] = body?.useSmartAudio && options.cleanedText ? options.cleanedText : String(body?.text);
         return json({ success: true });
       }
       return route.fulfill({ status: 404, body: '' }); // no real media requests
@@ -45,7 +45,7 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
     if (pathname === '/api/tts-settings') return json({ smartAudioProfiles: [{ id: 'profile', name: 'Biblical Scholarship', aiModel: 'test-model', workerMode: options.drama ? 'multi-voice' : 'standard', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }], selectedSmartAudioProfileId: 'profile' });
     if (pathname === '/api/audiobooks/batch-regenerate') return json(body?.dryRun ? { needsRegeneration: [{ modifiedChunks: 2 }] } : { success: true });
     if (pathname === '/api/audiobooks/fix-abbreviations-all') return json({ modifiedCount: 0 });
-    if (pathname === '/api/audiobooks/queue') return json({ jobs: options.job ? [{ id: 'job-fixture', documentId: 'review-fixture', status: 'running', progress: 46, settingsJson: { jobType: 'batch-refine', batchRefineRunId: 'run-fixture' } }] : [] });
+    if (pathname === '/api/audiobooks/queue') return json({ jobs: options.job ? [{ id: 'job-fixture', documentId: 'review-fixture', status: 'running', progress: 46, settingsJson: { jobType: options.jobType || 'batch-refine', ...(options.jobType && options.jobType !== 'batch-refine' ? {} : { batchRefineRunId: 'run-fixture' }) } }] : [] });
     if (pathname === '/api/audiobook/review-flags') return json({ flags: options.flags ? [
       { id: 'other', chapterIndex: 9, timestampMs: 0, createdAt: 1, kind: 'cloud-tts-failed', reason: 'Other chapter reason' },
       { id: 'current', chapterIndex: 7, timestampMs: 0, createdAt: 1, kind: 'cloud-tts-failed', reason: 'Current chapter reason', sourceText: 'Needs attention text.' },
@@ -311,4 +311,77 @@ test('dirty multi-voice layout stays compact at desktop/tablet widths, with Stud
       await expect(page.getByRole('menu')).toHaveCount(0);
     }
   }
+});
+
+async function openDirtyClean(page: Page, original = false) {
+  await editor(page).fill('My unsaved edit.');
+  await page.getByRole('button', { name: 'AI Clean Chapter…', exact: true }).click();
+  if (original) await page.getByRole('radio', { name: /Original text/ }).check();
+  await page.getByRole('button', { name: 'Clean Chapter', exact: true }).click();
+}
+
+test('AI Clean reconciles authoritative text, dirty state, and audio revision', async ({ page }) => {
+  await setupReview(page, { cleanedText: 'Authoritative cleaned text.' });
+  const before = await page.locator('audio').first().getAttribute('src');
+  await openDirtyClean(page);
+  await expect(editor(page)).toHaveValue('Authoritative cleaned text.');
+  await expect(page.getByRole('button', { name: 'Save & Re-record', exact: true })).toHaveCount(0);
+  await expect(page.locator('audio').first()).not.toHaveAttribute('src', before!);
+});
+
+test('AI Clean preserves typing made while request is pending', async ({ page }) => {
+  const fixture = await setupReview(page, { delayedSave: true, cleanedText: 'Server cleaned text.' });
+  await openDirtyClean(page);
+  await expect.poll(() => fixture.requests.filter(r => r.path === '/api/audiobook/chapter' && r.method === 'POST').length).toBe(1);
+  await page.keyboard.press('Escape');
+  await editor(page).fill('Newer local typing.');
+  fixture.releaseSave();
+  await expect(page.getByText('Chapter cleaned and audio refreshed.')).toBeVisible();
+  await expect(editor(page)).toHaveValue('Newer local typing.');
+  await expect(page.getByRole('button', { name: 'Save & Re-record', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Revert', exact: true }).click();
+  await expect(editor(page)).toHaveValue('Server cleaned text.');
+});
+
+test('Original clean requires confirmation and Go Back preserves edits', async ({ page }) => {
+  const fixture = await setupReview(page, { cleanedText: 'Cleaned original.' });
+  await openDirtyClean(page, true);
+  await expect(page.getByRole('heading', { name: 'Clean from Original text?' })).toBeVisible();
+  expect(fixture.requests.filter(r => r.path === '/api/audiobook/chapter' && r.method === 'POST')).toHaveLength(0);
+  await page.getByRole('button', { name: 'Go Back' }).click();
+  await page.getByRole('button', { name: 'Clean Chapter', exact: true }).click();
+  await page.getByRole('button', { name: 'Clean from Original', exact: true }).click();
+  await expect(editor(page)).toHaveValue('Cleaned original.');
+  expect(fixture.requests.find(r => r.path === '/api/audiobook/chapter' && r.method === 'POST')?.body?.text).toBe('Original 2.');
+  await expect(page.getByRole('button', { name: 'Save & Re-record', exact: true })).toHaveCount(0);
+});
+
+test('failed AI Clean retains dirty editor and recoverable dialog', async ({ page }) => {
+  const fixture = await setupReview(page);
+  fixture.failSave();
+  await openDirtyClean(page);
+  await expect(page.getByText(/AI Clean failed \(503\)/)).toBeVisible();
+  await expect(editor(page)).toHaveValue('My unsaved edit.');
+  await expect(page.getByRole('button', { name: 'Clean Chapter', exact: true })).toBeEnabled();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Save & Re-record', exact: true })).toBeVisible();
+});
+
+test('dirty book operations are disabled and unknown AI review is hidden', async ({ page }) => {
+  await setupReview(page);
+  await editor(page).fill('Unsaved chapter.');
+  await page.getByRole('button', { name: 'Book Tools', exact: true }).click();
+  for (const name of ['Fix All Abbreviations', 'AI Batch Refine…', 'Re-record Modified Chapters', 'Force Re-record All…', 'Scan Pronunciation Issues', 'Add to Audiobookshelf']) await expect(page.getByRole('menuitem', { name: new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })).toBeDisabled();
+  await expect(page.getByRole('menuitem', { name: 'Review AI Changes', exact: true })).toHaveCount(0);
+});
+
+test('pronunciation job has correct label and no batch-only controls', async ({ page }) => {
+  await setupReview(page, { job: true, jobType: 'pronunciation-repair' });
+  await expect(page.getByRole('status').filter({ hasText: 'Pronunciation Repair' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Review Changes', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Background job tools' }).click();
+  await expect(page.getByRole('link', { name: 'Raw Changelog' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Book Tools', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: /AI Batch Refine/ })).toBeDisabled();
 });

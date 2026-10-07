@@ -8,6 +8,7 @@ export interface ReviewMenuAction {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  description?: string;
   hidden?: boolean;
   danger?: boolean;
   className?: string;
@@ -24,7 +25,7 @@ export function ReviewMenu({ label, sections, icon }: { label: string; sections:
         {sections.map((section) => section.actions.some(a => !a.hidden) && <div key={section.title} className="border-b border-line-soft last:border-0">
           <p className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-soft">{section.title}</p>
           {section.actions.filter(a => !a.hidden).map(action => <MenuActionItem key={action.label} onClick={action.onClick} disabled={action.disabled} tone={action.danger ? 'danger' : 'default'} className={`min-h-11 md:min-h-8 ${action.className || ''}`}>
-            {action.label}
+            <span>{action.label}{action.description && <span className="block text-[11px] font-normal">{action.description}</span>}</span>
           </MenuActionItem>)}
         </div>)}
       </MenuItemsSurface>
