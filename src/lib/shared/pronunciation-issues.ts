@@ -19,7 +19,7 @@ export type PronunciationIssue = {
 };
 export type PronunciationPatch = { id: string; replacement: string };
 const TAG = /\[([^\]\r\n]+)\]\(\/([^/\r\n]+)\/\)/gu;
-const FOREIGN = /[\p{Script=Greek}\p{Script=Hebrew}]/u;
+const FOREIGN = /[\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}]/u;
 
 export function failedChapterReviewIssue(text: string, reason?: string): PronunciationIssue | null {
   if (!text) return null;
@@ -83,7 +83,7 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
   // A bracketed foreign word or phrase is one region. Per-word edits inside
   // retained outer brackets would manufacture nested pronunciation markup.
   // Restrict this to foreign text; exclude ordinary Markdown links.
-  for (const match of text.matchAll(/\[[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ]+(?:[ \t]+[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ]+)*\](?!\()/gu)) {
+  for (const match of text.matchAll(/\[[\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}\p{Mark}()'’᾽᾿ʼ]+(?:[ \t]+[\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}\p{Mark}()'’᾽᾿ʼ]+)*\](?!\()/gu)) {
     if (!containsForeignLexicalLetter(match[0])) continue;
     add(match.index, match.index + match[0].length, 'Foreign word has brackets but no pronunciation.');
   }
@@ -121,9 +121,9 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
     // Unicode Script=Hebrew includes punctuation (maqaf, sof pasuq, etc.).
     // Punctuation and unattached marks never start or join lexical findings.
     if (!containsForeignLexicalLetter(match[0])) continue;
-    add(match.index, match.index + match[0].length, 'Greek or Hebrew is outside a pronunciation tag.');
+    add(match.index, match.index + match[0].length, 'Greek, Hebrew or Ethiopic is outside a pronunciation tag.');
   }
-  for (const match of masked.matchAll(/\(\s*\)|\\+(?=[\p{Script=Greek}\p{Script=Hebrew}])|\[[^\]\r\n]*\]\(\/[^\r\n)\]]*(?:\)|\]|$)/gu)) {
+  for (const match of masked.matchAll(/\(\s*\)|\\+(?=[\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}])|\[[^\]\r\n]*\]\(\/[^\r\n)\]]*(?:\)|\]|$)/gu)) {
     // A parenthetical containing masked valid tags is not empty.
     if (/^\(\s*\)$/u.test(match[0]) && !/^\(\s*\)$/u.test(text.slice(match.index, match.index + match[0].length))) continue;
     add(match.index, match.index + match[0].length, 'Empty parentheses, stray escape, or malformed pronunciation markup.');
@@ -145,7 +145,7 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
     if (/^\(\s*\)$/u.test(value)) replacement = '';
     else {
       const formatted = normalizeRepairMarkup(value);
-      const visible = formatted.replace(TAG, '$1').replace(/\\/gu, '').replace(/^\[([\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ]+)\]$/u, '$1');
+      const visible = formatted.replace(TAG, '$1').replace(/\\/gu, '').replace(/^\[([\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}\p{Mark}()'’᾽᾿ʼ]+)\]$/u, '$1');
       tokenClassification = classifyForeignNarrationToken(visible, text, region.start, region.end);
       const expanded = expandScholarEditorialWords(visible);
       if (dictionary[expanded]) dictionaryWord = expanded;
@@ -155,7 +155,7 @@ export function scanPronunciationIssues(text: string, dictionary: Record<string,
         dictionaryWord = undefined; // Local convention, never lexical provenance.
       }
       else if (pronunciation && !/[\s<>]/u.test(visible)) replacement = `[${visible}](${pronunciation})`;
-      else if (/^\[[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}'’᾽᾿ʼ]+(?:[ \t]+[\p{Script=Greek}\p{Script=Hebrew}\p{Mark}'’᾽᾿ʼ]+)+\]$/u.test(value)) {
+      else if (/^\[[\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}\p{Mark}'’᾽᾿ʼ]+(?:[ \t]+[\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}\p{Mark}'’᾽᾿ʼ]+)+\]$/u.test(value)) {
         const words = value.slice(1, -1).split(/([ \t]+)/u);
         const tagged = words.map(word => {
           if (/^[ \t]+$/u.test(word)) return word;
@@ -219,11 +219,10 @@ function malformedMarkupLexicalMaterial(text: string): string {
   // wrapper may remain. Keep every other character significant, including
   // hyphens, apostrophes, elision marks, diacritics, numbers, and whitespace.
   // A malformed bracket can manufacture a parser boundary, but never a real
-  // manuscript word separator.
+  // manuscript word separator. Preserve the exact stored Unicode sequence.
   return material
     .replace(/\]\(\/[^\r\n]*(?:\)|$)/gu, '')
-    .replace(/[\[\]]/gu, '')
-    .normalize('NFC');
+    .replace(/[\[\]]/gu, '');
 }
 
 function isMalformedMarkupLexicallyEquivalent(issue: PronunciationIssue, replacement: string): boolean {
@@ -242,10 +241,10 @@ export type RepairValidationOptions = { sourceText?: string; allowRemaining?: bo
 function visibleSource(text: string): string {
   // Keep all source scripts, punctuation and whitespace significant. Only
   // recognized pronunciation syntax may disappear, including heteronym tags.
+  // Do not NFC-normalize here: canonical equivalence is not source identity.
   return normalizeRepairMarkup(text).replace(TAG, '$1')
     .replace(/\[([^\]\r\n]+)\]\(!?\/[^\r\n)]*(?:\)|$)/gu, '$1')
-    .replace(/^\[([\p{Script=Greek}\p{Script=Hebrew}\p{Mark}()'’᾽᾿ʼ \t]+)\]$/u, '$1')
-    .normalize('NFC');
+    .replace(/^\[([\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}\p{Mark}()'’᾽᾿ʼ \t]+)\]$/u, '$1');
 }
 
 function nestedSourceReconstruction(original: string, replacement: string, sourceText = ''): boolean {

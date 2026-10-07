@@ -449,3 +449,39 @@ test('nested structural deduplication cannot substitute a different source label
   expect(issues[0].replacement).toBeUndefined();
   expect(() => applyPronunciationPatches(original, issues, [{ id: '0', replacement: '[περι](/pɛri/)' }])).toThrow('verified source evidence');
 });
+
+describe('Ethiopic audiobook repair and exact Unicode source identity', () => {
+  test.each(['ኵሎ', 'ኅቡኣተ', 'ጥበቦሙ'])('bare Ethiopic %s cannot escape scanning or the recording gate', word => {
+    const original = `Read ${word}።`;
+    const issues = scanPronunciationIssues(original);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ text: word, kind: 'missing_pronunciation', tokenClassification: { kind: 'lexical_word', script: 'Ethiopic' } });
+    expect(issues[0].replacement).toBeUndefined();
+    expect(() => assertPronunciationRepair(original, original)).toThrow('remain');
+    const proposed = applyPronunciationPatches(original, issues, [{ id: '0', replacement: `[${word}](/kulo/)` }]);
+    expect(proposed).toBe(`Read [${word}](/kulo/)።`);
+    expect(scanPronunciationIssues(proposed)).toEqual([]);
+    expect(() => assertPronunciationRepair(original, proposed)).not.toThrow();
+    expect(scanPronunciationIssues(`[${word}](/${word}/)`).length).toBeGreaterThan(0);
+    expect(scanPronunciationIssues(`[${word}]`)[0].text).toBe(`[${word}]`);
+  });
+  test('Ethiopic punctuation and unattached marks never become lexical findings', () => {
+    expect(scanPronunciationIssues('፠፡።፣፤፥፦፧፨\u135d\u135e\u135f')).toEqual([]);
+    expect(scanPronunciationIssues('አ\u135f')[0].text).toBe('አ\u135f');
+    expect(scanPronunciationIssues('ኵሎ፡ኅቡኣተ').map(issue => issue.text)).toEqual(['ኵሎ', 'ኅቡኣተ']);
+    expect(scanPronunciationIssues('the አ edition')[0].replacement).toBeUndefined();
+  });
+  test.each([['α\u0313νεμος', '/ɑnɛmoʊs/'], ['ש\u05c1\u05b8לוֹם', '/ʃɑloʊm/']])('IPA addition preserves the exact stored Unicode label: %s', (word, ipa) => {
+    const original = `Read ${word}.`;
+    const issues = scanPronunciationIssues(original);
+    const exact = `Read [${word}](${ipa}).`;
+    expect(() => assertPronunciationRepair(original, exact)).not.toThrow();
+    expect(applyPronunciationPatches(original, issues, [{ id: '0', replacement: `[${word}](${ipa})` }])).toBe(exact);
+    expect([...exact.replace(/\[([^\]]+)\]\(\/[^/]+\/\)/gu, '$1')]).toEqual([...original]);
+    const normalizedWord = word.normalize('NFC');
+    expect(normalizedWord).not.toBe(word);
+    expect(normalizedWord.normalize('NFD')).toBe(word.normalize('NFD'));
+    expect(() => assertPronunciationRepair(original, `Read [${normalizedWord}](${ipa}).`)).toThrow('source');
+    expect(() => applyPronunciationPatches(original, issues, [{ id: '0', replacement: `[${normalizedWord}](${ipa})` }])).toThrow('source');
+  });
+});

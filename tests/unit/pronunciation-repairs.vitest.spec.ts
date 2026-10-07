@@ -364,3 +364,15 @@ test.each([
   expect(diagnostics.nextAttemptAt).toBeGreaterThan(Date.now() + Math.max(299000, Number(retryAfter) * 1000 - 1000));
   expect(diagnostics.rounds).toEqual([{ round: 1, outcome: 'api_blocked' }]);
 });
+
+test('approved Ethiopic dictionary repairs cannot silently bypass the audiobook scanner', async () => {
+  mocks.profile.pronunciations = { 'ኵሎ': '/kulo/', 'ኅቡኣተ': '/kulo/', 'ጥበቦሙ': '/kulo/' };
+  const original = 'ኵሎ፡ኅቡኣተ፡ጥበቦሙ።';
+  const input = seed(original);
+  const result = await proposePronunciationRepair(input);
+  expect(result.unresolvedCount).toBe(0);
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  const proposed = mocks.insert.mock.calls[0][0].proposedText as string;
+  expect(proposed).toBe('[ኵሎ](/kulo/)፡[ኅቡኣተ](/kulo/)፡[ጥበቦሙ](/kulo/)።');
+  expect(proposed.replace(/\[([^\]]+)\]\(\/[^/]+\/\)/gu, '$1')).toBe(original);
+});

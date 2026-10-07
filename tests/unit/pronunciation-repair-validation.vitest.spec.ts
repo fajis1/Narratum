@@ -30,3 +30,11 @@ test('approval/recording accepts contextual letter names and preserves Hebrew pu
     await expect(assertStoredPronunciationRepair({ ...input, previous, proposed: changed })).rejects.toThrow();
   }
 });
+
+test('approval/recording rejects canonical Unicode relabeling but accepts the exact printed label', async () => {
+  const word = 'α\u0313νεμος';
+  const previous = `Read ${word}.`;
+  await expect(assertStoredPronunciationRepair({ ...input, previous, proposed: `Read [${word}](/ɑnɛmoʊs/).` })).resolves.toBeUndefined();
+  await expect(assertStoredPronunciationRepair({ ...input, previous, proposed: `Read [${word.normalize('NFC')}](/ɑnɛmoʊs/).` })).rejects.toThrow('source');
+  expect(mocks.read).not.toHaveBeenCalled();
+});

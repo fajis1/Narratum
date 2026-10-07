@@ -3,7 +3,7 @@ import { getSupportedSourceScripts, hasUnsupportedSourceLetters } from './foreig
 /** Script membership includes punctuation. Lexical scanning requires a letter. */
 export function containsForeignLexicalLetter(text: string): boolean {
   return [...text].some(character => /\p{Letter}/u.test(character)
-    && /[\p{Script=Greek}\p{Script=Hebrew}]/u.test(character));
+    && /[\p{Script=Greek}\p{Script=Hebrew}\p{Script=Ethiopic}]/u.test(character));
 }
 
 // Broad English letter names, not lexical Greek pronunciations. These are
@@ -20,7 +20,7 @@ export type ForeignNarrationTokenClassification = {
   kind: 'lexical_word' | 'contextual_letter_reference' | 'punctuation' | 'source_damaged' | 'unknown';
   reason: string;
   pronunciation?: string;
-  script?: 'Greek' | 'Hebrew' | 'Latin';
+  script?: 'Greek' | 'Hebrew' | 'Latin' | 'Ethiopic';
 };
 
 const ROLE = '(?:edition|translation|manuscript|text|version|recension|codex|witness|siglum|sigla|letter|symbol)';
@@ -38,8 +38,8 @@ export function classifyForeignNarrationToken(word: string, text: string, start:
     return { kind: 'source_damaged', reason: 'Unsupported or mixed source writing systems require source review.' };
   }
   const pronunciation = GREEK_LETTER_NAMES[word.toLowerCase()];
-  const script = /\p{Script=Greek}/u.test(word) ? 'Greek' : /\p{Script=Hebrew}/u.test(word) ? 'Hebrew' : /\p{Script=Latin}/u.test(word) ? 'Latin' : undefined;
-  if ([...word].length === 1 && script) {
+  const script = /\p{Script=Greek}/u.test(word) ? 'Greek' : /\p{Script=Hebrew}/u.test(word) ? 'Hebrew' : /\p{Script=Latin}/u.test(word) ? 'Latin' : /\p{Script=Ethiopic}/u.test(word) ? 'Ethiopic' : undefined;
+  if ([...word].length === 1 && script && script !== 'Ethiopic') {
     const before = text.slice(Math.max(0, start - 120), start);
     const after = text.slice(end, end + 80);
     const role = FOLLOWING_ROLE.test(after) || PRECEDING_ROLE.test(before);
@@ -52,6 +52,6 @@ export function classifyForeignNarrationToken(word: string, text: string, start:
     };
   }
   return containsForeignLexicalLetter(word)
-    ? { kind: 'lexical_word', reason: 'Greek/Hebrew lexical letters without established letter-reference context.' }
-    : { kind: 'unknown', reason: 'Outside the Greek/Hebrew narration token model.' };
+    ? { kind: 'lexical_word', script, reason: 'Greek/Hebrew/Ethiopic lexical letters without established letter-reference context.' }
+    : { kind: 'unknown', reason: 'Outside the Greek/Hebrew/Ethiopic narration token model.' };
 }

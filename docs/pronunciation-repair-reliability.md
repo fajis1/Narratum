@@ -78,3 +78,35 @@ narration convention. Existing normalization conventions and explicit reviewer
 source overrides remain in place. No live provider or audio-listening test was
 performed. Existing occurrence counts are unchanged; classification diagnostics
 supply the distinction without a new persisted grouping schema.
+
+## Pre-merge hardening — 2026-10-07
+
+The existing contextual-token architecture is unchanged. Ethiopic/Geʽez now
+participates in lexical scanning, bracketed-word repair, token script diagnostics
+and final Smart Audio bare-foreign validation. Punctuation and detached combining
+marks remain nonlexical. Ethiopic never enters the Greek letter-name convention.
+Source labels may be Ethiopic; pronunciation still requires Kokoro-compatible
+phonetic output. Approved dictionary repairs for ኵሎ, ኅቡኣተ and ጥበቦሙ preserve
+Ethiopic separators without a Gemini call.
+
+Private ordinary and malformed-markup source-equivalence comparisons no longer
+NFC-normalize labels. Adding IPA must retain the stored code-point sequence;
+canonical equivalence does not authorize silently composing Greek characters or
+reordering Hebrew combining marks. Linguistic inspection, dictionary/phonetic
+normalization and verified source-reconstruction conventions remain unchanged.
+Approval/recording regressions enforce the same exact-label boundary.
+
+The real outer worker is now exercised against isolated in-memory SQLite in
+`tests/unit/audiobook-worker-pronunciation-recovery.vitest.spec.ts`. Both process
+restart and stale-heartbeat cases begin at running/100%, with all selected
+chapters accounted for, one failed result, null completedAt and no retry
+deadline. The worker recovers, reclaims and dispatches the saved job to real
+repair finalization, reaching error/100% with completedAt and unchanged results,
+without proposing repairs again. A fresh running job is not reset by the stale
+heartbeat sweep. No production worker lifecycle change was necessary.
+
+Hardening verification: 13 focused files / 226 tests; full unit suite 201 files /
+1,698 tests; TypeScript, affected-file ESLint and whitespace checks passed. No
+live provider or audio test was performed. Earlier Greek siglum, strict lexical
+dictionary, Hebrew punctuation, mixed-script, partial-word, API-blocking and
+bounded-retry protections remain covered and passing.

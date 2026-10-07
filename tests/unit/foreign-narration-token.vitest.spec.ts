@@ -25,3 +25,14 @@ test('does not borrow context from a distant occurrence or infer a Greek name fo
   }
   expect(classifyForeignNarrationToken('кардиа', 'кардиа', 0, 6).kind).toBe('source_damaged');
 });
+
+test.each(['ኵሎ', 'ኅቡኣተ', 'ጥበቦሙ', 'አ'])('classifies Ethiopic %s lexically without Greek letter conventions', word => {
+  const text = `the ${word} edition`;
+  expect(containsForeignLexicalLetter(word)).toBe(true);
+  expect(classifyForeignNarrationToken(word, text, 4, 4 + word.length)).toMatchObject({ kind: 'lexical_word', script: 'Ethiopic' });
+  expect(classifyForeignNarrationToken(word, text, 4, 4 + word.length).pronunciation).toBeUndefined();
+});
+test.each(['፠', '፡', '።', '፣', '፤', '፥', '፦', '፧', '፨', '\u135d', '\u135e', '\u135f'])('Ethiopic punctuation/combining marks are nonlexical: %s', character => {
+  expect(containsForeignLexicalLetter(character)).toBe(false);
+  expect(classifyForeignNarrationToken(character, character, 0, character.length).kind).toBe('punctuation');
+});
