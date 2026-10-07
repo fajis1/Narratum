@@ -11,7 +11,20 @@ import {
   reconcileSmartAudioPronunciations,
   resolveSmartAudioWorkerResult,
   stripSmartAudioInputMarkers,
+  validateSmartAudioOutput,
 } from '../../src/lib/shared/smart-audio-cleanup';
+
+describe('supported source scripts in final pronunciation validation', () => {
+  test.each(['[ኵሎ](/kulo/)', '[λόγος](/lɒɡɒs/)', '[שלום](/ʃɑloʊm/)'])('accepts a supported single-script label: %s', tag => {
+    expect(validateSmartAudioOutput(tag)).toBe(tag);
+  });
+
+  test.each(['ኵሎabc', 'ኵሎθε', 'ኵሎשלום', 'θεabc', 'שלוםabc', 'θεשלום'])('rejects a mixed-script source label: %s', word => {
+    const tag = `[${word}](/kulo/)`;
+    expect(() => validateSmartAudioOutput(tag)).toThrow('mixed-script OCR text');
+    expect(() => normalizeSmartAudioPronunciationTags(tag)).toThrow('mixed-script OCR text');
+  });
+});
 
 describe('Smart Audio cleanup contract', () => {
   test('appends mandatory runtime rules after a stale saved prompt', () => {
