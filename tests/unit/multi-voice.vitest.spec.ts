@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { SmartAudioCharacterEntry } from '@/types/document-settings';
 import path from 'node:path';
 
 import { describe, expect, test } from 'vitest';
@@ -351,9 +352,9 @@ describe('LitRPG source and production wiring', () => {
     expect(batch).toContain('Replace & Regenerate');
     expect(listenPage).toContain("fetch('/api/audiobook/review-flags'");
     expect(listenPage).toContain('retryReviewFlag(flag)');
-    expect(listenPage).toContain('Audiobook review flags');
-    expect(listenPage).toContain('Retry chapter');
-    expect(listenPage).toContain('Chapters & Speakers');
+    expect(listenPage).toContain('<ReviewIssuesPanel');
+    expect(listenPage).toContain('onRetry={flag => void retryReviewFlag(flag)}');
+    expect(listenPage).toContain('<ReviewChapterList');
     expect(listenPage).toContain('Speaker segments for selected chapter');
     expect(listenPage).toContain('parseVoiceTaggedText(chapterText, { includeOmitted: true })');
     expect(listenPage).toContain('Removed from audio');
@@ -362,14 +363,15 @@ describe('LitRPG source and production wiring', () => {
     expect(listenPage).toContain('updateSpeakerAssignment(segmentIndex, event.target.value)');
     expect(listenPage).toContain('setChapterText(renderVoiceSegments(parsed))');
     expect(listenPage).toContain('Apply Changes & Re-record Chunk');
-    expect(listenPage).toContain('updateSpeakerText(segmentIndex, event.target.value)');
+    expect(listenPage).toContain('textWithSpeakerDrafts()');
+    expect(listenPage).toContain('setSpeakerTextDrafts(current =>');
     expect(listenPage).toContain('previewSpeakerSegment(segmentIndex)');
     expect(listenPage).toContain('rerecordSpeakerSegment(segmentIndex)');
     expect(listenPage).toContain('Re-record this corrected turn and rebuild the containing audio chunk');
     expect(listenPage).toContain("selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE");
     expect(listenPage).toContain("useSmartAudio: isGeminiDrama");
     expect(listenPage).toContain("settings: { smartAudioProfileId: selectedProfileId }");
-    expect(listenPage).toContain('Re-record with Gemini Drama');
+    expect(listenPage).toContain('onSave={() => void handleRegenerate()}');
     expect(listenPage).toContain("isMultiVoice && !isGeminiDrama");
     expect(listenPage).toContain('Now playing');
     expect(listenPage).toContain('estimateSpeakerSegmentAtTime(');
@@ -525,7 +527,7 @@ describe('LitRPG automatic minor character voice recycling', () => {
   });
 
   test('distributes minor character voice assignments across recyclable voices using LFU balancing', () => {
-    const entries: Record<string, any> = {
+    const entries: Record<string, SmartAudioCharacterEntry> = {
       Narrator: {
         name: 'Narrator',
         description: 'Story narrator',

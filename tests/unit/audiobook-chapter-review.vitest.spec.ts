@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { chapterNeedsReview as isChapterNeedingReview, filterAndSortChapters } from '@/components/audiobooks/review/review-chapters';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ReviewChapterList } from '@/components/audiobooks/review/ReviewChapterList';
 import type { TTSAudiobookChapter } from '@/types/tts';
 import type { SmartAudioReviewFlag } from '@/types/document-settings';
 
@@ -10,57 +14,6 @@ const readSource = (relativePath: string) => fs.readFileSync(
 );
 
 describe('Audiobook Chapter Review & Filtering Logic', () => {
-  // Simulates the client-side helper function used in ListenPage
-  function isChapterNeedingReview(
-    chap: Partial<TTSAudiobookChapter> & { hasAudio?: boolean; hasRejected?: boolean; needsReview?: boolean },
-    reviewFlags: SmartAudioReviewFlag[] = [],
-  ): boolean {
-    return Boolean(
-      chap.hasRejected ||
-      chap.needsReview ||
-      chap.isEmptyText ||
-      chap.hasAudio === false ||
-      chap.status === 'error' ||
-      reviewFlags.some((f) => f.chapterIndex === chap.index)
-    );
-  }
-
-  function filterAndSortChapters(
-    chapters: Array<TTSAudiobookChapter>,
-    filter: 'all' | 'needs_review',
-    sort: 'default' | 'review_first',
-    search = '',
-    reviewFlags: SmartAudioReviewFlag[] = [],
-  ): Array<TTSAudiobookChapter> {
-    let list = [...chapters];
-
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      list = list.filter((c) => {
-        const chunkLabel = `chunk ${c.index + 1}`.toLowerCase();
-        const titleLabel = (c.title || '').toLowerCase();
-        return chunkLabel.includes(q) || titleLabel.includes(q);
-      });
-    }
-
-    if (filter === 'needs_review') {
-      list = list.filter((c) => isChapterNeedingReview(c, reviewFlags));
-    }
-
-    if (sort === 'review_first') {
-      list.sort((a, b) => {
-        const aNeeds = isChapterNeedingReview(a, reviewFlags) ? 1 : 0;
-        const bNeeds = isChapterNeedingReview(b, reviewFlags) ? 1 : 0;
-        if (bNeeds !== aNeeds) return bNeeds - aNeeds;
-        return a.index - b.index;
-      });
-    } else {
-      list.sort((a, b) => a.index - b.index);
-    }
-
-    return list;
-  }
-
   const sampleChapters: TTSAudiobookChapter[] = [
     { index: 0, title: 'Introduction', format: 'mp3', status: 'completed', hasAudio: true, hasRejected: false, isEmptyText: false, needsReview: false },
     { index: 1, title: 'Chapter 1: The Beginning', format: 'mp3', status: 'completed', hasAudio: true, hasRejected: false, isEmptyText: false, needsReview: false },
@@ -163,15 +116,19 @@ describe('Audiobook Review Route & Component Contracts', () => {
     expect(absModalSource).toContain('Open & Filter Chapters Needing Review');
   });
 
-  test('ListenPage left pane provides filter tabs, sort dropdown, and review search', () => {
-    const listenSource = readSource('src/app/(app)/listen/[bookId]/page.tsx');
-    expect(listenSource).toContain("setChapterFilter('needs_review')");
-    expect(listenSource).toContain("chapterSort");
-    expect(listenSource).toContain("Order: Review First");
-    expect(listenSource).toContain("Search chunk or title...");
-    expect(listenSource).toContain("Needs Re-recording");
-    expect(listenSource).toContain("visibleChapters");
-    expect(listenSource).toContain("onReviewChapters");
+  test('chapter list renders real filter/search/sort controls and status badges without row log buttons', () => {
+    const html = renderToStaticMarkup(createElement(ReviewChapterList, {
+      chapters: [{ index: 0, title: 'Review chapter', format: 'mp3', hasRejected: true }],
+      visible: [{ index: 0, title: 'Review chapter', format: 'mp3', hasRejected: true }], selectedIndex: 0,
+      reviewCount: 1, filter: 'all', onFilter: () => {}, search: '', onSearch: () => {}, sort: 'default', onSort: () => {},
+      onSelect: () => {}, needsReview: isChapterNeedingReview, hasFlag: () => false,
+    }));
+    expect(html).toContain('Chapter filter');
+    expect(html).toContain('Search chapters');
+    expect(html).toContain('Order: Review First');
+    expect(html).toContain('Needs re-recording');
+    expect(html).toContain('aria-current="true"');
+    expect(html).not.toContain('Log');
   });
 
   test('failure-log route retrieves chapter failure JSON, job error, and review flags', () => {
@@ -237,9 +194,9 @@ describe('Audiobook Review Route & Component Contracts', () => {
   test('ListenPage provides error log triggers and integrates ChapterErrorLogModal', () => {
     const listenSource = readSource('src/app/(app)/listen/[bookId]/page.tsx');
     expect(listenSource).toContain('setErrorLogModalChapter');
-    expect(listenSource).toContain('View Error Log');
-    expect(listenSource).toContain('View All Error Logs');
-    expect(listenSource).toContain('📋 Log');
+    expect(listenSource).toContain('onErrorLog=');
+    expect(listenSource).toContain('onAllLogs=');
+    expect(listenSource).not.toContain('📋 Log');
     expect(listenSource).toContain('<ChapterErrorLogModal');
   });
 });

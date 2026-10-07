@@ -166,16 +166,13 @@ describe('Smart Audio data-integrity guards', () => {
 
   test('exposes the Batch Refine changelog beside the active Review progress banner', () => {
     const listener = source('src/app/(app)/listen/[bookId]/page.tsx');
-    const banner = listener.slice(
-      listener.indexOf("activeJob && (activeJob.status === 'running'"),
-      listener.indexOf('<div className="flex gap-2 items-center flex-wrap">'),
-    );
+    expect(listener).toContain('<ReviewJobStatus');
+    expect(listener).toContain("reviewChanges={activeJobSettings.jobType === 'batch-refine'}");
+    expect(listener).toContain('/api/audiobooks/batch-refine/changelog?bookId=');
+    expect(listener).toContain('onCancel={() => void cancelActiveJob()}');
+    // Render/menu interaction contracts live in audiobook-review-components and
+    // the real-page Playwright suite, including changelog/cancel overflow.
 
-    expect(banner).toContain("activeJobSettings.jobType === 'batch-refine'");
-    expect(banner).toContain('/api/audiobooks/batch-refine/changelog?bookId=');
-    expect(banner).toContain('Review Changes');
-    expect(banner).toContain('Raw Changelog');
-    expect(banner).toContain('Stop & Cancel');
   });
 
   test('versions 12K chapter maps and retains legacy resume behavior', () => {

@@ -1,5 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ReviewJobStatus } from '@/components/audiobooks/review/ReviewJobStatus';
 import { describe, expect, test } from 'vitest';
 
 function source(relativePath: string): string {
@@ -20,8 +23,10 @@ describe('GPU queue status UI wiring', () => {
     const inlineJobs = source('src/components/doclist/views/JobsInlineView.tsx');
 
     expect(exportModal).toContain('Waiting for the shared GPU. Kokoro has priority');
-    expect(listener).toContain('Generating audiobook · Waiting for GPU');
-    expect(listener).toContain('Kokoro will start automatically when the shared GPU is ready.');
+    expect(listener).toContain('waiting={isWaitingForGpu}');
+    const waiting = renderToStaticMarkup(createElement(ReviewJobStatus, { label: 'Generating audiobook', progress: 0, waiting: true, reviewChanges: false, onReview: () => {}, changelogUrl: '', onCancel: () => {} }));
+    expect(waiting).toContain('Generating audiobook · Waiting for GPU');
+    expect(waiting).toContain('Kokoro will start automatically when the shared GPU is ready.');
     expect(inlineJobs).toContain('Your audiobook progress is preserved.');
     expect(inlineJobs).toContain('Cancel Generation');
   });
