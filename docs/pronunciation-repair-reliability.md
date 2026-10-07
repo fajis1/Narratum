@@ -110,3 +110,14 @@ Hardening verification: 13 focused files / 226 tests; full unit suite 201 files 
 live provider or audio test was performed. Earlier Greek siglum, strict lexical
 dictionary, Hebrew punctuation, mixed-script, partial-word, API-blocking and
 bounded-retry protections remain covered and passing.
+
+## Supported-script consistency — 2026-10-07
+
+Smart Audio pronunciation-label mixed-script validation now derives its count
+from getSupportedSourceScripts(), eliminating the obsolete Latin/Greek/Hebrew
+list. The shared Latin/Greek/Hebrew/Ethiopic registry is authoritative. Nine
+regressions accept pure Ethiopic/Greek/Hebrew labels and reject all six supported
+script pairs at normalization and final validation. Other script-specific
+transliteration, inflection, Scholar omission and reconstruction policies remain
+unchanged. Verified seven focused files / 195 tests, full unit suite 201 files /
+1,707 tests, TypeScript, affected-file ESLint and whitespace checks.

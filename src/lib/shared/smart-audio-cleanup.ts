@@ -1,5 +1,6 @@
 import { expandScholarEditorialWords, hasSplitScholarEditorialWord, SCHOLAR_EDITORIAL_WORD_INSTRUCTIONS } from './scholar-editorial-words';
 import { containsForeignLexicalLetter } from './foreign-narration-token';
+import { getSupportedSourceScripts } from './foreign-word-source-integrity';
 import { isKokoroSafePronunciation } from './kokoro-pronunciation-policy';
 
 export const SMART_AUDIO_OMIT_SENTINEL = '[OMIT]';
@@ -136,14 +137,6 @@ function lookupPronunciation(word: string, lookup: PronunciationLookup): string 
     ?? null;
 }
 
-function scriptCount(value: string): number {
-  return [
-    /\p{Script=Latin}/u.test(value),
-    /\p{Script=Greek}/u.test(value),
-    /\p{Script=Hebrew}/u.test(value),
-  ].filter(Boolean).length;
-}
-
 function repairUnambiguousGreekOcrSubstitution(word: string): string {
   if (!/\p{Script=Greek}/u.test(word) || /\p{Script=Hebrew}/u.test(word)) return word;
   const latinLetters = word.match(/\p{Script=Latin}/gu) || [];
@@ -201,7 +194,7 @@ function resolveAuthoritativeWord(
 }
 
 function assertSingleScriptWord(word: string): void {
-  if (scriptCount(word) > 1) {
+  if (getSupportedSourceScripts(word).length > 1) {
     throw new SmartAudioOutputValidationError(
       `Smart Audio pronunciation tag contains mixed-script OCR text: ${word}`,
     );
