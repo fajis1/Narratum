@@ -3,7 +3,8 @@ import { useState } from 'react';
 import type { SmartAudioReviewFlag } from '@/types/document-settings';
 import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/ui/icon-button';
-export function ReviewIssuesPanel({ chapterIndex, flags, error, chapterExists, retryingId, onRetry, onResolve, onDetails, onAllLogs, onRefresh, needsAttention, onChapterDetails }: {
+export function ReviewIssuesPanel({ chapterIndex, flags, error, chapterExists, retryingId, onRetry, onResolve, onDetails, onAllLogs, onRefresh, needsAttention, onChapterDetails, pronunciationCount = 0, pronunciationReviewRequired = false, onPronunciationReview }: {
+  pronunciationCount?: number; pronunciationReviewRequired?: boolean; onPronunciationReview?: () => void;
   needsAttention?: boolean; onChapterDetails?: () => void;
   chapterIndex: number; flags: SmartAudioReviewFlag[]; error: string | null; chapterExists: (index: number) => boolean;
   retryingId: string | null; onRetry: (flag: SmartAudioReviewFlag) => void; onResolve: (id: string) => void;
@@ -29,6 +30,10 @@ export function ReviewIssuesPanel({ chapterIndex, flags, error, chapterExists, r
       <p>{error ? 'Review issues could not be refreshed' : current.length ? `⚠ ${current.length} ${current.length === 1 ? 'issue' : 'issues'} in this chapter · ${flags.length} total` : needsAttention ? `⚠ This chapter needs review${others.length ? ` · ${others.length} issues elsewhere` : ''}` : `✓ No issues in this chapter${others.length ? ` · ${others.length} elsewhere` : ''}`}</p>
       <Button variant="ghost" size="sm" aria-expanded={expanded} aria-controls="review-issues-content" onClick={() => setExpanded(v => !v)}>{current.length || needsAttention ? 'Review Issues' : 'All Issues'} <span aria-hidden="true" className="ml-1">{expanded ? '▴' : '▾'}</span></Button>
     </div>
+    {pronunciationReviewRequired && <div className="flex items-center justify-between gap-2 border-t border-warning bg-warning-wash px-3 py-1 text-xs text-foreground">
+      <p><span className="font-semibold text-warning">Pronunciation needs review</span>{pronunciationCount ? ` · ${pronunciationCount} ${pronunciationCount === 1 ? 'finding' : 'findings'} in this chapter` : ' · Scan saved text and review proposals'}</p>
+      <Button size="sm" variant="ghost" onClick={onPronunciationReview}>Review pronunciation fixes</Button>
+    </div>}
     {expanded && <div id="review-issues-content" className="max-h-64 overflow-y-auto border-t border-line-soft p-3">
       <div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold text-foreground">Review Issues</h2><div className="flex items-center gap-2">
         <Button size="sm" variant="outline" onClick={onAllLogs}>View All Error Logs</Button>
@@ -44,7 +49,7 @@ export function ReviewIssuesPanel({ chapterIndex, flags, error, chapterExists, r
       {others.length > 0 && <div className="mt-3"><Button variant="ghost" size="sm" aria-expanded={showOthers} onClick={() => setShowOthers(v => !v)}>{showOthers ? 'Hide' : 'Show'} {others.length} other book issues</Button>
         {showOthers && <div className="mt-2 grid gap-2 lg:grid-cols-2">{others.map(renderIssue)}</div>}
       </div>}
-      {!flags.length && !error && !needsAttention && <p className="text-xs text-soft">No retained review issues.</p>}
+      {!flags.length && !error && !needsAttention && !pronunciationReviewRequired && <p className="text-xs text-soft">No retained review issues.</p>}
     </div>}
   </section>;
 }

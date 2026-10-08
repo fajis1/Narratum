@@ -1,0 +1,16 @@
+/* Ten slow cycles; leave a static warning afterwards. Only surface/border
+   colors animate so the label remains legible at every brightness level. */
+.attention {
+  background-color: var(--warning-wash);
+  border-color: var(--warning);
+  animation: pronunciationAttention 4s ease-in-out 10;
+}
+@keyframes pronunciationAttention {
+  0%, 100% { background-color: var(--warning-wash); border-color: var(--warning); }
+  25% { background-color: color-mix(in srgb, var(--warning) 28%, transparent); border-color: var(--warning); }
+  50% { background-color: var(--danger-wash); border-color: var(--danger); }
+  75% { background-color: color-mix(in srgb, var(--danger) 25%, transparent); border-color: var(--danger); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .attention { animation: none; }
+}

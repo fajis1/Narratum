@@ -29,6 +29,8 @@ export default {
         "accent-wash": "var(--accent-wash)",
         "accent-line": "var(--accent-line)",
         "accent-strong": "var(--accent-strong)",
+        warning: "var(--warning)",
+        "warning-wash": "var(--warning-wash)",
         danger: "var(--danger)",
         "danger-strong": "var(--danger-strong)",
         "danger-wash": "var(--danger-wash)",

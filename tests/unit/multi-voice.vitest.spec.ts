@@ -368,9 +368,9 @@ describe('LitRPG source and production wiring', () => {
     expect(listenPage).toContain('previewSpeakerSegment(segmentIndex)');
     expect(listenPage).toContain('rerecordSpeakerSegment(segmentIndex)');
     expect(listenPage).toContain('Re-record this corrected turn and rebuild the containing audio chunk');
-    expect(listenPage).toContain("selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE");
+    expect(listenPage).toContain("bookReviewProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE");
     expect(listenPage).toContain("useSmartAudio: isGeminiDrama");
-    expect(listenPage).toContain("settings: { smartAudioProfileId: selectedProfileId }");
+    expect(listenPage).toContain("settings: { smartAudioProfileId: bookReviewProfile?.id }");
     expect(listenPage).toContain('onSave={() => void handleRegenerate()}');
     expect(listenPage).toContain("isMultiVoice && !isGeminiDrama");
     expect(listenPage).toContain('Now playing');

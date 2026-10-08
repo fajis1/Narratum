@@ -219,6 +219,9 @@ html.custom {
   --accent-line: color-mix(in srgb, var(--accent) 40%, transparent);
   --accent-strong: color-mix(in srgb, var(--accent) 88%, var(--foreground));
 
+  --warning: #a16207;
+  --warning-wash: color-mix(in srgb, var(--warning) 14%, transparent);
+
   --danger: #dc2626;
   --danger-strong: #b91c1c;
   --danger-wash: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -450,4 +453,9 @@ h1, h2, h3, h4, h5, h6 {
      (from the right edge back to the left) is never visible */
   65% { transform: translateX(220%); }
   100% { transform: translateX(220%); }
+}
+
+/* Keep warning text legible on dark/custom review surfaces. */
+html.dark, html.custom {
+  --warning: #fbbf24;
 }

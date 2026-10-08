@@ -2,14 +2,14 @@ import { test, expect, type Page } from '@playwright/test';
 
 // Render the real Next.js page/components. All browser APIs are intercepted;
 // these interaction tests never enqueue production TTS/AI jobs or modify books.
-async function setupReview(page: Page, options: { flags?: boolean; job?: boolean; jobType?: string; cleanedText?: string; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean } = {}) {
+async function setupReview(page: Page, options: { flags?: boolean; job?: boolean; jobType?: string; cleanedText?: string; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean; globalDrama?: boolean; bookDrama?: boolean; noBookProfile?: boolean; pronunciationText?: string; savedPronunciationIssue?: boolean } = {}) {
   await page.addInitScript(() => localStorage.setItem('cookie-consent', 'declined'));
   const chapters = [
     { index: 2, title: 'Opening', format: 'mp3', hasAudio: true },
     { index: 7, title: 'Needs attention', format: 'mp3', hasAudio: false, hasFailure: true },
     { index: 9, title: 'Closing', format: 'mp3', hasAudio: true },
   ];
-  const texts: Record<number, string> = { 2: options.drama ? '<voice name="af_bella">Hello there.</voice>\n<voice name="af_heart">Second speaker.</voice>' : 'Opening text.', 7: 'Needs attention text.', 9: 'Closing text.' };
+  const texts: Record<number, string> = { 2: options.drama ? '<voice name="af_bella">Hello there.</voice>\n<voice name="af_heart">Second speaker.</voice>' : options.pronunciationText || 'Opening text.', 7: 'Needs attention text.', 9: 'Closing text.' };
   const requests: Array<{ path: string; method: string; body: Record<string, unknown> | null }> = [];
   let textLoads = 0;
   let releasePoll: (() => void) | undefined;
@@ -24,7 +24,7 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
     requests.push({ path: pathname, method: request.method(), body });
     const json = (value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
     if (pathname.includes('/auth/get-session')) return json({ user: { id: 'review-fixture', name: 'Reviewer', email: 'review@example.test', isAnonymous: false }, session: { id: 'fixture', expiresAt: '2099-01-01T00:00:00.000Z', userId: 'review-fixture' } });
-    if (pathname === '/api/audiobook/status') return json({ chapters });
+    if (pathname === '/api/audiobook/status') return json({ chapters, settings: options.noBookProfile ? null : { smartAudioProfileId: 'profile', useSmartAudio: true } });
     if (pathname === '/api/audiobook/text') {
       const index = Number(url.searchParams.get('chapterIndex'));
       if (!url.searchParams.get('type') && index === 2 && ++textLoads === 2 && options.delayedPoll) {
@@ -42,7 +42,9 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
       }
       return route.fulfill({ status: 404, body: '' }); // no real media requests
     }
-    if (pathname === '/api/tts-settings') return json({ smartAudioProfiles: [{ id: 'profile', name: 'Biblical Scholarship', aiModel: 'test-model', workerMode: options.drama ? 'multi-voice' : 'standard', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }], selectedSmartAudioProfileId: 'profile' });
+    if (pathname === '/api/tts-settings') return json({ smartAudioProfiles: [{ id: 'profile', name: 'Biblical Scholarship', aiModel: 'test-model', workerMode: options.bookDrama ? 'drama-gemini-tts' : options.drama ? 'multi-voice' : 'standard', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }, ...(options.globalDrama ? [{ id: 'global-drama', name: 'Global Drama', aiModel: 'test-model', workerMode: 'drama-gemini-tts', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }] : [])], selectedSmartAudioProfileId: options.globalDrama ? 'global-drama' : 'profile' });
+    if (pathname === '/api/audiobooks/pronunciation-issues') return json({ repairs: options.savedPronunciationIssue ? [{ changeId: 'pronunciation-change', runId: 'pronunciation-run', fileName: '0010__text.txt', chapterIndex: 9, title: 'Closing', decision: 'pending', audioStatus: 'not_requested', unresolvedCount: 2, ready: false }] : [] });
+    if (pathname === '/api/audiobook/drama-segments') return json({ review: null });
     if (pathname === '/api/audiobooks/batch-regenerate') return json(body?.dryRun ? { needsRegeneration: [{ modifiedChunks: 2 }] } : { success: true });
     if (pathname === '/api/audiobooks/fix-abbreviations-all') return json({ modifiedCount: 0 });
     if (pathname === '/api/audiobooks/queue') return json({ jobs: options.job ? [{ id: 'job-fixture', documentId: 'review-fixture', status: 'running', progress: 46, settingsJson: { jobType: options.jobType || 'batch-refine', ...(options.jobType && options.jobType !== 'batch-refine' ? {} : { batchRefineRunId: 'run-fixture' }) } }] : [] });
@@ -58,7 +60,8 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
   });
   await page.goto('/listen/review-fixture');
   await expect(page.getByRole('heading', { name: 'Review: Opening', exact: true })).toBeVisible({ timeout: 90000 });
-  await expect(page.getByRole('textbox', { name: 'Edited chapter text' })).toHaveValue(texts[2]);
+  if (options.bookDrama) await expect(page.getByText('Gemini Drama · Speaker Review', { exact: true })).toBeVisible();
+  else await expect(page.getByRole('textbox', { name: 'Edited chapter text' })).toHaveValue(texts[2]);
   return { requests, failSave: () => { saveFails = true; }, releaseSave: () => releaseSave?.(), pollWaiting: () => pollWaiting, releasePoll: () => releasePoll?.() };
 }
 
@@ -384,4 +387,57 @@ test('pronunciation job has correct label and no batch-only controls', async ({ 
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Book Tools', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: /AI Batch Refine/ })).toBeDisabled();
+});
+
+
+test('normal book ignores global Drama selection; missing book profile also stays a normal editor', async ({ page }) => {
+  const fixture = await setupReview(page, { globalDrama: true });
+  await expect(editor(page)).toBeVisible();
+  await expect(page.getByText('Gemini Drama · Speaker Review', { exact: true })).toHaveCount(0);
+  expect(fixture.requests.filter(request => request.path === '/api/audiobook/drama-segments')).toHaveLength(0);
+  await page.getByRole('button', { name: 'AI Clean Chapter…', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Profile', exact: true })).toHaveValue('profile');
+  await page.keyboard.press('Escape');
+  await setupReview(page, { globalDrama: true, noBookProfile: true });
+  await expect(editor(page)).toBeVisible();
+  await expect(page.getByText('Gemini Drama · Speaker Review', { exact: true })).toHaveCount(0);
+});
+
+test('a saved Gemini Drama book still opens its speaker review', async ({ page }) => {
+  await setupReview(page, { bookDrama: true });
+  await expect(page.getByText('This chapter has no saved Gemini speaker assignments yet.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Prepare speaker review', exact: true })).toBeVisible();
+});
+
+test('pronunciation issues slowly cycle both controls ten times and disappear when fixed', async ({ page }) => {
+  await setupReview(page, { pronunciationText: 'The Θ edition has περι.' });
+  const book = page.getByRole('button', { name: 'Book Tools', exact: true });
+  await expect(book).toHaveAttribute('data-pronunciation-attention', 'true');
+  const animation = await book.evaluate(element => { const style = getComputedStyle(element); return { name: style.animationName, duration: style.animationDuration, iterations: style.animationIterationCount }; });
+  expect(animation.name).not.toBe('none'); expect(animation.duration).toBe('4s'); expect(animation.iterations).toBe('10');
+  await page.getByRole('button', { name: 'Needs Review (2)', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Chunk 3.*Pronunciation: 2/ })).toBeVisible();
+  await book.click();
+  const scan = page.getByRole('menuitem', { name: 'Scan Pronunciation Issues', exact: true });
+  await expect(scan).toHaveAttribute('data-pronunciation-attention', 'true');
+  expect(await scan.evaluate(element => getComputedStyle(element).animationIterationCount)).toBe('10');
+  await page.keyboard.press('Escape');
+  await editor(page).fill('The [Θ](/θeɪtə/) edition has [περι](/pɛri/).');
+  await expect(book).not.toHaveAttribute('data-pronunciation-attention', 'true');
+});
+
+test('saved pronunciation proposals signal Book Tools without confusing ordinary TTS flags', async ({ page }) => {
+  await setupReview(page, { savedPronunciationIssue: true });
+  await expect(page.getByRole('button', { name: 'Book Tools', exact: true })).toHaveAttribute('data-pronunciation-attention', 'true');
+  await expect(page.getByRole('button', { name: /Chunk 10.*Pronunciation: 2/ })).toBeVisible();
+  await setupReview(page, { flags: true });
+  await expect(page.getByRole('button', { name: 'Book Tools', exact: true })).not.toHaveAttribute('data-pronunciation-attention', 'true');
+});
+
+test('reduced motion keeps a static pronunciation warning', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await setupReview(page, { pronunciationText: 'Read περι.' });
+  const book = page.getByRole('button', { name: 'Book Tools', exact: true });
+  await expect(book).toHaveAttribute('data-pronunciation-attention', 'true');
+  expect(await book.evaluate(element => getComputedStyle(element).animationName)).toBe('none');
 });

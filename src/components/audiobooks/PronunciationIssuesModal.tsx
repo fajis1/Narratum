@@ -14,8 +14,10 @@ type Finding = Chapter & { title: string; hash: string; issues: PronunciationIss
 type RepairConfig = { selectedProfileId: string; recordingVoice: string; recordingVoices: string[]; modelFallbacks?: Record<string, string[]>; profiles: { id: string; name: string; model: string; primaryKeyRef: string; backupKeyRef: string }[]; keySources: { ref: string; label: string; masked: string }[] };
 type RepairJob = { id: string; status: string; progress: number; total: number; error?: string; profileId?: string; aiModel?: string; primaryKeyRef?: string; backupKeyRef?: string; nextAttemptAt?: number; results: { fileName: string; runId?: string; unresolvedCount?: number; error?: string; requestId: string; apiBlocked?: boolean }[] };
 
-export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onRecordingQueued }: {
+export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onRecordingQueued, onScanResult, onReviewStatus }: {
   open: boolean; onClose: () => void; bookId: string; profileId?: string; onRecordingQueued: () => void;
+  onScanResult?: (chapterIndex: number, issueCount: number) => void;
+  onReviewStatus?: (repairs: PronunciationRepairStatus[]) => void;
 }) {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -46,8 +48,8 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
   useEffect(() => { setOverride(false); }, [open, bookId]);
   const refreshRepairs = useCallback(async (signal?: AbortSignal) => {
     const value = await fetch(`/api/audiobooks/pronunciation-issues?bookId=${encodeURIComponent(bookId)}&action=review-status`, { signal, cache: 'no-store' }).then(readJsonResponse);
-    if (!signal?.aborted) setRepairs(value.repairs || []);
-  }, [bookId]);
+    if (!signal?.aborted) { setRepairs(value.repairs || []); onReviewStatus?.(value.repairs || []); }
+  }, [bookId, onReviewStatus]);
   useEffect(() => {
     if (!open) return;
     const current = new AbortController();
@@ -244,6 +246,7 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
         try {
           const result: Finding = await request({ action: 'scan', fileName: chapter.fileName }, current.signal);
           current.signal.throwIfAborted();
+          onScanResult?.(result.chapterIndex, result.issues.filter(issue => issue.id !== 'failed-chapter').length);
           if (result.issues.length || result.failed || result.runId) {
             setFindings(previous => [...previous, result]);
             if (result.issues.length && (!result.runId || result.retryRunId)) setSelected(previous => [...previous, result.fileName]);

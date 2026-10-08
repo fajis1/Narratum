@@ -1,3 +1,7 @@
+import { savedBookReviewProfile, initialReviewCleanupProfile } from '@/components/audiobooks/review/review-book-profile';
+import type { SmartAudioProfile } from '@/types/client';
+import { ReviewBookMenu } from '@/components/audiobooks/review/ReviewBookMenu';
+import { ReviewChapterList } from '@/components/audiobooks/review/ReviewChapterList';
 import { submittedChapterIsCurrent } from '@/components/audiobooks/review/review-editor-snapshot';
 import { reviewJobPresentation, isActiveReviewJob } from '@/components/audiobooks/review/review-job-presentation';
 import { createElement } from 'react';
@@ -94,5 +98,35 @@ describe('review hardening boundaries', () => {
     expect(submittedChapterIsCurrent({ index: 2, text: 'new' }, submitted, '{}')).toBe(false);
     expect(submittedChapterIsCurrent({ index: 2, text: 'submitted' }, submitted, '{"0":"new"}')).toBe(false);
     expect(submittedChapterIsCurrent({ index: 7, text: 'submitted' }, submitted, '{}')).toBe(false);
+  });
+});
+
+
+describe('book context and pronunciation attention', () => {
+  const standard: SmartAudioProfile = { id: 'standard', name: 'Scholarly book', aiModel: 'fixture', customTtsPrompt: '', workerMode: 'standard', abbreviations: {}, pronunciations: {}, books: {} };
+  const drama: SmartAudioProfile = { ...standard, id: 'drama', name: 'Drama', workerMode: 'drama-gemini-tts' };
+  test('book profile, not the globally preferred drama profile, controls review mode', () => {
+    expect(savedBookReviewProfile([drama, standard], { smartAudioProfileId: 'standard', useSmartAudio: true })).toBe(standard);
+    expect(savedBookReviewProfile([drama, standard], null)).toBeUndefined();
+    expect(savedBookReviewProfile([drama, standard], { smartAudioProfileId: 'drama', useSmartAudio: false })).toBeUndefined();
+    expect(savedBookReviewProfile([standard, drama], { smartAudioProfileId: 'drama', useSmartAudio: true })).toBe(drama);
+    expect(initialReviewCleanupProfile([drama, standard], null, 'drama')).toBe(standard);
+    expect(initialReviewCleanupProfile([drama, standard], { smartAudioProfileId: 'standard' }, 'drama')).toBe(standard);
+  });
+  test('Book Tools and its scan command share pronunciation-only attention', () => {
+    const noop = () => {};
+    const props = { onScan: noop, onReviewChanges: noop, onFixAll: noop, onBatchRefine: noop, onRecordModified: noop, onExport: noop, onForceRecord: noop, fixing: false, rebuilding: false, empty: false, showReviewChanges: false };
+    const warned = bookToolSections({ ...props, pronunciationAttention: true }).flatMap(s => s.actions);
+    expect(warned.filter(action => action.attention).map(action => action.label)).toEqual(['Scan Pronunciation Issues']);
+    expect(renderToStaticMarkup(createElement(ReviewBookMenu, { ...props, pronunciationAttention: true }))).toContain('data-pronunciation-attention="true"');
+    expect(renderToStaticMarkup(createElement(ReviewBookMenu, props))).not.toContain('data-pronunciation-attention');
+  });
+  test('pronunciation-only chapters participate in review filter/sort and get colored textual badges', () => {
+    const chapters = [{ index: 2, title: 'Clean', format: 'mp3' }, { index: 9, title: 'Pronunciation', format: 'mp3', pronunciationIssueCount: 2 }];
+    expect(filterAndSortChapters(chapters, 'needs_review', 'default').map(chapter => chapter.index)).toEqual([9]);
+    expect(filterAndSortChapters(chapters, 'all', 'review_first').map(chapter => chapter.index)).toEqual([9, 2]);
+    const html = renderToStaticMarkup(createElement(ReviewChapterList, { chapters, visible: chapters, selectedIndex: 2, reviewCount: 1, filter: 'all', onFilter: () => {}, search: '', onSearch: () => {}, sort: 'default', onSort: () => {}, onSelect: () => {}, needsReview: chapterNeedsReview, hasFlag: () => false }));
+    expect(html).toContain('Pronunciation: 2');
+    expect(html).toContain('border-warning bg-warning-wash');
   });
 });

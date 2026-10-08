@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/ui/icon-button';
 export interface ReviewChapter {
   index: number; title: string; format: string; hasAudio?: boolean; hasRejected?: boolean;
-  hasFailure?: boolean; needsReview?: boolean; isEmptyText?: boolean; status?: string;
+  hasFailure?: boolean; needsReview?: boolean; isEmptyText?: boolean; status?: string; pronunciationIssueCount?: number; pronunciationReviewRequired?: boolean;
 }
 export function ReviewChapterList({ chapters, visible, selectedIndex, reviewCount, filter, onFilter, search, onSearch, sort, onSort, onSelect, needsReview, hasFlag, selectedContent }: {
   chapters: ReviewChapter[]; visible: ReviewChapter[]; selectedIndex: number; reviewCount: number;
@@ -27,12 +27,14 @@ export function ReviewChapterList({ chapters, visible, selectedIndex, reviewCoun
     <div className="min-h-0 flex-1 overflow-y-auto p-2">
       {!visible.length && <div className="p-3 text-xs text-soft"><p>{filter === 'needs_review' ? 'No chapters need manual review.' : 'No chapters matched your search.'}</p>{filter === 'needs_review' && <Button size="sm" variant="ghost" onClick={() => onFilter('all')}>Show all chapters</Button>}</div>}
       {visible.map(chapter => <div key={chapter.index} className="mb-1">
-        <button type="button" aria-current={selectedIndex === chapter.index ? 'true' : undefined} onClick={() => onSelect(chapter.index)} className={`w-full rounded border p-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${selectedIndex === chapter.index ? 'border-accent-line bg-accent-wash text-foreground' : needsReview(chapter) ? 'border-line bg-surface-sunken text-foreground hover:bg-accent-wash' : 'border-transparent text-soft hover:bg-surface-raised'}`}>
+        <button type="button" aria-current={selectedIndex === chapter.index ? 'true' : undefined} onClick={() => onSelect(chapter.index)} className={`w-full rounded border p-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${selectedIndex === chapter.index ? 'border-accent-line bg-accent-wash text-foreground' : needsReview(chapter) ? 'border-warning bg-warning-wash text-foreground hover:bg-accent-wash' : 'border-transparent text-soft hover:bg-surface-raised'}`}>
           <span className="block font-medium">Chunk {chapter.index + 1}</span><span className="mt-1 block text-xs">{chapter.title}</span>
           <span className="mt-1 flex flex-wrap gap-1 text-[10px]">
-            {(chapter.hasRejected || chapter.hasFailure || chapter.status === 'error') && <span className="rounded border border-line bg-surface px-1">Needs re-recording</span>}
+            {(chapter.hasRejected || chapter.hasFailure || chapter.status === 'error') && <span className="rounded border border-danger bg-danger-wash px-1 text-danger">Needs re-recording</span>}
+            {Boolean(chapter.pronunciationIssueCount) && <span className="rounded border border-warning bg-warning-wash px-1 text-warning">Pronunciation: {chapter.pronunciationIssueCount}</span>}
+            {chapter.pronunciationReviewRequired && !chapter.pronunciationIssueCount && <span className="rounded border border-warning bg-warning-wash px-1 text-warning">Pronunciation review</span>}
             {chapter.isEmptyText && <span className="rounded border border-line bg-surface px-1">Empty text</span>}
-            {(hasFlag(chapter.index) || chapter.needsReview) && <span className="rounded border border-line bg-surface px-1">Review issue</span>}
+            {(hasFlag(chapter.index) || chapter.needsReview) && <span className="rounded border border-warning bg-warning-wash px-1 text-warning">Review issue</span>}
             {chapter.hasAudio === false && !chapter.hasRejected && <span className="rounded border border-line bg-surface px-1">Pending audio</span>}
           </span>
         </button>

@@ -1,4 +1,8 @@
 "use client";
+import { savedBookReviewProfile, initialReviewCleanupProfile } from '@/components/audiobooks/review/review-book-profile';
+import { scanPronunciationIssues } from '@/lib/shared/pronunciation-issues';
+import type { PronunciationRepairStatus } from '@/lib/shared/pronunciation-repair-status';
+import type { AudiobookGenerationSettings } from '@/types/client';
 import { submittedChapterIsCurrent } from '@/components/audiobooks/review/review-editor-snapshot';
 import { reviewJobPresentation, isActiveReviewJob } from '@/components/audiobooks/review/review-job-presentation';
 
@@ -116,6 +120,12 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [showMobilePlayer, setShowMobilePlayer] = useState(false);
   const [smartAudioProfiles, setSmartAudioProfiles] = useState<SmartAudioProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>('');
+  const [preferredProfileId, setPreferredProfileId] = useState('');
+  const [savedBookSettings, setSavedBookSettings] = useState<Pick<AudiobookGenerationSettings, 'smartAudioProfileId' | 'useSmartAudio'> | null>();
+  const cleanupProfileInitialized = useRef(false);
+  const [pronunciationRepairs, setPronunciationRepairs] = useState<PronunciationRepairStatus[]>([]);
+  const [scannedPronunciationCounts, setScannedPronunciationCounts] = useState<Record<number, number>>({});
+  const [livePronunciationScan, setLivePronunciationScan] = useState({ chapterIndex: undefined as number | undefined, text: '', count: 0 });
   const [cleanTarget, setCleanTarget] = useState<'original' | 'edited'>('edited');
   const [isFixingAll, setIsFixingAll] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -131,9 +141,8 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const selectedChapterIndex = currentChapter?.index;
 
   const isMultiVoice = chapterText.includes('<voice');
-  const selectedSmartAudioProfile = smartAudioProfiles.find((profile) => profile.id === selectedProfileId)
-    || smartAudioProfiles[0];
-  const isGeminiDrama = selectedSmartAudioProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
+  const bookReviewProfile = savedBookReviewProfile(smartAudioProfiles, savedBookSettings);
+  const isGeminiDrama = bookReviewProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE;
   const isDramaReview = isMultiVoice || isGeminiDrama;
   const isWaitingForGpu = activeJob?.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE;
 
@@ -153,9 +162,69 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     }
   }, [searchParams]);
 
-  const isChapterNeedingReview = useCallback((chapter: Chapter) => chapterNeedsReview(chapter, reviewFlags), [reviewFlags]);
-  const reviewChaptersCount = useMemo(() => chapters.filter(isChapterNeedingReview).length, [chapters, isChapterNeedingReview]);
-  const visibleChapters = useMemo(() => filterAndSortChapters(chapters, chapterFilter, chapterSort, chapterSearch, reviewFlags), [chapters, chapterFilter, chapterSort, chapterSearch, reviewFlags]);
+  useEffect(() => {
+    cleanupProfileInitialized.current = false;
+    setSavedBookSettings(undefined);
+    setPronunciationRepairs([]);
+    setScannedPronunciationCounts({});
+  }, [bookId]);
+
+  useEffect(() => {
+    if (cleanupProfileInitialized.current || savedBookSettings === undefined || !smartAudioProfiles.length) return;
+    const profile = initialReviewCleanupProfile(smartAudioProfiles, savedBookSettings, preferredProfileId);
+    setSelectedProfileId(profile?.id || '');
+    cleanupProfileInitialized.current = true;
+  }, [smartAudioProfiles, savedBookSettings, preferredProfileId]);
+
+  // Reuse the authoritative scanner locally; no Gemini call or automatic repair.
+  // Debounce typing and never attach findings to a different text/chapter snapshot.
+  useEffect(() => {
+    if (selectedChapterIndex === undefined || isTextLoading) return;
+    const timer = setTimeout(() => setLivePronunciationScan({ chapterIndex: selectedChapterIndex, text: chapterText,
+      count: scanPronunciationIssues(chapterText).length }), 250);
+    return () => clearTimeout(timer);
+  }, [chapterText, selectedChapterIndex, isTextLoading]);
+
+  const receivePronunciationScan = useCallback((chapterIndex: number, issueCount: number) => {
+    setScannedPronunciationCounts(previous => previous[chapterIndex] === issueCount ? previous : { ...previous, [chapterIndex]: issueCount });
+  }, []);
+  const receivePronunciationReview = useCallback((repairs: PronunciationRepairStatus[]) => {
+    setPronunciationRepairs(previous => JSON.stringify(previous) === JSON.stringify(repairs) ? previous : repairs);
+    setScannedPronunciationCounts(previous => {
+      const next = { ...previous };
+      let changed = false;
+      for (const repair of repairs) if (repair.decision === 'approved' && Object.hasOwn(next, repair.chapterIndex)) {
+        delete next[repair.chapterIndex]; changed = true;
+      }
+      return changed ? next : previous;
+    });
+  }, []);
+  const fetchPronunciationReview = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/audiobooks/pronunciation-issues?bookId=${encodeURIComponent(bookId)}&action=review-status`, { cache: 'no-store' });
+      if (!response.ok) return;
+      const body = await response.json() as { repairs?: PronunciationRepairStatus[] };
+      if (Array.isArray(body.repairs)) receivePronunciationReview(body.repairs);
+    } catch { /* Existing scan dialog exposes provider/storage failures when opened. */ }
+  }, [bookId, receivePronunciationReview]);
+  useEffect(() => { void fetchPronunciationReview(); }, [fetchPronunciationReview]);
+
+  const reviewChapters = useMemo(() => {
+    const repairs = new Map(pronunciationRepairs.map(repair => [repair.chapterIndex, repair]));
+    return chapters.map(chapter => {
+      const repair = repairs.get(chapter.index);
+      const live = livePronunciationScan.chapterIndex === chapter.index && livePronunciationScan.text === chapterText && chapter.index === selectedChapterIndex;
+      const count = live ? livePronunciationScan.count : scannedPronunciationCounts[chapter.index] ?? repair?.unresolvedCount ?? 0;
+      return { ...chapter, pronunciationIssueCount: count,
+        pronunciationReviewRequired: Boolean(count || repair?.decision === 'pending' || repair?.audioStatus === 'error') };
+    });
+  }, [chapters, pronunciationRepairs, livePronunciationScan, chapterText, selectedChapterIndex, scannedPronunciationCounts]);
+  const hasPronunciationAttention = reviewChapters.some(chapter => chapter.pronunciationReviewRequired);
+  const currentPronunciationReview = reviewChapters.find(chapter => chapter.index === selectedChapterIndex);
+  const reviewChapterByIndex = useMemo(() => new Map(reviewChapters.map(chapter => [chapter.index, chapter])), [reviewChapters]);
+  const isChapterNeedingReview = useCallback((chapter: Chapter) => chapterNeedsReview(reviewChapterByIndex.get(chapter.index) || chapter, reviewFlags), [reviewChapterByIndex, reviewFlags]);
+  const reviewChaptersCount = useMemo(() => reviewChapters.filter(isChapterNeedingReview).length, [reviewChapters, isChapterNeedingReview]);
+  const visibleChapters = useMemo(() => filterAndSortChapters(reviewChapters, chapterFilter, chapterSort, chapterSearch, reviewFlags), [reviewChapters, chapterFilter, chapterSort, chapterSearch, reviewFlags]);
 
   const requestChapterSelection = useCallback((chapterIndex: number) => {
     if (chapterIndex === editorSnapshot.current.index) return;
@@ -277,6 +346,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     try {
       const res = await fetch(`/api/audiobook/status?bookId=${bookId}`);
       const data = await res.json();
+      setSavedBookSettings(data.settings || null);
       if (data.chapters && data.chapters.length > 0) {
         const selected = editorSnapshot.current.index;
         if (editorSnapshot.current.dirty && !data.chapters.some((chapter: Chapter) => chapter.index === selected)) return;
@@ -308,7 +378,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         const data = await res.json();
         if (data.smartAudioProfiles) {
           setSmartAudioProfiles(data.smartAudioProfiles);
-          setSelectedProfileId(data.selectedSmartAudioProfileId || data.smartAudioProfiles[0]?.id || '');
+          setPreferredProfileId(data.selectedSmartAudioProfileId || '');
         }
       } catch (err) {
         console.error("Failed to fetch profiles", err);
@@ -516,7 +586,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           chapterTitle: currentChapter.title,
           text: textToRecord,
           useSmartAudio: isGeminiDrama,
-          ...(isGeminiDrama ? { settings: { smartAudioProfileId: selectedProfileId } } : {}),
+          ...(isGeminiDrama ? { settings: { smartAudioProfileId: bookReviewProfile?.id } } : {}),
           format: currentChapter.format,
         }),
       });
@@ -587,7 +657,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           chapterTitle: chapter.title,
           text,
           useSmartAudio: isGeminiDrama,
-          ...(isGeminiDrama ? { settings: { smartAudioProfileId: selectedProfileId } } : {}),
+          ...(isGeminiDrama ? { settings: { smartAudioProfileId: bookReviewProfile?.id } } : {}),
           format: chapter.format,
         }),
       });
@@ -949,7 +1019,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
       <div className="flex flex-col items-center justify-center h-screen bg-surface text-foreground">
         <h1 className="text-2xl font-bold mb-4">No Audiobook Available</h1>
         <button className="mb-3 rounded border border-line-soft px-4 py-2" onClick={() => setShowPronunciationIssues(true)}>Scan Pronunciation Issues</button>
-        <PronunciationIssuesModal open={showPronunciationIssues} onClose={() => setShowPronunciationIssues(false)} bookId={bookId} profileId={selectedProfileId} onRecordingQueued={() => void fetchStatus()} />
+        <PronunciationIssuesModal open={showPronunciationIssues} onClose={() => setShowPronunciationIssues(false)} bookId={bookId} profileId={selectedProfileId} onScanResult={receivePronunciationScan} onReviewStatus={receivePronunciationReview} onRecordingQueued={() => void fetchStatus()} />
         <button className="px-4 py-2 bg-accent rounded" onClick={() => router.push("/app")}>Return to Dashboard</button>
       </div>
     );
@@ -975,7 +1045,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           onBatchRefine={() => void handleOpenBatchRefine()} onRecordModified={() => void handleRebuildAllModified()}
           onExport={() => setShowAudiobookshelfModal(true)} onForceRecord={() => setShowForceRecord(true)}
           fixing={isFixingAll} rebuilding={isRebuildingAll} empty={!chapters.length}
-          dirty={isDirty} activeJob={hasActiveBookJob || isRegenerating || isAiCleaning}
+          dirty={isDirty} activeJob={hasActiveBookJob || isRegenerating || isAiCleaning} pronunciationAttention={hasPronunciationAttention}
           showReviewChanges={Boolean(activeBatchRefineRunId) && !(hasActiveBookJob && jobPresentation.reviewChanges)} />}
       />
       {activeJob && hasActiveBookJob && <ReviewJobStatus
@@ -1002,11 +1072,13 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         chapterExists={index => chapters.some(chapter => chapter.index === index)} retryingId={retryingReviewFlagId}
         onRetry={flag => void retryReviewFlag(flag)} onResolve={id => void resolveReviewFlag(id)}
         onDetails={flag => setErrorLogModalChapter({ index: flag.chapterIndex, title: chapters.find(c => c.index === flag.chapterIndex)?.title })}
-        onAllLogs={() => setErrorLogModalChapter({ index: null })} onRefresh={() => void fetchReviewFlags()} />
+        pronunciationCount={currentPronunciationReview?.pronunciationIssueCount} pronunciationReviewRequired={currentPronunciationReview?.pronunciationReviewRequired}
+        onPronunciationReview={() => setShowPronunciationIssues(true)}
+        onAllLogs={() => setErrorLogModalChapter({ index: null })} onRefresh={() => { void fetchReviewFlags(); void fetchPronunciationReview(); }} />
       <div className="min-h-0 flex-1 flex flex-col md:flex-row overflow-hidden">
         {!showLeftPane && !showMiddlePane && !showRightPane && <p className="hidden p-4 text-sm text-soft md:block">Choose a pane using the Layout controls.</p>}
         <section aria-label="Chapters pane" className={`min-h-0 w-full flex-1 flex-col border-r border-line-soft bg-surface md:min-w-60 md:flex-none ${isDramaReview ? 'md:w-2/5' : 'md:w-1/4'} ${mobilePane === 'chapters' ? 'flex' : 'hidden'} ${showLeftPane ? 'md:flex' : 'md:hidden'}`}>
-          <ReviewChapterList chapters={chapters} visible={visibleChapters} selectedIndex={currentChapter.index}
+          <ReviewChapterList chapters={reviewChapters} visible={visibleChapters} selectedIndex={currentChapter.index}
             reviewCount={reviewChaptersCount} filter={chapterFilter} onFilter={setChapterFilter}
             search={chapterSearch} onSearch={setChapterSearch} sort={chapterSort} onSort={setChapterSort}
             onSelect={requestChapterSelection} needsReview={isChapterNeedingReview}
@@ -1141,7 +1213,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
             <div className={`flex-1 p-4 relative ${isGeminiDrama && !showGeminiFullText ? 'overflow-y-auto' : 'overflow-hidden'}`}>
               {isGeminiDrama && !showGeminiFullText && currentChapter ? (
                 <GeminiDramaSpeakerReview key={`${bookId}-${currentChapter.index}`} bookId={bookId}
-                  chapterIndex={currentChapter.index} profileId={selectedSmartAudioProfile?.id || selectedProfileId}
+                  chapterIndex={currentChapter.index} profileId={bookReviewProfile?.id || ''}
                   chapterText={chapterText} hasEditedText={hasEditedText} />
               ) : <textarea
                 aria-label="Edited chapter text"
@@ -1527,7 +1599,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         }}
       />
 
-      <PronunciationIssuesModal open={showPronunciationIssues} onClose={() => setShowPronunciationIssues(false)} bookId={bookId} profileId={selectedProfileId} onRecordingQueued={() => {
+      <PronunciationIssuesModal open={showPronunciationIssues} onClose={() => setShowPronunciationIssues(false)} bookId={bookId} profileId={selectedProfileId} onScanResult={receivePronunciationScan} onReviewStatus={receivePronunciationReview} onRecordingQueued={() => {
         void fetchStatus();
         if (selectedChapterIndex !== undefined) void fetchChapterText(selectedChapterIndex, true);
       }} />
