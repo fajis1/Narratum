@@ -37,7 +37,7 @@ vi.mock('@/lib/server/smart-audio/gemini-failover', async importOriginal => ({ .
 
 import { pronunciationCatalog, proposePronunciationRepair, readPronunciationChapter, resumeRepairedPronunciationJob } from '../../src/lib/server/audiobooks/pronunciation-repairs';
 import { savePronunciationFailure } from '../../src/lib/server/audiobooks/pronunciation-failures';
-import { listPronunciationRepairStatus } from '../../src/lib/server/audiobooks/pronunciation-repair-status';
+import { approvedPronunciationOverrideHash, listPronunciationRepairStatus } from '../../src/lib/server/audiobooks/pronunciation-repair-status';
 import { pronunciationRepairStatusLabel } from '../../src/lib/shared/pronunciation-repair-status';
 
 const base = { bookId: 'book', userId: 'user', fileName: '0107__text.txt', signal: new AbortController().signal };
@@ -375,4 +375,18 @@ test('approved Ethiopic dictionary repairs cannot silently bypass the audiobook 
   const proposed = mocks.insert.mock.calls[0][0].proposedText as string;
   expect(proposed).toBe('[ኵሎ](/kulo/)፡[ኅቡኣተ](/kulo/)፡[ጥበቦሙ](/kulo/)።');
   expect(proposed.replace(/\[([^\]]+)\]\(\/[^/]+\/\)/gu, '$1')).toBe(original);
+});
+
+
+test('only the latest approved, audited Override supplies an acknowledgment hash', async () => {
+  const { PRONUNCIATION_REVIEW_OVERRIDE_NOTE } = await import('@/lib/server/audiobooks/pronunciation-repair-validation');
+  const row = { changeId: 'new', runId: 'run', fileName: '0001__rejected.txt', chapterIndex: 0, title: 'One', decision: 'approved', audioStatus: 'completed', proposedText: '[περι](/pɛr/)', proposedTextHash: batchRefineTextHash('[περι](/pɛr/)'), reviewNote: PRONUNCIATION_REVIEW_OVERRIDE_NOTE };
+  mocks.selectResults.push([row]);
+  expect((await listPronunciationRepairStatus('book', 'user'))[0]).toMatchObject({ approvedOverrideTextHash: row.proposedTextHash });
+  mocks.selectResults.push([row]);
+  expect(await approvedPronunciationOverrideHash('book', 'user', '0001__text.txt')).toBe(row.proposedTextHash);
+  for (const unapproved of [{ ...row, decision: 'pending' }, { ...row, decision: 'rejected' }, { ...row, reviewNote: 'Ordinary approval' }, { ...row, proposedTextHash: 'invalid' }]) {
+    mocks.selectResults.push([unapproved]);
+    expect(await approvedPronunciationOverrideHash('book', 'user', '0001__text.txt')).toBeUndefined();
+  }
 });

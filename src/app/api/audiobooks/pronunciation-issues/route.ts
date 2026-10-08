@@ -12,7 +12,9 @@ import { failedChapterReviewIssue, scanPronunciationIssues } from '@/lib/shared/
 import { runTaskNow } from '@/lib/server/tasks/engine';
 import { errorResponse } from '@/lib/server/errors/next-response';
 import { pronunciationRepairReport } from '@/lib/server/audiobooks/pronunciation-repair-report';
-import { listPronunciationRepairStatus } from '@/lib/server/audiobooks/pronunciation-repair-status';
+import { listPronunciationRepairStatus, approvedPronunciationOverrideHash } from '@/lib/server/audiobooks/pronunciation-repair-status';
+import { unacknowledgedPronunciationIssues } from '@/lib/shared/pronunciation-review-acknowledgment';
+import { batchRefineTextHash } from '@/lib/server/audiobooks/batch-refine-assessment';
 import { rememberApprovedPronunciations } from '@/lib/server/audiobooks/remember-approved-pronunciations';
 import { getAudiobookObjectBuffer } from '@/lib/server/audiobooks/blobstore';
 import { coerceAudiobookGenerationSettings } from '@/lib/server/audiobooks/settings';
@@ -98,7 +100,9 @@ export async function POST(request: Request) {
       const { dictionary } = await pronunciationDictionary(user, body.bookId, profileId || chapter.profileId);
       const existing = await existingPronunciationRepair(body.bookId, user, body.fileName, chapter.hash);
       const scanText = existing?.decision === 'pending' ? existing.proposedText : chapter.text;
-      const scannedIssues = scanPronunciationIssues(scanText, dictionary);
+      const allIssues = scanPronunciationIssues(scanText, dictionary);
+      const overrideHash = await approvedPronunciationOverrideHash(body.bookId, user, body.fileName);
+      const scannedIssues = unacknowledgedPronunciationIssues(allIssues, batchRefineTextHash(scanText), overrideHash);
       const forcedFailureIssue = chapter.failed && !existing && !scannedIssues.length
         ? failedChapterReviewIssue(scanText, chapter.failureError)
         : null;
@@ -106,6 +110,7 @@ export async function POST(request: Request) {
         hash: chapter.hash, jobId: chapter.jobId, failureError: chapter.failureError, runId: existing?.runId, audioStatus: existing?.audioStatus,
         retryRunId: existing?.decision === 'pending' ? existing.runId : undefined,
         proposalHash: existing?.decision === 'pending' ? existing.proposedTextHash : undefined,
+        acknowledgedIssueCount: allIssues.length - scannedIssues.length,
         issues: forcedFailureIssue ? [forcedFailureIssue] : scannedIssues });
     }
     if (body.action === 'propose' && typeof body.hash === 'string') {

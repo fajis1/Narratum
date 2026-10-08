@@ -1,6 +1,8 @@
 export type PronunciationRepairStatus = {
   changeId: string; runId: string; fileName: string; chapterIndex: number; title: string;
   decision: string; audioStatus: string; unresolvedCount: number; ready: boolean;
+  /** Only an audited, approved Override supplies this exact UTF-8 text hash. */
+  approvedOverrideTextHash?: string;
 };
 
 export function pronunciationRepairStatusLabel(repair: PronunciationRepairStatus): string {

@@ -1,7 +1,8 @@
+import { batchRefineTextHash } from '@/lib/server/audiobooks/batch-refine-assessment';
 import { beforeEach, expect, test, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ auth: vi.fn(), owned: vi.fn(), catalog: vi.fn(), chapter: vi.fn(), propose: vi.fn(), resume: vi.fn(), queue: vi.fn(), jobs: vi.fn(), stop: vi.fn(), config: vi.fn(), report: vi.fn(), repairStatus: vi.fn(), remember: vi.fn() }));
+const mocks = vi.hoisted(() => ({ auth: vi.fn(), owned: vi.fn(), catalog: vi.fn(), chapter: vi.fn(), propose: vi.fn(), resume: vi.fn(), queue: vi.fn(), jobs: vi.fn(), stop: vi.fn(), config: vi.fn(), report: vi.fn(), repairStatus: vi.fn(), remember: vi.fn(), overrideHash: vi.fn() }));
 vi.mock('@/lib/server/audiobooks/remember-approved-pronunciations', () => ({ rememberApprovedPronunciations: (...args: unknown[]) => mocks.remember(...args) }));
-vi.mock('@/lib/server/audiobooks/pronunciation-repair-status', () => ({ listPronunciationRepairStatus: (...args: unknown[]) => mocks.repairStatus(...args) }));
+vi.mock('@/lib/server/audiobooks/pronunciation-repair-status', () => ({ listPronunciationRepairStatus: (...args: unknown[]) => mocks.repairStatus(...args), approvedPronunciationOverrideHash: (...args: unknown[]) => mocks.overrideHash(...args) }));
 vi.mock('@/lib/server/audiobooks/pronunciation-repair-report', () => ({ pronunciationRepairReport: (...args: unknown[]) => mocks.report(...args) }));
 vi.mock('@/lib/server/audiobooks/pronunciation-repair-jobs', () => ({ queuePronunciationRepairs: (...args: unknown[]) => mocks.queue(...args), listPronunciationRepairJobs: (...args: unknown[]) => mocks.jobs(...args), stopPronunciationRepairs: (...args: unknown[]) => mocks.stop(...args) }));
 vi.mock('@/lib/server/audiobooks/pronunciation-repair-config', () => ({ loadPronunciationRepairConfig: (...args: unknown[]) => mocks.config(...args), pronunciationRepairErrorMessage: () => 'Repair failed safely.' }));
@@ -17,7 +18,7 @@ vi.mock('@/lib/server/audiobooks/pronunciation-repairs', () => ({
 vi.mock('@/lib/server/tasks/engine', () => ({ runTaskNow: vi.fn().mockResolvedValue(undefined) }));
 import { GET, POST } from '../../src/app/api/audiobooks/pronunciation-issues/route';
 const request = (action: string) => new Request('http://localhost/api/audiobooks/pronunciation-issues', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookId: 'book', fileName: '0001__text.txt', action, hash: 'hash' }) });
-beforeEach(() => { vi.clearAllMocks(); mocks.auth.mockResolvedValue({ userId: 'owner' }); mocks.owned.mockResolvedValue([{ id: 'book' }]); });
+beforeEach(() => { vi.clearAllMocks(); mocks.overrideHash.mockResolvedValue(undefined); mocks.auth.mockResolvedValue({ userId: 'owner' }); mocks.owned.mockResolvedValue([{ id: 'book' }]); });
 
 test('loads live repair status only for the authenticated book owner', async () => {
   const url = 'http://localhost/api/audiobooks/pronunciation-issues?bookId=book&action=review-status';
@@ -96,4 +97,37 @@ test('remembers approved repairs only for the authenticated owner without accept
   expect(mocks.remember).toHaveBeenCalledWith('book', 'owner');
   expect((await response.json()).saved).toBe(2);
   expect(mocks.queue).not.toHaveBeenCalled();
+});
+
+
+test('rescanning acknowledges Override only for its exact saved version, including Unicode and punctuation', async () => {
+  const text = 'Read [περι](/pɛr/) and α\u0313.';
+  mocks.chapter.mockResolvedValue({ text, chapterIndex: 0, hash: batchRefineTextHash(text), title: 'Chapter', failed: false });
+  mocks.overrideHash.mockResolvedValue(batchRefineTextHash(text));
+  let body = await (await POST(request('scan'))).json();
+  expect(body.issues).toEqual([]);
+  expect(body.acknowledgedIssueCount).toBeGreaterThan(0);
+  expect(mocks.overrideHash).toHaveBeenCalledWith('book', 'owner', '0001__text.txt');
+  for (const changed of [text + ' New text.', text.replace('pɛr', 'pɛ'), text.normalize('NFC'), text.replace('.', '!')]) {
+    mocks.chapter.mockResolvedValue({ text: changed, chapterIndex: 0, hash: batchRefineTextHash(changed), title: 'Chapter', failed: false });
+    body = await (await POST(request('scan'))).json();
+    expect(body.issues.length).toBeGreaterThan(0);
+    expect(body.acknowledgedIssueCount).toBe(0);
+  }
+});
+
+test('no approved Override leaves the strict scanner unchanged', async () => {
+  mocks.chapter.mockResolvedValue({ text: '[περι](/pɛr/)', chapterIndex: 0, hash: 'hash', title: 'Chapter', failed: false });
+  const body = await (await POST(request('scan'))).json();
+  expect(body.issues[0].reason).toContain('part');
+  expect(body.acknowledgedIssueCount).toBe(0);
+});
+
+
+test('Override acknowledgment never hides malformed markup on a rescan', async () => {
+  const text = 'Read [περι](/pɛr/]';
+  mocks.chapter.mockResolvedValue({ text, chapterIndex: 0, hash: batchRefineTextHash(text), title: 'Chapter', failed: false });
+  mocks.overrideHash.mockResolvedValue(batchRefineTextHash(text));
+  const body = await (await POST(request('scan'))).json();
+  expect(body.issues.some((issue: { kind: string }) => issue.kind === 'formatting' || issue.kind === 'structural')).toBe(true);
 });

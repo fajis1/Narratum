@@ -1,6 +1,7 @@
 "use client";
 import { savedBookReviewProfile, initialReviewCleanupProfile } from '@/components/audiobooks/review/review-book-profile';
 import { scanPronunciationIssues } from '@/lib/shared/pronunciation-issues';
+import { unacknowledgedPronunciationIssues } from '@/lib/shared/pronunciation-review-acknowledgment';
 import type { PronunciationRepairStatus } from '@/lib/shared/pronunciation-repair-status';
 import type { AudiobookGenerationSettings } from '@/types/client';
 import { submittedChapterIsCurrent } from '@/components/audiobooks/review/review-editor-snapshot';
@@ -180,10 +181,22 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   // Debounce typing and never attach findings to a different text/chapter snapshot.
   useEffect(() => {
     if (selectedChapterIndex === undefined || isTextLoading) return;
-    const timer = setTimeout(() => setLivePronunciationScan({ chapterIndex: selectedChapterIndex, text: chapterText,
-      count: scanPronunciationIssues(chapterText).length }), 250);
-    return () => clearTimeout(timer);
-  }, [chapterText, selectedChapterIndex, isTextLoading]);
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const issues = scanPronunciationIssues(chapterText);
+      const approvedHash = pronunciationRepairs.find(repair => repair.chapterIndex === selectedChapterIndex)?.approvedOverrideTextHash;
+      let count = issues.length;
+      if (approvedHash) {
+        try {
+          const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(chapterText));
+          const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+          count = unacknowledgedPronunciationIssues(issues, hash, approvedHash).length;
+        } catch { /* Without an exact digest, keep strict findings visible. */ }
+      }
+      if (!cancelled) setLivePronunciationScan({ chapterIndex: selectedChapterIndex, text: chapterText, count });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [chapterText, selectedChapterIndex, isTextLoading, pronunciationRepairs]);
 
   const receivePronunciationScan = useCallback((chapterIndex: number, issueCount: number) => {
     setScannedPronunciationCounts(previous => previous[chapterIndex] === issueCount ? previous : { ...previous, [chapterIndex]: issueCount });

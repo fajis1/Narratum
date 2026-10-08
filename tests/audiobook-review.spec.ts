@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { test, expect, type Page } from '@playwright/test';
 
 // Render the real Next.js page/components. All browser APIs are intercepted;
 // these interaction tests never enqueue production TTS/AI jobs or modify books.
-async function setupReview(page: Page, options: { flags?: boolean; job?: boolean; jobType?: string; cleanedText?: string; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean; globalDrama?: boolean; bookDrama?: boolean; noBookProfile?: boolean; pronunciationText?: string; savedPronunciationIssue?: boolean } = {}) {
+async function setupReview(page: Page, options: { flags?: boolean; job?: boolean; jobType?: string; cleanedText?: string; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean; globalDrama?: boolean; bookDrama?: boolean; noBookProfile?: boolean; pronunciationText?: string; savedPronunciationIssue?: boolean; approvedOverrideTextHash?: string } = {}) {
   await page.addInitScript(() => localStorage.setItem('cookie-consent', 'declined'));
   const chapters = [
     { index: 2, title: 'Opening', format: 'mp3', hasAudio: true },
@@ -43,7 +44,7 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
       return route.fulfill({ status: 404, body: '' }); // no real media requests
     }
     if (pathname === '/api/tts-settings') return json({ smartAudioProfiles: [{ id: 'profile', name: 'Biblical Scholarship', aiModel: 'test-model', workerMode: options.bookDrama ? 'drama-gemini-tts' : options.drama ? 'multi-voice' : 'standard', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }, ...(options.globalDrama ? [{ id: 'global-drama', name: 'Global Drama', aiModel: 'test-model', workerMode: 'drama-gemini-tts', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }] : [])], selectedSmartAudioProfileId: options.globalDrama ? 'global-drama' : 'profile' });
-    if (pathname === '/api/audiobooks/pronunciation-issues') return json({ repairs: options.savedPronunciationIssue ? [{ changeId: 'pronunciation-change', runId: 'pronunciation-run', fileName: '0010__text.txt', chapterIndex: 9, title: 'Closing', decision: 'pending', audioStatus: 'not_requested', unresolvedCount: 2, ready: false }] : [] });
+    if (pathname === '/api/audiobooks/pronunciation-issues') return json({ repairs: options.approvedOverrideTextHash ? [{ changeId: 'approved-change', runId: 'approved-run', fileName: '0003__text.txt', chapterIndex: 2, title: 'Opening', decision: 'approved', audioStatus: 'completed', unresolvedCount: 0, ready: false, approvedOverrideTextHash: options.approvedOverrideTextHash }] : options.savedPronunciationIssue ? [{ changeId: 'pronunciation-change', runId: 'pronunciation-run', fileName: '0010__text.txt', chapterIndex: 9, title: 'Closing', decision: 'pending', audioStatus: 'not_requested', unresolvedCount: 2, ready: false }] : [] });
     if (pathname === '/api/audiobook/drama-segments') return json({ review: null });
     if (pathname === '/api/audiobooks/batch-regenerate') return json(body?.dryRun ? { needsRegeneration: [{ modifiedChunks: 2 }] } : { success: true });
     if (pathname === '/api/audiobooks/fix-abbreviations-all') return json({ modifiedCount: 0 });
@@ -440,4 +441,19 @@ test('reduced motion keeps a static pronunciation warning', async ({ page }) => 
   const book = page.getByRole('button', { name: 'Book Tools', exact: true });
   await expect(book).toHaveAttribute('data-pronunciation-attention', 'true');
   expect(await book.evaluate(element => getComputedStyle(element).animationName)).toBe('none');
+});
+
+
+test('approved Override keeps exact saved text unflagged; new edits restore pronunciation warnings', async ({ page }) => {
+  const text = 'Read [περι](/pɛr/) and α\u0313.';
+  await setupReview(page, { pronunciationText: text, approvedOverrideTextHash: createHash('sha256').update(text, 'utf8').digest('hex') });
+  const book = page.getByRole('button', { name: 'Book Tools', exact: true });
+  await page.waitForTimeout(500);
+  await expect(book).not.toHaveAttribute('data-pronunciation-attention', 'true');
+  for (const changed of [text + ' New edit.', text.normalize('NFC')]) {
+    await editor(page).fill(changed);
+    await expect(book).toHaveAttribute('data-pronunciation-attention', 'true');
+    await editor(page).fill(text);
+    await expect(book).not.toHaveAttribute('data-pronunciation-attention', 'true');
+  }
 });

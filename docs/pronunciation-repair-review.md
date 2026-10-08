@@ -186,3 +186,10 @@ decide the correct split.
 - After deployment, rescan or retry old proposals so they use the current
   patch-scoped repair and per-finding override behavior. Existing rejected
   proposals are not silently rewritten.
+
+
+## Override acknowledgments on rescan (2026-10-08)
+
+A saved, audited Override now acknowledges pronunciation warnings for the exact approved UTF-8 chapter text hash. The scan API and Review-page local indicators share the same version check; accepted warnings no longer reappear as unresolved or trigger warning colors for that version. No global pronunciation policy/dictionary is relaxed. Any word, punctuation, IPA, whitespace or Unicode sequence change restores strict scanning. Structural and malformed-markup findings remain actionable regardless of acknowledgment. The latest chapter decision wins, preventing older Overrides from overriding a newer pending/rejected proposal; rejected-text approvals also match their canonical saved text key. Existing audited approvals work without migration or reapproval.
+
+Verification: six focused suites initially passed (64 tests), additional real scan-route malformed-markup regression passed (12 route tests), final full unit suite 204 files / 1,735 tests passed, TypeScript passed, affected-file ESLint zero warnings passed, and real-page Chromium mocked-API suite 25 passed. Browser coverage verifies accepted exact text does not trigger color attention, new edits and canonical Unicode normalization restore warnings, and restoring the exact approved text acknowledges them again. Provider calls/audio remain mocked; production deployment was not performed.
