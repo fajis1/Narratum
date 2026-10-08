@@ -24,6 +24,16 @@ export class DramaDirectorValidationError extends Error {
   }
 }
 
+/** Actual generated/request attempts, including the bounded contract retry. */
+export function getDramaDirectorAttemptCount(error: unknown): number {
+  const attempts = record(error)?.attempts;
+  if (!Array.isArray(attempts)) return 0;
+  return attempts.reduce((count, attempt) => {
+    const failures = record(record(attempt)?.diagnostics)?.contractFailures;
+    return count + 1 + (Array.isArray(failures) ? failures.length : 0);
+  }, 0);
+}
+
 export interface DramaDirectorResponseAttempt {
   attempt: number;
   issues: string[];
@@ -209,9 +219,11 @@ export function buildDramaDirectorResponseSchema(castNames: readonly string[], s
   const array = (values: readonly string[], minItems: number, maxItems: number) => ({ type: 'array', items: choice(values), minItems, maxItems });
   const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
   return object({ segments: {
-    type: 'array', minItems: 1, maxItems: spans.length,
+    // Large nested maxima multiply provider grammar states. Exact coverage and
+    // group size are enforced by validateDirectedSpanGroups instead.
+    type: 'array', minItems: 1,
     items: object({
-      spanIds: array(spans.map((span) => span.id), 1, spans.length),
+      spanIds: { type: 'array', minItems: 1, items: choice(spans.map((span) => span.id)) },
       speaker: choice(castNames), utteranceType: choice(DRAMA_UTTERANCE_TYPES),
       sceneContext: { type: 'string', description: 'One concise sentence of scene context.' },
       // Boolean enum/const is outside the documented subset; enforce false
@@ -338,6 +350,7 @@ export async function directDramaWithGemini(input: {
         if (response.status === 400 && !legacyStructuredOutput) {
           const details = await geminiPrivateErrorDetails(response);
           if (details.message) details.message = redact(details.message);
+          if (details.fieldViolations) details.fieldViolations = details.fieldViolations.map(({ field, description }) => ({ field: redact(field), description: redact(description) }));
           contractFailures.push({ contract: 'responseFormat', ...details });
           provider = { ...base, attempt, httpStatus: 400, requestedModel: input.model, outputContract: 'responseFormat' };
           emit({ failure: 'provider', contractFallback: 'responseJsonSchema' });
@@ -352,6 +365,7 @@ export async function directDramaWithGemini(input: {
         if (!response.ok) {
           const details = await geminiPrivateErrorDetails(response);
           if (details.message) details.message = redact(details.message);
+          if (details.fieldViolations) details.fieldViolations = details.fieldViolations.map(({ field, description }) => ({ field: redact(field), description: redact(description) }));
           provider = { ...provider, ...base, attempt, httpStatus: response.status, apiStatus: details.apiStatus };
           emit({ failure: 'provider' });
           throw new DramaDirectorValidationError([

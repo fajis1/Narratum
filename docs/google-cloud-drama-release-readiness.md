@@ -240,3 +240,35 @@ tests, TypeScript, affected-file ESLint and diff checks passed. No configured
 Gemini credential was available in this checkout, so a live Director retry remains
 required to confirm resolution of this generic production error. If it persists,
 inspect the new chapter Director diagnostic artifact before changing the schema.
+
+### 2026-10-08 — Serving-state schema complexity and complete private diagnostics
+
+A production investigation confirmed 1d74207 was loaded and both output contracts
+were rejected. Its direct API probe exposed a BadRequest field violation: the
+schema produced too many serving states. The previous diagnostic reader dropped
+that field-level reason. Review flags also hardcoded two attempts, so that value
+could not establish worker version or actual retry behavior.
+
+Removed only the large batch-dependent maxItems values from segments and spanIds.
+Nested maxima scaling with source-span count needlessly inflate grammar state
+space. All source-ID/cast/taxonomy enums, required object structure, and small
+performance-array bounds remain constrained. Exact span coverage/order validation
+continues to enforce effective group/segment counts; duplicate, missing, unknown
+and reordered IDs still fail. No vocabulary, source integrity or TTS policy was
+relaxed. Google documents the array keywords as supported in this JSON Schema
+contract; their combined complexity was the issue, not universal keyword support.
+
+Private provider artifacts now retain up to 20 BadRequest field violations with
+bounded field/description lengths. Configured credentials are redacted in both
+primary and compatibility failures; ordinary API diagnostics keep their stricter
+allowlist. Both worker generation and chapter regeneration derive Director attempt
+counts from recorded output attempts and compatibility requests rather than a
+constant. Shared transport backoff retries are outside that Director count.
+
+Verification: 97 tests across nine focused suites; full 206 files / 1,751 unit
+tests; TypeScript; zero-warning ESLint on core/helpers/tests; diff check passed.
+Worker/chapter-route existing lint baselines remain unchanged at respectively
+7 errors / 3 warnings and 1 error / 0 warnings, compared against HEAD via stdin.
+No local Gemini credential is available. A live probe of the reduced 46-span
+schema remains required before claiming production resolution; no serving-state
+threshold is documented, so automated structural tests cannot certify acceptance.

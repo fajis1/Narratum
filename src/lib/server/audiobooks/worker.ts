@@ -79,7 +79,7 @@ import {
 import { normalizeGeminiTokenUsage } from '@/lib/server/smart-audio/gemini-usage';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
-import { DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
+import { getDramaDirectorAttemptCount, DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
 import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { resolveGeminiPrebuiltVoiceCatalog } from '@/lib/server/smart-audio/gemini-voice-catalog-cache';
@@ -1874,7 +1874,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
                   speaker: 'Director',
                   sourceText: processedTextForTts.slice(0, 300),
                   chunkIndex: 0,
-                  attempts: 2,
+                  attempts: getDramaDirectorAttemptCount(error),
                   reason: `Drama Director output failed validation: ${issues.slice(0, 3).join('; ')}`,
                 }],
               }).catch(() => {});

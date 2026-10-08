@@ -5,7 +5,7 @@ import {
   DRAMA_INTENSITY, DRAMA_INLINE_VOCAL_EVENTS,
 } from '@/lib/shared/drama-director-schema';
 import { createDramaSourceSpans, batchDramaSourceSpans, DRAMA_DIRECTOR_MAX_SPANS } from '@/lib/server/smart-audio/drama-source-spans';
-import { buildDramaDirectorResponseSchema, directDramaWithRepair, directDramaWithGemini, validateDirectedSpanGroups } from '@/lib/server/smart-audio/drama-director';
+import { getDramaDirectorAttemptCount, buildDramaDirectorResponseSchema, directDramaWithRepair, directDramaWithGemini, validateDirectedSpanGroups } from '@/lib/server/smart-audio/drama-director';
 
 vi.mock('@/lib/server/logger', () => ({ serverLogger: { info: vi.fn() } }));
 vi.mock('@/lib/server/smart-audio/gemini-failover', () => ({
@@ -37,6 +37,26 @@ describe('immutable Director metadata', () => {
     expect(props.secondaryEmotions.maxItems).toBe(2);
     expect(props.tags.maxItems).toBe(2);
     expect(fields.items.properties).not.toHaveProperty('text');
+  });
+
+  it('avoids nested large array bounds for the production 46-span schema without dropping enums', () => {
+    const productionSpans = Array.from({ length: 46 }, (_, index) => ({ id: `s${index}`, text: 'A' }));
+    const schema = buildDramaDirectorResponseSchema(['Narrator', 'Bethany', 'Ali', 'Dominic', 'Seth', 'Tylor'], productionSpans);
+    const segments = schema.properties.segments as { maxItems?: number; items: { properties: { spanIds: { maxItems?: number; items: { enum: string[] } } } } };
+    expect(segments).not.toHaveProperty('maxItems');
+    expect(segments.items.properties.spanIds).not.toHaveProperty('maxItems');
+    expect(segments.items.properties.spanIds.items.enum).toEqual(productionSpans.map(span => span.id));
+    expect(() => validateDirectedSpanGroups({ sourceText: 'A'.repeat(46), sourceSpans: productionSpans, castNames: ['Narrator'],
+      output: { segments: [group([...productionSpans.map(span => span.id), 's0'])] } })).toThrow(/Duplicate/);
+    expect(() => validateDirectedSpanGroups({ ...input, output: { segments: [{ ...group(['A', 'B', 'C', 'D']),
+      performance: { ...performance, secondaryEmotions: ['calm', 'calm', 'calm'] } }] } })).toThrow(/secondaryEmotions/);
+  });
+
+  it('reports actual attempt counts instead of a hardcoded two repairs', () => {
+    expect(getDramaDirectorAttemptCount({ attempts: [{ diagnostics: { contractFailures: [{ status: 400 }] } }] })).toBe(2);
+    expect(getDramaDirectorAttemptCount({ attempts: [{}, {}, {}] })).toBe(3);
+    expect(getDramaDirectorAttemptCount({ attempts: [{}] })).toBe(1);
+    expect(getDramaDirectorAttemptCount(new Error('before request'))).toBe(0);
   });
 
   it('reconstructs grouped spans byte for byte', () => {
@@ -162,7 +182,7 @@ describe('immutable Director metadata', () => {
   it('stops permanent request rejections without pretending Gemini generated repairable metadata', async () => {
     const diagnostic = vi.fn();
     const onRepair = vi.fn();
-    const fetch = vi.fn().mockImplementation(() => Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Invalid argument private-credential' } }, { status: 400 }));
+    const fetch = vi.fn().mockImplementation(() => Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Invalid argument private-credential', details: [{ '@type': 'type.googleapis.com/google.rpc.BadRequest', fieldViolations: [{ field: 'generation_config.response_json_schema', description: 'Too many states private-credential' }] }] } }, { status: 400 }));
     vi.stubGlobal('fetch', fetch);
     const error = await directDramaWithGemini({ ...input, apiKey: 'private-credential', model: 'gemini-3.8-flash', batchIndex: 8, onDiagnostic: diagnostic, onRepair }).catch(value => value);
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -170,6 +190,7 @@ describe('immutable Director metadata', () => {
     expect(error.attempts).toHaveLength(1);
     expect(error.attempts[0].diagnostics).toMatchObject({ httpStatus: 400, apiStatus: 'INVALID_ARGUMENT', batchIndex: 8, outputContract: 'responseJsonSchema',
       contractFailures: [{ contract: 'responseFormat', status: 400, message: 'Invalid argument [redacted]' }] });
+    expect(JSON.parse(error.attempts[0].response).fieldViolations).toEqual([{ field: 'generation_config.response_json_schema', description: 'Too many states [redacted]' }]);
     expect(JSON.stringify(error.attempts)).not.toContain('private-credential');
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('Invalid argument');
   });

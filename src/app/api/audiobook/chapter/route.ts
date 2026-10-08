@@ -36,7 +36,7 @@ import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace'
 import { getFFmpegPath } from '@/lib/server/audiobooks/ffmpeg-bin';
 import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/segmented-tts';
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
-import { DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
+import { getDramaDirectorAttemptCount, DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
 import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { resolveSmartAudioNatsTimeoutMs } from '@/lib/server/audiobooks/smart-audio-timeout';
@@ -1139,7 +1139,7 @@ export async function POST(request: NextRequest) {
                 speaker: 'Director',
                 sourceText: processedTextForTts.slice(0, 300),
                 chunkIndex: 0,
-                attempts: 2,
+                attempts: getDramaDirectorAttemptCount(error),
                 reason: `Drama Director output failed validation: ${issues.slice(0, 3).join('; ')}`,
               }],
             }).catch(() => {});

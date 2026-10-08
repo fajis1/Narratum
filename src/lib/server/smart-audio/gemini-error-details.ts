@@ -1,5 +1,5 @@
 export type GeminiErrorDetails = { status: number; code?: number; apiStatus?: string; retryAfterMs?: number; quotaMetrics?: string[] };
-export type GeminiPrivateErrorDetails = GeminiErrorDetails & { message?: string };
+export type GeminiPrivateErrorDetails = GeminiErrorDetails & { message?: string; fieldViolations?: Array<{ field: string; description: string }> };
 
 /** Allowlisted fields only: no messages, request URLs, project IDs or raw bodies. */
 export async function geminiErrorDetails(response: Response, now = Date.now()): Promise<GeminiErrorDetails> {
@@ -35,6 +35,17 @@ export async function geminiPrivateErrorDetails(response: Response): Promise<Gem
   try {
     const error = (await response.clone().json() as { error?: Record<string, unknown> }).error;
     if (typeof error?.message === 'string') details.message = error.message.slice(0, 8_000);
+    const violations: Array<{ field: string; description: string }> = [];
+    for (const detail of Array.isArray(error?.details) ? error.details.slice(0, 20) : []) {
+      if (detail?.['@type'] !== 'type.googleapis.com/google.rpc.BadRequest') continue;
+      for (const violation of Array.isArray(detail.fieldViolations) ? detail.fieldViolations : []) {
+        if (violations.length >= 20) break;
+        if (typeof violation?.field === 'string' && typeof violation?.description === 'string') {
+          violations.push({ field: violation.field.slice(0, 500), description: violation.description.slice(0, 2_000) });
+        }
+      }
+    }
+    if (violations.length) details.fieldViolations = violations;
   } catch { /* provider bodies can be HTML or absent */ }
   return details;
 }
