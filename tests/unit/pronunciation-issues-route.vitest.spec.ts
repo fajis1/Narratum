@@ -1,6 +1,7 @@
 import { batchRefineTextHash } from '@/lib/server/audiobooks/batch-refine-assessment';
 import { beforeEach, expect, test, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ auth: vi.fn(), owned: vi.fn(), catalog: vi.fn(), chapter: vi.fn(), propose: vi.fn(), resume: vi.fn(), queue: vi.fn(), jobs: vi.fn(), stop: vi.fn(), config: vi.fn(), report: vi.fn(), repairStatus: vi.fn(), remember: vi.fn(), overrideHash: vi.fn() }));
+const mocks = vi.hoisted(() => ({ auth: vi.fn(), owned: vi.fn(), catalog: vi.fn(), chapter: vi.fn(), propose: vi.fn(), resume: vi.fn(), queue: vi.fn(), jobs: vi.fn(), stop: vi.fn(), config: vi.fn(), report: vi.fn(), repairStatus: vi.fn(), remember: vi.fn(), overrideHash: vi.fn(), log: vi.fn() }));
+vi.mock('@/lib/server/logger', () => ({ serverLogger: { info: (...args: unknown[]) => mocks.log(...args), warn: vi.fn() } }));
 vi.mock('@/lib/server/audiobooks/remember-approved-pronunciations', () => ({ rememberApprovedPronunciations: (...args: unknown[]) => mocks.remember(...args) }));
 vi.mock('@/lib/server/audiobooks/pronunciation-repair-status', () => ({ listPronunciationRepairStatus: (...args: unknown[]) => mocks.repairStatus(...args), approvedPronunciationOverrideHash: (...args: unknown[]) => mocks.overrideHash(...args) }));
 vi.mock('@/lib/server/audiobooks/pronunciation-repair-report', () => ({ pronunciationRepairReport: (...args: unknown[]) => mocks.report(...args) }));
@@ -107,12 +108,16 @@ test('rescanning acknowledges Override only for its exact saved version, includi
   let body = await (await POST(request('scan'))).json();
   expect(body.issues).toEqual([]);
   expect(body.acknowledgedIssueCount).toBeGreaterThan(0);
+  expect(body.overrideDiagnostic).toMatchObject({ status: 'matched', acknowledgedIssueCount: body.acknowledgedIssueCount, actionableIssueCount: 0, scannedText: 'saved_chapter' });
+  expect(mocks.log).toHaveBeenCalledWith(expect.objectContaining({ event: 'pronunciation.override.scan', status: 'matched', bookId: 'book', chapterIndex: 0 }), expect.any(String));
+  expect(JSON.stringify(mocks.log.mock.calls)).not.toContain(text);
   expect(mocks.overrideHash).toHaveBeenCalledWith('book', 'owner', '0001__text.txt');
   for (const changed of [text + ' New text.', text.replace('pɛr', 'pɛ'), text.normalize('NFC'), text.replace('.', '!')]) {
     mocks.chapter.mockResolvedValue({ text: changed, chapterIndex: 0, hash: batchRefineTextHash(changed), title: 'Chapter', failed: false });
     body = await (await POST(request('scan'))).json();
     expect(body.issues.length).toBeGreaterThan(0);
     expect(body.acknowledgedIssueCount).toBe(0);
+    expect(body.overrideDiagnostic).toMatchObject({ status: 'text_changed', acknowledgedIssueCount: 0, actionableIssueCount: body.issues.length });
   }
 });
 
@@ -120,6 +125,7 @@ test('no approved Override leaves the strict scanner unchanged', async () => {
   mocks.chapter.mockResolvedValue({ text: '[περι](/pɛr/)', chapterIndex: 0, hash: 'hash', title: 'Chapter', failed: false });
   const body = await (await POST(request('scan'))).json();
   expect(body.issues[0].reason).toContain('part');
+  expect(body.overrideDiagnostic).toMatchObject({ status: 'not_approved', acknowledgedIssueCount: 0 });
   expect(body.acknowledgedIssueCount).toBe(0);
 });
 

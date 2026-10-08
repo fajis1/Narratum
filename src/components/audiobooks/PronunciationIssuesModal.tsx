@@ -8,9 +8,10 @@ import { PRESET_MODELS } from '@/components/constants';
 import { readJsonResponse } from '@/lib/client/read-json-response';
 import { v4 as uuidv4 } from 'uuid';
 import { pronunciationRepairStatusLabel, type PronunciationRepairStatus } from '@/lib/shared/pronunciation-repair-status';
+import type { PronunciationOverrideScanDiagnostic } from '@/lib/shared/pronunciation-review-acknowledgment';
 
 type Chapter = { fileName: string; chapterIndex: number; failed: boolean };
-type Finding = Chapter & { title: string; hash: string; issues: PronunciationIssue[]; jobId?: string; failureError?: string; runId?: string; audioStatus?: string; error?: string; retryRunId?: string; proposalHash?: string; unresolvedCount?: number };
+type Finding = Chapter & { title: string; hash: string; issues: PronunciationIssue[]; jobId?: string; failureError?: string; runId?: string; audioStatus?: string; error?: string; retryRunId?: string; proposalHash?: string; unresolvedCount?: number; overrideDiagnostic?: PronunciationOverrideScanDiagnostic };
 type RepairConfig = { selectedProfileId: string; recordingVoice: string; recordingVoices: string[]; modelFallbacks?: Record<string, string[]>; profiles: { id: string; name: string; model: string; primaryKeyRef: string; backupKeyRef: string }[]; keySources: { ref: string; label: string; masked: string }[] };
 type RepairJob = { id: string; status: string; progress: number; total: number; error?: string; profileId?: string; aiModel?: string; primaryKeyRef?: string; backupKeyRef?: string; nextAttemptAt?: number; results: { fileName: string; runId?: string; unresolvedCount?: number; error?: string; requestId: string; apiBlocked?: boolean }[] };
 
@@ -45,6 +46,7 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
   const [approvalMessage, setApprovalMessage] = useState('');
   const [approving, setApproving] = useState(false);
   const [override, setOverride] = useState(false);
+  const [scanDiagnostics, setScanDiagnostics] = useState<Array<{ chapterIndex: number; fileName: string; diagnostic?: PronunciationOverrideScanDiagnostic }>>([]);
   useEffect(() => { setOverride(false); }, [open, bookId]);
   const refreshRepairs = useCallback(async (signal?: AbortSignal) => {
     const value = await fetch(`/api/audiobooks/pronunciation-issues?bookId=${encodeURIComponent(bookId)}&action=review-status`, { signal, cache: 'no-store' }).then(readJsonResponse);
@@ -204,6 +206,7 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
     setJob(null); jobVersion.current = '';
     setRecordingVoice('');
     setRepairs([]); setApprovalMessage('');
+    setScanDiagnostics([]);
     setReportJobs([]); setReportJobId('');
     reportController.current?.abort();
   }, [bookId, profileId]);
@@ -232,10 +235,19 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
     finally { if (reportController.current === current) setReportDownloading(false); }
   }
 
+  function downloadScanLog() {
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ bookId, timestamp: new Date().toISOString(),
+      scans: scanDiagnostics }, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url; link.download = 'pronunciation-override-scan-log.json';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   async function scan() {
     controller.current?.abort();
     const current = new AbortController(); controller.current = current;
-    setBusy(true); setError(''); setFindings([]); setSelected([]); setDrafts({}); setScanned(false);
+    setBusy(true); setError(''); setFindings([]); setSelected([]); setDrafts({}); setScanned(false); setScanDiagnostics([]);
     try {
       const response = await fetch(`/api/audiobooks/pronunciation-issues?bookId=${encodeURIComponent(bookId)}`, { signal: current.signal, cache: 'no-store' });
       const catalog = await readJsonResponse(response);
@@ -246,6 +258,7 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
         try {
           const result: Finding = await request({ action: 'scan', fileName: chapter.fileName }, current.signal);
           current.signal.throwIfAborted();
+          setScanDiagnostics(previous => [...previous, { chapterIndex: result.chapterIndex, fileName: result.fileName, diagnostic: result.overrideDiagnostic }]);
           onScanResult?.(result.chapterIndex, result.issues.filter(issue => issue.id !== 'failed-chapter').length);
           if (result.issues.length || result.failed || result.runId) {
             setFindings(previous => [...previous, result]);
@@ -384,6 +397,17 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
         <p className="text-xs text-text-soft">Remembering saves reusable Greek/Hebrew corrections to this book’s lexicon profile, not the global dictionary. Contextual forms and conflicting entries stay unchanged.</p>
         {approvalMessage && <p role="status" className="text-sm">{approvalMessage}</p>}
         {scanned && findings.length === 0 && <p>No pronunciation issues found in the checked text.</p>}
+        {scanDiagnostics.length > 0 && <details className="my-3 rounded border border-line-soft p-3 text-sm">
+          <summary className="cursor-pointer">Override scan diagnostics ({scanDiagnostics.length} chapters)</summary>
+          <p className="my-2 text-xs text-text-soft">Results from this scan. Matched means the saved Override applies to this exact text. Text changed means strict warnings apply again. No book excerpts or credentials are included.</p>
+          <button className="my-2 text-accent underline" onClick={downloadScanLog}>Download scan log</button>
+          <ul className="space-y-2">{scanDiagnostics.map(scan => <li key={scan.fileName}>
+            <strong>Chapter {scan.chapterIndex + 1}</strong> · {scan.diagnostic
+              ? `${scan.diagnostic.status === 'matched' ? 'Override matched' : scan.diagnostic.status === 'text_changed' ? 'Text changed — Override does not apply' : 'No approved Override'} · ${scan.diagnostic.strictIssueCount} strict findings · ${scan.diagnostic.acknowledgedIssueCount} acknowledged · ${scan.diagnostic.actionableIssueCount} actionable`
+              : 'Diagnostics unavailable — the server may need updating.'}
+            {scan.diagnostic && <span className="block break-all text-xs text-text-soft">Reference: {scan.diagnostic.requestId}</span>}
+          </li>)}</ul>
+        </details>}
         <div className="space-y-4">{displayedFindings.map(finding => {
           const repair = repairs.find(item => item.chapterIndex === finding.chapterIndex);
           const currentRun = repair?.runId || finding.runId;

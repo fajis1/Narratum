@@ -14,6 +14,7 @@ import { errorResponse } from '@/lib/server/errors/next-response';
 import { pronunciationRepairReport } from '@/lib/server/audiobooks/pronunciation-repair-report';
 import { listPronunciationRepairStatus, approvedPronunciationOverrideHash } from '@/lib/server/audiobooks/pronunciation-repair-status';
 import { unacknowledgedPronunciationIssues } from '@/lib/shared/pronunciation-review-acknowledgment';
+import type { PronunciationOverrideScanDiagnostic } from '@/lib/shared/pronunciation-review-acknowledgment';
 import { batchRefineTextHash } from '@/lib/server/audiobooks/batch-refine-assessment';
 import { rememberApprovedPronunciations } from '@/lib/server/audiobooks/remember-approved-pronunciations';
 import { getAudiobookObjectBuffer } from '@/lib/server/audiobooks/blobstore';
@@ -102,15 +103,26 @@ export async function POST(request: Request) {
       const scanText = existing?.decision === 'pending' ? existing.proposedText : chapter.text;
       const allIssues = scanPronunciationIssues(scanText, dictionary);
       const overrideHash = await approvedPronunciationOverrideHash(body.bookId, user, body.fileName);
-      const scannedIssues = unacknowledgedPronunciationIssues(allIssues, batchRefineTextHash(scanText), overrideHash);
+      const textHash = batchRefineTextHash(scanText);
+      const scannedIssues = unacknowledgedPronunciationIssues(allIssues, textHash, overrideHash);
       const forcedFailureIssue = chapter.failed && !existing && !scannedIssues.length
         ? failedChapterReviewIssue(scanText, chapter.failureError)
         : null;
+      const overrideDiagnostic: PronunciationOverrideScanDiagnostic = {
+        version: 'pronunciation-override-rescan:v1', requestId,
+        status: !overrideHash ? 'not_approved' : overrideHash === textHash ? 'matched' : 'text_changed',
+        scannedText: existing?.decision === 'pending' ? 'pending_proposal' : 'saved_chapter',
+        strictIssueCount: allIssues.length, acknowledgedIssueCount: allIssues.length - scannedIssues.length,
+        actionableIssueCount: forcedFailureIssue ? 1 : scannedIssues.length,
+      };
+      serverLogger.info({ event: 'pronunciation.override.scan', bookId: body.bookId, chapterIndex: chapter.chapterIndex,
+        fileName: body.fileName, ...overrideDiagnostic }, 'Pronunciation scan checked saved Override acknowledgment');
       return NextResponse.json({ fileName: body.fileName, chapterIndex: chapter.chapterIndex, title: chapter.title, failed: chapter.failed,
         hash: chapter.hash, jobId: chapter.jobId, failureError: chapter.failureError, runId: existing?.runId, audioStatus: existing?.audioStatus,
         retryRunId: existing?.decision === 'pending' ? existing.runId : undefined,
         proposalHash: existing?.decision === 'pending' ? existing.proposedTextHash : undefined,
         acknowledgedIssueCount: allIssues.length - scannedIssues.length,
+        overrideDiagnostic,
         issues: forcedFailureIssue ? [forcedFailureIssue] : scannedIssues });
     }
     if (body.action === 'propose' && typeof body.hash === 'string') {

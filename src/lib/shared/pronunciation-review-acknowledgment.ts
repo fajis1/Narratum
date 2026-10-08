@@ -1,5 +1,15 @@
 import type { PronunciationIssue } from './pronunciation-issues';
 
+export type PronunciationOverrideScanDiagnostic = {
+  version: 'pronunciation-override-rescan:v1';
+  requestId: string;
+  status: 'matched' | 'text_changed' | 'not_approved';
+  scannedText: 'saved_chapter' | 'pending_proposal';
+  strictIssueCount: number;
+  acknowledgedIssueCount: number;
+  actionableIssueCount: number;
+};
+
 /** Acknowledgment is local to one approved chapter version, never dictionary policy.
  * Structural/formatting findings remain actionable even for that version. */
 export function unacknowledgedPronunciationIssues(

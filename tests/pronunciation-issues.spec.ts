@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { build } from 'esbuild';
 import path from 'node:path';
 
-for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk', 'override', 'override-individual']) test(`scan carries repair through approval (${mode})`, async ({ page }) => {
+for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk', 'override', 'override-individual', 'diagnostics']) test(`scan carries repair through approval (${mode})`, async ({ page }) => {
   const partial = mode === 'manual' || mode === 'retry' || mode.startsWith('override');
   const pageErrors: string[] = [];
   page.on('pageerror', error => pageErrors.push(error.message));
@@ -50,6 +50,12 @@ for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk', 'override',
       const body = route.request().postDataJSON();
       if (body.action === 'remember-approved') { remembered = true; return json({ saved: 2, alreadyKnown: 0, skipped: 1 }); }
       if (body.action === 'resume-repairs') { resumed = true; resumeSettings = body; return json({ jobId: 'fixture-job' }); }
+      if (body.action === 'scan' && mode === 'diagnostics') {
+        const matched = body.fileName === '0107__text.txt';
+        return json({ fileName: body.fileName, chapterIndex: matched ? 106 : 107, title: 'Aetherian chapter', hash: 'fixture-hash', failed: false,
+          issues: matched ? [] : [{ id: '0', start: 4, end: 34, text: '[Aetherian](/bad split/)', context: 'The Aetherian arrived.', reason: 'Pronunciation cannot be aligned.' }],
+          overrideDiagnostic: { version: 'pronunciation-override-rescan:v1', requestId: matched ? 'matched-reference' : 'changed-reference', status: matched ? 'matched' : 'text_changed', scannedText: 'saved_chapter', strictIssueCount: matched ? 2 : 1, acknowledgedIssueCount: matched ? 2 : 0, actionableIssueCount: matched ? 0 : 1 } });
+      }
       if (body.action === 'scan' && queued && partial) return json({ fileName: body.fileName, hash: 'fixture-hash', retryRunId: 'fixture-run', proposalHash: 'current-proposal-hash', issues: [{ id: '0', text: 'θεῷ', start: 40, end: 43 }] });
       if (body.action === 'scan') return json({ fileName: body.fileName, chapterIndex: body.fileName === '0107__text.txt' ? 106 : 107, title: 'Aetherian chapter', hash: 'fixture-hash', failed: false,
         issues: body.fileName === '0107__text.txt' ? [{ id: '0', start: 4, end: 34, text: '[Aetherian](/bad split/)', context: 'The Aetherian arrived.', reason: 'Pronunciation cannot be aligned.', replacement: '[Aetherian](/eɪθɪriən/)' }] : [] });
@@ -90,6 +96,26 @@ for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk', 'override',
   await page.getByRole('button', { name: 'Start Scan', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Propose Repairs (1)' })).toBeEnabled();
   await expect(page.getByText('Checked 2 chapter text files.', { exact: false })).toBeVisible();
+  if (mode === 'diagnostics') {
+    await page.getByText('Override scan diagnostics (2 chapters)', { exact: true }).click();
+    await expect(page.locator('li').filter({ hasText: 'Chapter 107' }).filter({ hasText: 'Override matched' })).toBeVisible();
+    await expect(page.getByText('Reference: matched-reference', { exact: true })).toBeVisible();
+    await expect(page.getByText(/Text changed — Override does not apply/)).toBeVisible();
+    const downloadPending = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download scan log' }).click();
+    const download = await downloadPending;
+    expect(download.suggestedFilename()).toBe('pronunciation-override-scan-log.json');
+    const stream = await download.createReadStream(); const chunks: Buffer[] = [];
+    for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+    const logText = Buffer.concat(chunks).toString('utf8');
+    const log = JSON.parse(logText);
+    expect(log.scans.map((scan: { diagnostic: { status: string } }) => scan.diagnostic.status)).toEqual(['matched', 'text_changed']);
+    expect(log.scans[0].diagnostic).toMatchObject({ acknowledgedIssueCount: 2, actionableIssueCount: 0 });
+    expect(logText).not.toContain('Aetherian');
+    expect(logText).not.toContain('primaryKeyRef');
+    expect(pageErrors).toEqual([]);
+    return;
+  }
   await page.getByRole('button', { name: 'Propose Repairs (1)' }).click();
   await expect(page.getByText('Repairs queued.', { exact: false })).toBeVisible();
   // A reload must restore durable progress and the proposal review link.
