@@ -1,11 +1,15 @@
 import type { ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 
-export function ReviewHeader({ title, position, needsReview, dirty, recording, processing, filtered, canPrevious, canNext, onPrevious, onNext, bookTools }: {
+export function ReviewHeader({ title, position, needsReview, dirty, recording, processing, filtered, canPrevious, canNext, onPrevious, onNext, onHome, bookTools }: {
   title: string; position: string; needsReview: boolean; dirty: boolean; recording: boolean; processing: boolean;
-  filtered: boolean; canPrevious: boolean; canNext: boolean; onPrevious: () => void; onNext: () => void; bookTools: ReactNode;
+  filtered: boolean; canPrevious: boolean; canNext: boolean; onPrevious: () => void; onNext: () => void; onHome: () => void; bookTools: ReactNode;
 }) {
   return <header className="flex flex-none items-center justify-between gap-2 border-b border-line-soft bg-surface px-3 py-2" aria-label="Chapter review">
+    <Button variant="ghost" onClick={onHome} className="min-h-11 shrink-0 gap-1 px-2 md:min-h-8" aria-label="Home" title="Return to Home">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-8H9v8H4a1 1 0 0 1-1-1Z" /></svg>
+      Home
+    </Button>
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 md:flex-nowrap">
         <h1 className="min-w-0 truncate text-base font-semibold text-foreground" title={title}>Review: {title}</h1>

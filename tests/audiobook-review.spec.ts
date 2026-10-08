@@ -457,3 +457,45 @@ test('approved Override keeps exact saved text unflagged; new edits restore pron
     await expect(book).not.toHaveAttribute('data-pronunciation-attention', 'true');
   }
 });
+
+
+test('Review Home is visible on desktop and mobile and returns to the dashboard', async ({ page }) => {
+  await setupReview(page);
+  const home = page.getByRole('button', { name: 'Home', exact: true });
+  await expect(home).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(home).toBeVisible();
+  await home.click();
+  await expect(page).toHaveURL(/\/app$/, { timeout: 30000 });
+});
+
+test('Review Home guards unsaved edits: Stay preserves them and Discard leaves', async ({ page }) => {
+  await setupReview(page);
+  await editor(page).fill('Keep my chapter edits.');
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'Unsaved changes' })).toBeVisible();
+  await page.getByRole('button', { name: 'Stay Here', exact: true }).click();
+  await expect(page).toHaveURL(/\/listen\/review-fixture$/);
+  await expect(editor(page)).toHaveValue('Keep my chapter edits.');
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await page.getByRole('button', { name: 'Discard Changes', exact: true }).click();
+  await expect(page).toHaveURL(/\/app$/, { timeout: 30000 });
+});
+
+test('Review Home only continues after Save & Re-record succeeds', async ({ page }) => {
+  const fixture = await setupReview(page);
+  await editor(page).fill('Save before returning home.');
+  fixture.failSave();
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await dialog(page).getByRole('button', { name: 'Save & Re-record', exact: true }).click();
+  await expect(page.getByText('Recording could not be saved', { exact: true })).toBeVisible();
+  await expect(dialog(page).getByRole('heading', { name: 'Unsaved changes' })).toBeVisible();
+  await expect(editor(page)).toHaveValue('Save before returning home.');
+  await expect(page).toHaveURL(/\/listen\/review-fixture$/);
+  await page.getByRole('button', { name: 'Stay Here', exact: true }).click();
+  await setupReview(page);
+  await editor(page).fill('Successfully saved before leaving.');
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await dialog(page).getByRole('button', { name: 'Save & Re-record', exact: true }).click();
+  await expect(page).toHaveURL(/\/app$/, { timeout: 30000 });
+});

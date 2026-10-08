@@ -74,7 +74,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [mobilePane, setMobilePane] = useState<ReviewPane>('edit');
   const [showAiClean, setShowAiClean] = useState(false);
   const [showForceRecord, setShowForceRecord] = useState(false);
-  const [pendingChapterIndex, setPendingChapterIndex] = useState<number | null>(null);
+  const [pendingNavigation, setPendingNavigation] = useState<number | 'home' | null>(null);
   const [hasSpeakerChanges, setHasSpeakerChanges] = useState(false);
   const savedChapterText = useRef('');
   const editorSnapshot = useRef({ index: undefined as number | undefined, text: '', dirty: false });
@@ -243,7 +243,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     if (chapterIndex === editorSnapshot.current.index) return;
     if (!chapters.some(chapter => chapter.index === chapterIndex)) return;
     if (editorSnapshot.current.dirty) {
-      setPendingChapterIndex(chapterIndex);
+      setPendingNavigation(chapterIndex);
       return;
     }
     setCurrentChapterPosition(chapters.findIndex(chapter => chapter.index === chapterIndex));
@@ -995,10 +995,14 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     editorSnapshot.current.dirty = false;
   };
   const continuePendingSelection = () => {
-    if (pendingChapterIndex === null) return;
-    const target = pendingChapterIndex;
-    setPendingChapterIndex(null);
-    requestChapterSelection(target);
+    if (pendingNavigation === null) return;
+    const target = pendingNavigation;
+    setPendingNavigation(null);
+    if (target === 'home') requestHome(); else requestChapterSelection(target);
+  };
+  const requestHome = () => {
+    if (editorSnapshot.current.dirty) { setPendingNavigation('home'); return; }
+    router.push('/app');
   };
   const discardAndNavigate = () => {
     revertEdits();
@@ -1048,7 +1052,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
 
   return (
     <div className="flex h-dvh min-h-0 flex-col bg-surface" data-testid="audiobook-review">
-      <ReviewHeader title={currentChapter.title}
+      <ReviewHeader onHome={requestHome} title={currentChapter.title}
         position={`Chunk ${currentChapter.index + 1} · ${chapterFilter === 'needs_review' ? `Flagged ${currentVisibleIndex >= 0 ? currentVisibleIndex + 1 : '—'} of ${visibleChapters.length}` : `Item ${currentChapterPosition + 1} of ${chapters.length}`}`}
         needsReview={isChapterNeedingReview(currentChapter)} dirty={isDirty} recording={isRegenerating}
         processing={isTextLoading || isAiCleaning} filtered={chapterFilter === 'needs_review'}
@@ -1637,8 +1641,8 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
         <p className="my-4 text-sm text-foreground">You have unsaved edits. Cleaning from Original text will ignore those current edits and replace the saved chapter with a newly cleaned version based on the original text.</p>
         <div className="flex justify-end gap-2"><Button onClick={() => setConfirmOriginalClean(false)}>Go Back</Button><Button variant="primary" onClick={() => void handleAiClean(true)}>Clean from Original</Button></div>
       </ModalFrame>
-      <ReviewUnsavedChangesDialog open={pendingChapterIndex !== null} title={currentChapter.title} busy={isRegenerating}
-        onStay={() => setPendingChapterIndex(null)} onDiscard={discardAndNavigate} onSave={() => void saveAndNavigate()} />
+      <ReviewUnsavedChangesDialog open={pendingNavigation !== null} title={currentChapter.title} busy={isRegenerating || isAiCleaning}
+        onStay={() => setPendingNavigation(null)} onDiscard={discardAndNavigate} onSave={() => void saveAndNavigate()} />
       <ModalFrame open={showForceRecord} onClose={() => setShowForceRecord(false)} size="sm">
         <ModalTitle>Force Re-record All?</ModalTitle>
         <p className="my-4 text-sm text-foreground">This replaces all existing audio for this book. Every chapter will be re-recorded.</p>
