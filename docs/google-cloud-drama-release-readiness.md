@@ -216,3 +216,27 @@ then verifies exact server-owned source reconstruction. Verification: eight
 focused suites / 89 tests and all 206 unit files / 1,745 tests passed; TypeScript
 and affected-file ESLint passed. No live provider request was made. Deploy/restart
 workers before retrying affected chapters; retained failure history is preserved.
+
+### 2026-10-08 — Bounded structured-output contract compatibility
+
+A subsequent production export reported generic HTTP 400 INVALID_ARGUMENT after
+the enum correction. Its message alone does not identify the rejected argument.
+Google's current REST reference documents the enum-based responseFormat and the
+existing responseMimeType/responseJsonSchema fields; its structured-output guide
+still shows a MIME string for the new field. Do not treat mocked transport tests
+as evidence that either request was accepted by the deployed provider.
+
+Director requests now retry an HTTP 400 once using responseMimeType plus
+responseJsonSchema, with exactly the same schema, source batch and prompt. That
+choice stays within the current call; no global provider setting is changed. No
+MIME-only/schema-free fallback exists. A persistent HTTP 400 exits metadata
+repair immediately, retaining the first contract error privately and the final
+error with batch/model/contract diagnostics. Normal logs include contract choice
+and fallback event, but omit provider error messages and credentials. Existing
+malformed-output repair and TTS/key/model failover are unchanged.
+
+Verification: eight focused suites / 92 tests, full unit suite 206 files / 1,748
+tests, TypeScript, affected-file ESLint and diff checks passed. No configured
+Gemini credential was available in this checkout, so a live Director retry remains
+required to confirm resolution of this generic production error. If it persists,
+inspect the new chapter Director diagnostic artifact before changing the schema.

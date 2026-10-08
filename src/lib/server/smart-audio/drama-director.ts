@@ -180,7 +180,7 @@ export async function directDramaWithRepair(input: {
     } catch (error) {
       if (!(error instanceof DramaDirectorValidationError)) throw error;
       attempts.push({ attempt: attempt + 1, issues: [...error.issues], response: error.response ?? safeDirectorResponse(output), diagnostics: error.diagnostics });
-      if (attempt === 2) {
+      if (attempt === 2 || error.diagnostics?.httpStatus === 400) {
         Object.defineProperty(error, 'attempts', { value: attempts, enumerable: true });
         throw error;
       }
@@ -292,6 +292,8 @@ export async function directDramaWithGemini(input: {
   const batches = batchDramaSourceSpans(allSpans);
   const directed: DramaDirectorSegment[] = [];
   let continuity = input.priorContinuityState;
+  // Compatibility is scoped to this Director call, never persisted globally.
+  let legacyStructuredOutput = false;
   for (const [index, sourceSpans] of batches.entries()) {
     input.signal?.throwIfAborted();
     const sourceText = sourceSpans.map((span) => span.text).join('');
@@ -299,7 +301,9 @@ export async function directDramaWithGemini(input: {
     let attempt = 0;
     let provider: Record<string, unknown> = {};
     const emit = (fields: Record<string, unknown>) => {
-      const diagnostic = { ...base, ...provider, ...fields };
+      const { contractFailures: _privateFailures, ...publicProvider } = provider;
+      void _privateFailures;
+      const diagnostic = { ...base, ...publicProvider, ...fields };
       serverLogger.info({ event: 'drama_director.diagnostic', ...diagnostic }, 'Drama Director request diagnostic');
       input.onDiagnostic?.(diagnostic);
     };
@@ -309,7 +313,9 @@ export async function directDramaWithGemini(input: {
         input.signal?.throwIfAborted();
         attempt += 1;
         provider = {};
-        const { response } = await fetchGeminiWithRateLimitFallback({
+        const schema = buildDramaDirectorResponseSchema(input.castNames, sourceSpans);
+        const contractFailures: Record<string, unknown>[] = [];
+        const requestStructuredOutput = () => fetchGeminiWithRateLimitFallback({
           primaryApiKey: input.apiKey, backupApiKey: input.backupApiKey, requestedModel: input.model, signal: input.signal,
           request: (apiKey, model) => fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || input.model)}:generateContent`,
@@ -318,15 +324,35 @@ export async function directDramaWithGemini(input: {
               body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
                 // TextResponseFormat.mimeType is a REST enum, unlike the older
                 // responseMimeType string field. Keep the structured schema.
-                generationConfig: { responseFormat: { text: { mimeType: 'APPLICATION_JSON', schema: buildDramaDirectorResponseSchema(input.castNames, sourceSpans) } }, maxOutputTokens: 24_000 },
+                generationConfig: {
+                  ...(legacyStructuredOutput
+                    ? { responseMimeType: 'application/json', responseJsonSchema: schema }
+                    : { responseFormat: { text: { mimeType: 'APPLICATION_JSON', schema } } }),
+                  maxOutputTokens: 24_000,
+                },
               }),
             },
           ),
         });
+        let { response } = await requestStructuredOutput();
+        if (response.status === 400 && !legacyStructuredOutput) {
+          const details = await geminiPrivateErrorDetails(response);
+          if (details.message) details.message = redact(details.message);
+          contractFailures.push({ contract: 'responseFormat', ...details });
+          provider = { ...base, attempt, httpStatus: 400, requestedModel: input.model, outputContract: 'responseFormat' };
+          emit({ failure: 'provider', contractFallback: 'responseJsonSchema' });
+          // Retry once with the documented legacy JSON-schema wire contract.
+          // Never fall back to MIME-only JSON or remove schema constraints.
+          legacyStructuredOutput = true;
+          input.signal?.throwIfAborted();
+          ({ response } = await requestStructuredOutput());
+        }
+        provider = { requestedModel: input.model, outputContract: legacyStructuredOutput ? 'responseJsonSchema' : 'responseFormat',
+          ...(contractFailures.length ? { contractFailures } : {}) };
         if (!response.ok) {
           const details = await geminiPrivateErrorDetails(response);
           if (details.message) details.message = redact(details.message);
-          provider = { ...base, attempt, httpStatus: response.status };
+          provider = { ...provider, ...base, attempt, httpStatus: response.status, apiStatus: details.apiStatus };
           emit({ failure: 'provider' });
           throw new DramaDirectorValidationError([
             `Gemini Drama Director provider failure (HTTP ${response.status}${details.apiStatus ? ` ${details.apiStatus}` : ''}): ${details.message || 'No provider message.'}`,
@@ -336,7 +362,7 @@ export async function directDramaWithGemini(input: {
         let parsedEnvelope: unknown;
         try { parsedEnvelope = JSON.parse(envelope) as unknown; }
         catch {
-          provider = { ...base, attempt, responseLength: envelope.length, parseFailure: true };
+          provider = { ...provider, ...base, attempt, responseLength: envelope.length, parseFailure: true };
           emit({ failure: 'invalid-provider-json' });
           throw new DramaDirectorValidationError(['Gemini returned an invalid Director response envelope.'], redact(envelope).slice(0, 2_000_000), provider);
         }
@@ -347,7 +373,7 @@ export async function directDramaWithGemini(input: {
         };
         const candidate = data.candidates?.[0];
         const jsonText = candidate?.content?.parts?.filter((part) => !part.thought).map((part) => part.text || '').join('') || '';
-        provider = { ...base, attempt, finishReason: candidate?.finishReason, modelVersion: data.modelVersion,
+        provider = { ...provider, ...base, attempt, finishReason: candidate?.finishReason, modelVersion: data.modelVersion,
           promptTokenCount: data.usageMetadata?.promptTokenCount, candidatesTokenCount: data.usageMetadata?.candidatesTokenCount,
           totalTokenCount: data.usageMetadata?.totalTokenCount, responseLength: jsonText.length };
         let output: unknown;

@@ -141,6 +141,48 @@ describe('immutable Director metadata', () => {
     expect(result.map(segment => segment.text).join('')).toBe('ABCD');
   });
 
+  it('retries the production generic 400 once with the same schema in the legacy wire contract', async () => {
+    const diagnostic = vi.fn();
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Request contains an invalid argument.' } }, { status: 400 }))
+      .mockResolvedValueOnce(envelope(JSON.stringify({ segments: [group(['A', 'B', 'C', 'D'])] })));
+    vi.stubGlobal('fetch', fetch);
+    const result = await directDramaWithGemini({ ...input, apiKey: 'secret', model: 'gemini-3.8-flash', onDiagnostic: diagnostic });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(fetch.mock.calls[0][1].body);
+    const second = JSON.parse(fetch.mock.calls[1][1].body);
+    expect(second.contents).toEqual(first.contents);
+    expect(second.generationConfig.responseMimeType).toBe('application/json');
+    expect(second.generationConfig.responseJsonSchema).toEqual(first.generationConfig.responseFormat.text.schema);
+    expect(second.generationConfig).not.toHaveProperty('responseFormat');
+    expect(result.map(segment => segment.text).join('')).toBe('ABCD');
+    expect(diagnostic.mock.calls[0][0]).toMatchObject({ httpStatus: 400, outputContract: 'responseFormat', contractFallback: 'responseJsonSchema' });
+    expect(diagnostic.mock.calls.at(-1)![0]).toMatchObject({ outputContract: 'responseJsonSchema', requestedModel: 'gemini-3.8-flash' });
+  });
+
+  it('stops permanent request rejections without pretending Gemini generated repairable metadata', async () => {
+    const diagnostic = vi.fn();
+    const onRepair = vi.fn();
+    const fetch = vi.fn().mockImplementation(() => Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Invalid argument private-credential' } }, { status: 400 }));
+    vi.stubGlobal('fetch', fetch);
+    const error = await directDramaWithGemini({ ...input, apiKey: 'private-credential', model: 'gemini-3.8-flash', batchIndex: 8, onDiagnostic: diagnostic, onRepair }).catch(value => value);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(onRepair).not.toHaveBeenCalled();
+    expect(error.attempts).toHaveLength(1);
+    expect(error.attempts[0].diagnostics).toMatchObject({ httpStatus: 400, apiStatus: 'INVALID_ARGUMENT', batchIndex: 8, outputContract: 'responseJsonSchema',
+      contractFailures: [{ contract: 'responseFormat', status: 400, message: 'Invalid argument [redacted]' }] });
+    expect(JSON.stringify(error.attempts)).not.toContain('private-credential');
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('Invalid argument');
+  });
+
+  it('never downgrades the schema contract on quota or availability failures', async () => {
+    for (const status of [429, 503]) {
+      const fetch = vi.fn().mockImplementation(() => Response.json({ error: { code: status, status: 'UNAVAILABLE', message: 'Provider unavailable' } }, { status }));
+      vi.stubGlobal('fetch', fetch);
+      await expect(directDramaWithGemini({ ...input, apiKey: 'fixture', model: 'gemini-3.8-flash' })).rejects.toThrow();
+      for (const call of fetch.mock.calls) expect(JSON.parse(call[1].body).generationConfig).not.toHaveProperty('responseJsonSchema');
+    }
+  });
+
   it('retains finish, parse and batch diagnostics in the bounded failure artifact', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() => envelope('{broken', 'MAX_TOKENS')));
     const error = await directDramaWithGemini({ ...input, apiKey: 'secret', model: 'gemini-3.8-flash', batchIndex: 3 }).catch((value) => value);
