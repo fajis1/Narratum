@@ -100,6 +100,7 @@ export function BatchRefineReviewModal({
   runId,
   onRecordingQueued,
   recordingVoice,
+  overridePronunciationReview = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -107,6 +108,7 @@ export function BatchRefineReviewModal({
   runId?: string | null;
   onRecordingQueued?: () => void;
   recordingVoice?: string;
+  overridePronunciationReview?: boolean;
 }) {
   const [review, setReview] = useState<ReviewResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -202,7 +204,7 @@ export function BatchRefineReviewModal({
     setBusyId(change.id);
     try {
       const editedText = editingId === change.id ? drafts[change.id] : undefined;
-      await reviewAction({ action: 'approve', changeId: change.id, editedText, recordingVoice }, 'Approved and queued for Kokoro.');
+      await reviewAction({ action: 'approve', changeId: change.id, editedText, recordingVoice, ...(overridePronunciationReview && review?.run?.rule === PRONUNCIATION_REPAIR_RULE ? { overridePronunciationReview: true } : {}) }, 'Approved and queued for Kokoro.');
       setEditingId(null);
       onRecordingQueued?.();
     } catch (actionError) {
@@ -605,11 +607,11 @@ export function BatchRefineReviewModal({
                       </button>
                       <button
                         onClick={() => void approve(change)}
-                        disabled={isBusy || remainingIssues.length > 0 || sourceOverrideIssues.length > 0}
+                        disabled={isBusy || (!overridePronunciationReview && (remainingIssues.length > 0 || sourceOverrideIssues.length > 0))}
                         title={sourceOverrideIssues.length > 0 ? 'This proposal changes source text. Select the verified findings and use Approve with override.' : undefined}
                         className="rounded bg-accent px-3 py-1.5 text-sm font-semibold text-background hover:bg-secondary-accent disabled:opacity-50"
                       >
-                        {isBusy ? 'Saving…' : isEditing ? 'Approve Edit & Record' : 'Approve & Record'}
+                        {isBusy ? 'Saving…' : overridePronunciationReview ? 'Approve with Override & Record' : isEditing ? 'Approve Edit & Record' : 'Approve & Record'}
                       </button>
                       {review?.run?.rule === PRONUNCIATION_REPAIR_RULE && remainingIssues.length === 0 && (sourceOverrideIssues.length > 0 || isEditing) && (
                         <button

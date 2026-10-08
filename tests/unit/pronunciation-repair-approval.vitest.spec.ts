@@ -72,3 +72,28 @@ test('blocks approval while background generation is active', async () => {
   await expect(approveBatchRefineChange({ changeId: 'change', userId: 'user' })).rejects.toThrow('Pause');
   expect(mocks.put).not.toHaveBeenCalled();
 });
+
+
+test('Override approval persists an audited marker and bypasses Scholar completeness only for repair runs', async () => {
+  const oldText = 'The Θ edition and 7:28 Θ. [περι](/pɛr/)';
+  const newText = 'The [Θ](/θeɪtə/) edition and 7:28 Θ. [περι](/pɛr/)';
+  const row = owned();
+  row.run.profileCategory = 'scholar';
+  row.change.previousText = oldText; row.change.proposedText = newText;
+  row.change.sourceTextHash = batchRefineTextHash(oldText); row.change.proposedTextHash = batchRefineTextHash(newText);
+  mocks.rows = [[row], []]; mocks.objects.set('0107__text.txt', oldText);
+  await expect(approveBatchRefineChange({ changeId: 'change', userId: 'user', overridePronunciationReview: true })).resolves.toMatchObject({ queued: true });
+  expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ decision: 'approved', reviewNote: expect.stringContaining('[Reviewer override: pronunciation warnings; source integrity retained.]') }));
+  mocks.update.mockClear(); mocks.put.mockClear(); row.run.rule = 'ordinary refinement'; mocks.rows = [[row]];
+  await expect(approveBatchRefineChange({ changeId: 'change', userId: 'user', overridePronunciationReview: true })).rejects.toThrow('only');
+  expect(mocks.put).not.toHaveBeenCalled();
+});
+
+test('Override cannot approve changed source or a stale chapter', async () => {
+  mocks.rows = [[owned()], []]; mocks.objects.set('0107__text.txt', previous);
+  await expect(approveBatchRefineChange({ changeId: 'change', userId: 'user', overridePronunciationReview: true, editedText: proposed.replace('arrived', 'left') })).rejects.toThrow();
+  expect(mocks.put).not.toHaveBeenCalled();
+  mocks.rows = [[owned()], []]; mocks.objects.set('0107__text.txt', 'A newer saved version.');
+  await expect(approveBatchRefineChange({ changeId: 'change', userId: 'user', overridePronunciationReview: true })).rejects.toThrow('changed');
+  expect(mocks.put).not.toHaveBeenCalled();
+});

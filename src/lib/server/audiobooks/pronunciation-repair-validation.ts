@@ -1,11 +1,31 @@
-import { assertPronunciationRepair } from '@/lib/shared/pronunciation-issues';
+import { pronunciationMarkupRegions } from '@/lib/shared/pronunciation-repair-markup';
+import { assertPronunciationRepair, scanPronunciationIssues } from '@/lib/shared/pronunciation-issues';
 import { validateSmartAudioOutput } from '@/lib/shared/smart-audio-cleanup';
 import { getAudiobookObjectBuffer } from './blobstore';
 
+export const PRONUNCIATION_REVIEW_OVERRIDE_NOTE = '[Reviewer override: pronunciation warnings; source integrity retained.]';
+export function hasPronunciationReviewOverride(note?: string | null): boolean {
+  return note?.includes(PRONUNCIATION_REVIEW_OVERRIDE_NOTE) === true;
+}
+
 /** Recheck source evidence at approval and recording, never trust an AI claim. */
 export async function assertStoredPronunciationRepair(input: {
-  bookId: string; userId: string; fileName: string; previous: string; proposed: string; allowSourceEvidenceOverride?: boolean; overrideIssueIds?: string[]; allowFullManualOverride?: boolean;
+  bookId: string; userId: string; fileName: string; previous: string; proposed: string; allowSourceEvidenceOverride?: boolean; overrideIssueIds?: string[]; allowFullManualOverride?: boolean; overridePronunciationReview?: boolean;
 }) {
+  if (input.overridePronunciationReview) {
+    // Only pronunciation/completeness findings are overridable here. Keep the
+    // exact source/flagged-region boundary and never combine with source overrides.
+    assertPronunciationRepair(input.previous, input.proposed, { allowRemaining: true });
+    const regions = pronunciationMarkupRegions(input.proposed);
+    const starts = new Set(regions.filter(region => !region.nested && /^\[[^\[\]\r\n]+\]\(\/[^/\r\n]+\/\)$/u.test(input.proposed.slice(region.start, region.end))).map(region => region.start));
+    if ([...input.proposed.matchAll(/\[[^\[\]\r\n]+\]\(\//gu)].some(tag => !starts.has(tag.index))) {
+      throw new Error('Override cannot accept malformed pronunciation markup. Correct the markup before recording.');
+    }
+    if (scanPronunciationIssues(input.proposed).some(issue => issue.kind === 'formatting' || issue.kind === 'structural')) {
+      throw new Error('Override cannot accept malformed pronunciation markup. Correct the markup before recording.');
+    }
+    return;
+  }
   if (input.allowFullManualOverride) {
     const previousVoices = input.previous.match(/<\/?voice\b[^>]*>/gu) || [];
     const proposedVoices = input.proposed.match(/<\/?voice\b[^>]*>/gu) || [];

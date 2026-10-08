@@ -2,8 +2,8 @@ import { expect, test } from '@playwright/test';
 import { build } from 'esbuild';
 import path from 'node:path';
 
-for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk']) test(`scan carries repair through approval (${mode})`, async ({ page }) => {
-  const partial = mode === 'manual' || mode === 'retry';
+for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk', 'override', 'override-individual']) test(`scan carries repair through approval (${mode})`, async ({ page }) => {
+  const partial = mode === 'manual' || mode === 'retry' || mode.startsWith('override');
   const pageErrors: string[] = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   // Exercise the actual React modals with fixture APIs: no paid AI/TTS calls
@@ -25,6 +25,7 @@ for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk']) test(`scan
   let recordingComplete = false;
   const recordingRetries: string[] = [];
   const approvedIds: string[] = [];
+  const approvalOverrides: boolean[] = [];
   const recordingVoices: string[] = [];
   let remembered = false;
   let retried = false;
@@ -58,7 +59,7 @@ for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk']) test(`scan
       if (route.request().method() === 'POST' && route.request().postDataJSON().action === 'retry') {
         recordingRetries.push(route.request().postDataJSON().changeId); recordingVoices.push(route.request().postDataJSON().recordingVoice); return json({ success: true });
       }
-      if (route.request().method() === 'POST') { approved = true; approvedIds.push(route.request().postDataJSON().changeId); recordingVoices.push(route.request().postDataJSON().recordingVoice); return json({ success: true }); }
+      if (route.request().method() === 'POST') { approved = true; approvalOverrides.push(route.request().postDataJSON().overridePronunciationReview === true); approvedIds.push(route.request().postDataJSON().changeId); recordingVoices.push(route.request().postDataJSON().recordingVoice); return json({ success: true }); }
       return json({ run: { id: 'fixture-run', rule: 'pronunciation-repair:v1', status: 'completed', processedChapters: 1, totalChapters: 1 },
         changes: [{ id: 'change', textFileName: '0107__text.txt', chapterIndex: 106, chapterTitle: 'Aetherian chapter', previousText: 'The [Aetherian](/bad split/) arrived.', proposedText: 'The [Aetherian](/eɪθɪriən/) arrived.' + (partial ? retried ? ' [θεῷ](/θeɪoʊ/)' : ' θεῷ' : ''), reviewNote: partial && !retried ? 'NEEDS REVIEW: unresolved passage.' : null, diffText: '-bad split\n+eɪθɪriən', changedCharacters: 10, changePercent: 20, reviewPriority: 'high', priorityScore: 70, decision: approved ? 'approved' : 'pending', audioStatus: approved ? 'queued' : 'not_requested' }], flagDefinitions: [] });
     }
@@ -147,8 +148,31 @@ for (const mode of ['complete', 'manual', 'retry', 'resume', 'bulk']) test(`scan
     expect(pageErrors).toEqual([]);
     return;
   }
+  if (mode.startsWith('override')) {
+    await expect(page.getByRole('checkbox', { name: /^Override/ })).not.toBeChecked();
+    await expect(page.getByRole('button', { name: 'Approve all ready repairs (0)' })).toBeDisabled();
+    await page.getByRole('checkbox', { name: /^Override/ }).check();
+    if (mode === 'override') {
+      page.once('dialog', dialog => dialog.dismiss());
+      await page.getByRole('button', { name: 'Accept all proposals with Override (1)' }).click();
+      expect(approvedIds).toEqual([]);
+      page.once('dialog', dialog => dialog.accept());
+      await page.getByRole('button', { name: 'Accept all proposals with Override (1)' }).click();
+      await expect(page.getByTestId('queued')).toHaveText('1');
+      expect(approvalOverrides).toEqual([true]);
+      await page.reload();
+      await expect(page.getByRole('checkbox', { name: /^Override/ })).not.toBeChecked();
+      return;
+    }
+  }
   await page.getByRole('button', { name: 'Review & Approve' }).click();
   await expect(page.getByRole('heading', { name: 'Pronunciation Repair Review' })).toBeVisible();
+  if (mode === 'override-individual') {
+    await page.getByRole('button', { name: 'Approve with Override & Record', exact: true }).click();
+    await expect(page.getByTestId('queued')).toHaveText('1');
+    expect(approvalOverrides).toEqual([true]);
+    return;
+  }
   if (mode === 'manual') {
     await expect(page.getByText('Needs review: 1 unresolved passages.', { exact: false })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Approve & Record', exact: true })).toBeDisabled();

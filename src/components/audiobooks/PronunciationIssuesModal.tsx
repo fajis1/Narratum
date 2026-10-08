@@ -42,6 +42,8 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
   const [repairs, setRepairs] = useState<PronunciationRepairStatus[]>([]);
   const [approvalMessage, setApprovalMessage] = useState('');
   const [approving, setApproving] = useState(false);
+  const [override, setOverride] = useState(false);
+  useEffect(() => { setOverride(false); }, [open, bookId]);
   const refreshRepairs = useCallback(async (signal?: AbortSignal) => {
     const value = await fetch(`/api/audiobooks/pronunciation-issues?bookId=${encodeURIComponent(bookId)}&action=review-status`, { signal, cache: 'no-store' }).then(readJsonResponse);
     if (!signal?.aborted) setRepairs(value.repairs || []);
@@ -58,7 +60,7 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
     void poll();
     return () => { current.abort(); clearTimeout(timer); };
   }, [open, refreshRepairs]);
-  const readyRepairs = repairs.filter(repair => repair.ready);
+  const readyRepairs = repairs.filter(repair => override ? repair.decision === 'pending' : repair.ready);
   const failedRecordings = repairs.filter(repair => repair.decision === 'approved' && repair.audioStatus === 'error');
   const displayedFindings = [...findings];
   for (const repair of repairs) {
@@ -71,7 +73,7 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
   async function approveReady() {
     if (approving || activeRepair || !readyRepairs.length) return;
     const targets = [...readyRepairs];
-    if (!window.confirm(`Approve ${targets.length} ready repairs and queue their replacement recordings? Partial proposals will be left for review.`)) return;
+    if (!window.confirm(override ? `Override pronunciation warnings and approve all ${targets.length} pending proposals for recording? Source text and speaker assignments remain protected.` : `Approve ${targets.length} ready repairs and queue their replacement recordings? Partial proposals will be left for review.`)) return;
     setApproving(true); setBusy(true); setApprovalMessage('');
     let approved = 0;
     const failures: string[] = [];
@@ -79,12 +81,12 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
       for (const repair of targets) {
         try {
           await fetch('/api/audiobooks/batch-refine/review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'approve', changeId: repair.changeId, recordingVoice }),
+            body: JSON.stringify({ action: 'approve', changeId: repair.changeId, recordingVoice, ...(override ? { overridePronunciationReview: true } : {}) }),
           }).then(readJsonResponse);
           approved += 1;
         } catch (problem) { failures.push(`${repair.title}: ${problem instanceof Error ? problem.message : 'Approval failed'}`); }
       }
-      setApprovalMessage(`${approved} repairs approved. ${failures.length ? failures.join(' · ') : 'Partial proposals were left untouched.'}`);
+      setApprovalMessage(`${approved} repairs approved. ${failures.length ? failures.join(' · ') : override ? 'Reviewer Override recorded for accepted proposals.' : 'Partial proposals were left untouched.'}`);
       if (approved) onRecordingQueued();
       await refreshRepairs();
     } catch (problem) { setError(problem instanceof Error ? problem.message : 'Could not refresh repair status.'); }
@@ -369,7 +371,11 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
         </div>}
         {job?.aiModel && <p className="text-xs text-text-soft">Job model: {job.aiModel} · Profile: {config?.profiles.find(profile => profile.id === job.profileId)?.name || job.profileId} · Keys: {config?.keySources.find(key => key.ref === job.primaryKeyRef)?.masked || 'Not set'} / {config?.keySources.find(key => key.ref === job.backupKeyRef)?.masked || 'Not set'}</p>}
         {error && <p role="alert" className="my-3 text-danger">{error}</p>}
-        <button disabled={approving || busy || activeRepair || !readyRepairs.length} onClick={() => void approveReady()} className="my-3 rounded bg-accent px-3 py-2 text-background disabled:opacity-50">{approving ? 'Approving ready repairs…' : `Approve all ready repairs (${readyRepairs.length})`}</button>
+        <label className="my-4 flex min-h-16 cursor-pointer items-start gap-4 rounded-lg border-2 border-warning bg-warning-wash p-4 text-foreground">
+          <input type="checkbox" checked={override} onChange={event => setOverride(event.target.checked)} disabled={approving || busy || activeRepair} className="mt-1 h-7 w-7 shrink-0 accent-accent" />
+          <span><span className="block text-lg font-semibold">Override</span><span className="block text-sm">Accept all saved Gemini pronunciation proposals, including those with unresolved pronunciation warnings. Source characters, speaker assignments and markup remain protected. Approval queues replacement audio.</span></span>
+        </label>
+        <button disabled={approving || busy || activeRepair || !readyRepairs.length} onClick={() => void approveReady()} className="my-3 rounded bg-accent px-3 py-2 text-background disabled:opacity-50">{approving ? 'Approving ready repairs…' : override ? `Accept all proposals with Override (${readyRepairs.length})` : `Approve all ready repairs (${readyRepairs.length})`}</button>
         <button disabled={busy || activeRepair || !failedRecordings.length} onClick={() => void retryFailedRecordings()} className="my-3 rounded bg-accent px-3 py-2 text-background disabled:opacity-50">Retry all failed recordings ({failedRecordings.length})</button>
         <button disabled={busy || activeRepair || !repairs.some(repair => repair.decision === 'approved')} onClick={() => void rememberApproved()} className="ml-3 rounded border border-line-soft px-3 py-2 disabled:opacity-50">Remember approved pronunciations</button>
         <p className="text-xs text-text-soft">Remembering saves reusable Greek/Hebrew corrections to this book’s lexicon profile, not the global dictionary. Contextual forms and conflicting entries stay unchanged.</p>
@@ -404,6 +410,6 @@ export function PronunciationIssuesModal({ open, onClose, bookId, profileId, onR
         </article>})}</div>
       </div>
     </ModalFrame>
-    <BatchRefineReviewModal open={open && Boolean(reviewRun)} onClose={() => { setReviewRun(null); void refreshRepairs().catch(() => {}); }} bookId={bookId} runId={reviewRun} recordingVoice={recordingVoice} onRecordingQueued={() => { onRecordingQueued(); void refreshRepairs().catch(() => {}); }} />
+    <BatchRefineReviewModal open={open && Boolean(reviewRun)} onClose={() => { setReviewRun(null); void refreshRepairs().catch(() => {}); }} bookId={bookId} runId={reviewRun} recordingVoice={recordingVoice} overridePronunciationReview={override} onRecordingQueued={() => { onRecordingQueued(); void refreshRepairs().catch(() => {}); }} />
   </>;
 }

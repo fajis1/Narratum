@@ -4,7 +4,7 @@ import { and, asc, desc, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { audiobookJobs, batchRefineChanges, batchRefineRuns } from '@/db/schema';
 import { canonicalRepairTextFile, PRONUNCIATION_REPAIR_RULE } from '@/lib/shared/pronunciation-issues';
-import { assertStoredPronunciationRepair } from './pronunciation-repair-validation';
+import { assertStoredPronunciationRepair, PRONUNCIATION_REVIEW_OVERRIDE_NOTE } from './pronunciation-repair-validation';
 import { parseVoiceTaggedText } from '@/lib/shared/multi-voice';
 import {
   batchRefineFlagDefinitions,
@@ -193,6 +193,7 @@ export async function approveBatchRefineChange(input: {
   overrideIssueIds?: string[];
   recordingVoice?: string;
   overrideFullManualEdit?: boolean;
+  overridePronunciationReview?: boolean;
   skipJobIdleCheck?: boolean;
 }): Promise<{ changeId: string; queued: boolean }> {
   const owned = await ownedChange(input.changeId, input.userId);
@@ -206,14 +207,16 @@ export async function approveBatchRefineChange(input: {
 
   const proposedText = input.editedText === undefined ? owned.change.proposedText : input.editedText;
   const pronunciationRepair = owned.run.rule === PRONUNCIATION_REPAIR_RULE;
+  if (input.overridePronunciationReview && !pronunciationRepair) throw new BatchRefineReviewConflictError('Pronunciation Override applies only to pronunciation-repair proposals.');
   if (pronunciationRepair) {
     const jobs = await db.select({ status: audiobookJobs.status }).from(audiobookJobs).where(and(eq(audiobookJobs.userId, input.userId), eq(audiobookJobs.documentId, owned.change.documentId)));
     if (!input.skipJobIdleCheck && jobs.some((job: { status: string }) => job.status === 'queued' || job.status === 'running')) throw new BatchRefineReviewConflictError('Pause background generation before approving pronunciation repairs.');
-    await assertStoredPronunciationRepair({ bookId: owned.change.documentId, userId: input.userId, fileName: owned.change.textFileName, previous: owned.change.previousText, proposed: proposedText, allowSourceEvidenceOverride: input.overrideSourceEvidence === true, overrideIssueIds: input.overrideIssueIds, allowFullManualOverride: input.overrideFullManualEdit === true });
+    await assertStoredPronunciationRepair({ bookId: owned.change.documentId, userId: input.userId, fileName: owned.change.textFileName, previous: owned.change.previousText, proposed: proposedText, allowSourceEvidenceOverride: input.overrideSourceEvidence === true, overrideIssueIds: input.overrideIssueIds, allowFullManualOverride: input.overrideFullManualEdit === true, overridePronunciationReview: input.overridePronunciationReview === true });
     if (/<voice\b/u.test(proposedText)) parseVoiceTaggedText(proposedText, { includeOmitted: true });
   }
   if (
     owned.run.profileCategory === 'scholar'
+    && !input.overridePronunciationReview
     && hasUntaggedScholarForeignScript(proposedText)
   ) {
     throw new BatchRefineReviewConflictError(
@@ -263,9 +266,12 @@ export async function approveBatchRefineChange(input: {
     null,
   );
 
-  const overrideNote = input.overrideSourceEvidence === true || input.overrideIssueIds?.length || input.overrideFullManualEdit
+  const priorReviewNote = owned.change.reviewNote?.replace(PRONUNCIATION_REVIEW_OVERRIDE_NOTE, '').trim();
+  const overrideNote = input.overridePronunciationReview
+    ? `${priorReviewNote || ''} ${PRONUNCIATION_REVIEW_OVERRIDE_NOTE}`.trim()
+    : input.overrideSourceEvidence === true || input.overrideIssueIds?.length || input.overrideFullManualEdit
     ? `${owned.change.reviewNote || ''}${owned.change.reviewNote ? ' ' : ''}[Reviewer override: ${input.overrideFullManualEdit ? 'entire manual edit' : `source-evidence issue IDs=${input.overrideIssueIds?.length ? input.overrideIssueIds.join(',') : 'all'}`}; verify OCR/script corrections.]`
-    : owned.change.reviewNote;
+    : priorReviewNote;
   await db.update(batchRefineChanges).set({
     proposedText,
     proposedTextHash: metrics.proposedTextHash,

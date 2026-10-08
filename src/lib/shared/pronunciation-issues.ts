@@ -352,7 +352,7 @@ export function assertPronunciationRepair(previous: string, proposed: string, op
     proposedCursor = end;
   }
   if (previous.slice(cursor) !== proposed.slice(proposedCursor)) throw new Error('Repair changed the end of the chapter.');
-  if (options.allowRemaining) return; // Proposal creation only; approval/recording never opt in.
+  if (options.allowRemaining) return; // Proposal creation, or an explicit reviewer override checked by the stored-repair boundary.
   if (scanPronunciationIssues(proposed).length) throw new Error('Pronunciation issues remain. Review the proposal before recording.');
   validateSmartAudioOutput(proposed, { requirePronunciationTagsForForeignScripts: FOREIGN.test(previous) });
 }

@@ -121,3 +121,13 @@ script pairs at normalization and final validation. Other script-specific
 transliteration, inflection, Scholar omission and reconstruction policies remain
 unchanged. Verified seven focused files / 195 tests, full unit suite 201 files /
 1,707 tests, TypeScript, affected-file ESLint and whitespace checks.
+
+## Explicit reviewer Override (2026-10-08)
+
+Scan Pronunciation Issues includes a prominent, unchecked-by-default **Override** checkbox. Checking it makes **Accept all proposals with Override** include every pending saved proposal, including partial proposals with unresolved pronunciation findings. A confirmation precedes bulk approval. Individual Review & Approve also carries the checked choice. Failed/omitted provider responses without a saved proposal are not invented or accepted.
+
+Override accepts pronunciation-quality/completeness warnings, including scholarly letter-name proposals with remaining bare sigla. It does not promote contextual tokens into a dictionary, change the default scanner or weaken ordinary approval. Exact source and flagged-region validation, Unicode character fidelity, speaker assignments, malformed-markup checks, ownership, chapter hashes and job-conflict checks remain enforced. Source-reconstruction/manual-edit overrides remain separate controls.
+
+Approval records the reviewer decision in the existing review note; the recording worker reads that decision and applies the same scoped validation. The Scholar completeness gate honors it at both stages. A subsequent strict approval clears the pronunciation-review marker. Checkbox state resets on closing/reopening or changing books. No database migration is required.
+
+Verified: focused validator/approval/scanner suites (90 tests), recording-worker regressions (3 tests), full unit suite (203 files / 1,726 tests), TypeScript and affected-file ESLint with zero warnings. Chromium exercised all seven scan-to-approval workflows, including override confirmation cancellation, accepting partial proposals, individual override approval and reset after reload. Provider/audio calls were mocked.

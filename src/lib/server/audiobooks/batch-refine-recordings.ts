@@ -38,7 +38,7 @@ import type { TTSAudiobookFormat } from '@/types/tts';
 import { batchRefineTextHash } from './batch-refine-assessment';
 import { hasUntaggedScholarForeignScript } from './batch-refine-scholar-safety';
 import { canonicalRepairTextFile, PRONUNCIATION_REPAIR_RULE } from '@/lib/shared/pronunciation-issues';
-import { assertStoredPronunciationRepair } from './pronunciation-repair-validation';
+import { assertStoredPronunciationRepair, hasPronunciationReviewOverride } from './pronunciation-repair-validation';
 import { recordingVoiceFromReviewNote } from './batch-refine-review-store';
 
 const STALE_RECORDING_MS = 15 * 60 * 1000;
@@ -201,6 +201,7 @@ async function recordApprovedChange(
     ))
     .limit(1);
   const pronunciationRepair = runRows[0]?.rule === PRONUNCIATION_REPAIR_RULE;
+  const overridePronunciationReview = pronunciationRepair && hasPronunciationReviewOverride(change.reviewNote);
   const assertRepairStillCurrent = async () => {
     if (!pronunciationRepair) return;
     const jobs = await db.select({ status: audiobookJobs.status }).from(audiobookJobs).where(and(eq(audiobookJobs.documentId, change.documentId), eq(audiobookJobs.userId, change.userId)));
@@ -218,11 +219,12 @@ async function recordApprovedChange(
     await assertStoredPronunciationRepair({ bookId: change.documentId, userId: change.userId, fileName: change.textFileName, previous: change.previousText, proposed: currentText,
       allowSourceEvidenceOverride: overrideMarker === 'all' || change.reviewNote?.includes('[Reviewer override: source-evidence validation') === true,
       overrideIssueIds: overrideMarker && overrideMarker !== 'all' ? overrideMarker.split(',').filter(Boolean) : undefined,
-      allowFullManualOverride: fullManualOverride });
+      allowFullManualOverride: fullManualOverride, overridePronunciationReview });
     await assertRepairStillCurrent();
   }
   if (
     runRows[0]?.profileCategory === 'scholar'
+    && !overridePronunciationReview
     && hasUntaggedScholarForeignScript(currentText)
   ) {
     throw new Error('Scholar recording blocked: the approved text contains untagged Greek or Hebrew, or an editorial word split across pronunciation tags.');

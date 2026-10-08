@@ -69,7 +69,7 @@ export async function POST(request: Request) {
       const overrideIssueIds = Array.isArray(body.overrideIssueIds)
         ? body.overrideIssueIds.filter((value): value is string => typeof value === 'string')
         : undefined;
-      const result = await approveBatchRefineChange({ changeId, userId: ctx.userId, editedText, overrideSourceEvidence: body.overrideSourceEvidence === true, overrideIssueIds, overrideFullManualEdit: body.overrideFullManualEdit === true, recordingVoice });
+      const result = await approveBatchRefineChange({ changeId, userId: ctx.userId, editedText, overrideSourceEvidence: body.overrideSourceEvidence === true, overrideIssueIds, overrideFullManualEdit: body.overrideFullManualEdit === true, overridePronunciationReview: body.overridePronunciationReview === true, recordingVoice });
       wakeRecordingQueue();
       return NextResponse.json({ success: true, ...result });
     }
