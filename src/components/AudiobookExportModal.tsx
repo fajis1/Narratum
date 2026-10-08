@@ -1351,6 +1351,12 @@ export function AudiobookExportModal({
                               ))}
                             </div>
 
+                            {bookId && (<a href={`/api/audiobook/troubleshooting?bookId=${encodeURIComponent(bookId)}`} download
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-line-soft bg-surface hover:bg-surface-sunken text-text-strong text-xs font-medium"
+              title="Download all available chapter diagnostics, speaker assignments, and TTS attempts">
+              Download troubleshooting bundle (JSON)
+            </a>)}
+
                             {bookId && !isGenerating && (
                               <div className="pt-4 border-t border-line-soft flex flex-col sm:flex-row gap-2">
                                 <Button

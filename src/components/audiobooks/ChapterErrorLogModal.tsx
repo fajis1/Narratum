@@ -365,6 +365,12 @@ export function ChapterErrorLogModal({
               <span>{copied ? '✓ Copied!' : '📋 Copy Diagnostic Log'}</span>
             </button>
 
+            <a href={`/api/audiobook/troubleshooting?bookId=${encodeURIComponent(bookId)}`} download
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-line-soft bg-surface hover:bg-surface-sunken text-text-strong text-xs font-medium"
+              title="Download all available chapter diagnostics, speaker assignments, and TTS attempts">
+              Download troubleshooting bundle (JSON)
+            </a>
+
             {onRequeue && (
               <button
                 type="button"

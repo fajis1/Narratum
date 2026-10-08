@@ -39,6 +39,19 @@ export interface GeminiTtsSynthesisOptions {
   apiKey: string;
   /** Allows audiobook cancellation to abort an in-flight provider request. */
   signal?: AbortSignal;
+  /** Safe attempt metadata; excludes credentials and base64 audio. */
+  onDiagnostic?: (record: GeminiTtsDiagnostic) => Promise<void>;
+}
+
+export interface GeminiTtsDiagnostic {
+  createdAt: string;
+  durationMs: number;
+  request: unknown;
+  httpStatus?: number;
+  retryAfterMs?: number;
+  response?: unknown;
+  error?: string;
+  audioBytes?: number;
 }
 
 export interface GeminiTtsSynthesisResult {
@@ -252,74 +265,94 @@ export async function synthesizeWithGeminiTts(
   }
 
   const requestBody = buildGeminiTtsRequest(options);
-  let response: Response;
+  const startedAt = Date.now();
+  const diagnostic: GeminiTtsDiagnostic = { createdAt: new Date(startedAt).toISOString(), durationMs: 0, request: requestBody };
   try {
-    response = await fetch(GEMINI_TTS_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'x-goog-api-key': options.apiKey,
-      },
-      body: JSON.stringify(requestBody),
-      signal: options.signal,
-    });
-  } catch (error) {
-    throw new GeminiTtsTransportError(error);
-  }
-
-  if (!response.ok) {
-    let payload: unknown;
+    let response: Response;
     try {
-      payload = await response.json();
-    } catch {
-      payload = await response.text().catch(() => '');
+      response = await fetch(GEMINI_TTS_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'x-goog-api-key': options.apiKey,
+        },
+        body: JSON.stringify(requestBody),
+        signal: options.signal,
+      });
+    } catch (error) {
+      throw new GeminiTtsTransportError(error);
     }
-    const { detail, providerStatus } = getResponseError(payload);
-    const retryAfterMs = parseRetryAfterMs(response.headers?.get('retry-after') ?? null);
-    throw new GeminiTtsApiError(
-      `Gemini TTS returned HTTP ${response.status}: ${detail}`,
-      response.status,
-      detail,
-      requestBody.model,
-      providerStatus,
-      retryAfterMs,
-    );
-  }
 
-  const payload = await response.json() as unknown;
-  const encodedAudio = extractGeminiTtsAudio(payload);
-  if (!encodedAudio) {
-    throw new GeminiTtsApiError(
-      'Gemini TTS response did not include model-output audio.',
-      response.status,
-      'Missing steps[].content[] audio item',
-      requestBody.model,
-    );
-  }
+    diagnostic.httpStatus = response.status;
+    diagnostic.retryAfterMs = parseRetryAfterMs(response.headers?.get('retry-after') ?? null);
+    if (!response.ok) {
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = await response.text().catch(() => '');
+      }
+      diagnostic.response = payload;
+      const { detail, providerStatus } = getResponseError(payload);
+      const retryAfterMs = parseRetryAfterMs(response.headers?.get('retry-after') ?? null);
+      throw new GeminiTtsApiError(
+        `Gemini TTS returned HTTP ${response.status}: ${detail}`,
+        response.status,
+        detail,
+        requestBody.model,
+        providerStatus,
+        retryAfterMs,
+      );
+    }
 
-  const audioBuffer = Buffer.from(encodedAudio, 'base64');
-  if (audioBuffer.length === 0) {
-    throw new GeminiTtsApiError(
-      'Gemini TTS response contained empty audio.',
-      response.status,
-      'Empty base64 audio payload',
-      requestBody.model,
-    );
-  }
-  if (audioBuffer.subarray(0, 4).toString('ascii') !== 'RIFF' || audioBuffer.subarray(8, 12).toString('ascii') !== 'WAVE') {
-    throw new GeminiTtsApiError(
-      'Gemini TTS response was not a WAV payload.',
-      response.status,
-      'Expected RIFF/WAVE header',
-      requestBody.model,
-    );
-  }
+    const payload = await response.json() as unknown;
+    // Keep usage/provider metadata, but strip the binary audio before retention.
+    if (options.onDiagnostic) diagnostic.response = JSON.parse(JSON.stringify(payload, (key, value) => key === 'data' ? undefined : value));
+    const encodedAudio = extractGeminiTtsAudio(payload);
+    if (!encodedAudio) {
+      throw new GeminiTtsApiError(
+        'Gemini TTS response did not include model-output audio.',
+        response.status,
+        'Missing steps[].content[] audio item',
+        requestBody.model,
+      );
+    }
 
-  return {
-    audioBuffer,
-    audioFormat: 'wav',
-    mimeType: GEMINI_TTS_AUDIO_MIME_TYPE,
-    sampleRate: GEMINI_TTS_SAMPLE_RATE,
-    usedModel: requestBody.model,
-  };
+    const audioBuffer = Buffer.from(encodedAudio, 'base64');
+    if (audioBuffer.length === 0) {
+      throw new GeminiTtsApiError(
+        'Gemini TTS response contained empty audio.',
+        response.status,
+        'Empty base64 audio payload',
+        requestBody.model,
+      );
+    }
+    if (audioBuffer.subarray(0, 4).toString('ascii') !== 'RIFF' || audioBuffer.subarray(8, 12).toString('ascii') !== 'WAVE') {
+      throw new GeminiTtsApiError(
+        'Gemini TTS response was not a WAV payload.',
+        response.status,
+        'Expected RIFF/WAVE header',
+        requestBody.model,
+      );
+    }
+
+    diagnostic.audioBytes = audioBuffer.length;
+    return {
+      audioBuffer,
+      audioFormat: 'wav',
+      mimeType: GEMINI_TTS_AUDIO_MIME_TYPE,
+      sampleRate: GEMINI_TTS_SAMPLE_RATE,
+      usedModel: requestBody.model,
+    };
+  } catch (error) {
+    diagnostic.error = error instanceof Error ? error.message : 'Unknown TTS error';
+    throw error;
+  } finally {
+    diagnostic.durationMs = Date.now() - startedAt;
+    if (options.onDiagnostic) {
+      // Remove the exact key even if the provider echoes it in an error string.
+      const safe = JSON.parse(JSON.stringify(diagnostic, (_key, value) => typeof value === 'string' ? value.split(options.apiKey).join('[REDACTED]') : value)) as GeminiTtsDiagnostic;
+      try { await options.onDiagnostic(safe); } catch { /* Diagnostic callbacks must not trigger billable retries. */ }
+    }
+  }
 }

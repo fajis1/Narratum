@@ -1,4 +1,5 @@
 import { createDramaSourceSpans, batchDramaSourceSpans } from '@/lib/server/smart-audio/drama-source-spans';
+import { synthesizeWithGeminiTts, type GeminiTtsDiagnostic } from '@/lib/server/smart-audio/gemini-tts-client';
 import type { DramaDirectorSegment } from '@/lib/shared/drama-director-schema';
 import type { SmartAudioCharacterMap } from '@/types/document-settings';
 import { directDramaWithGemini } from '@/lib/server/smart-audio/drama-director';
@@ -38,6 +39,7 @@ export async function generateCloudDramaAudiobook(input: {
   onLifecycle?: (event: string, fields?: Record<string, unknown>) => void;
   onSynthesisFailure?: (flags: readonly DramaSynthesisReviewFlag[]) => Promise<void>;
   onDirectedSegments?: (segments: readonly DramaDirectorSegment[], complete: boolean) => Promise<void>;
+  onTtsAttempt?: (record: GeminiTtsDiagnostic & { segmentNumber: number; speaker: string }) => Promise<void>;
   directionOnly?: boolean;
 }): Promise<CloudDramaAudiobookResult> {
   const readiness = await getGeminiTtsCharacterMapReadiness({
@@ -91,6 +93,9 @@ export async function generateCloudDramaAudiobook(input: {
         segment, characterMap: readiness.map,
         apiKey: input.geminiApiKey,
         backupApiKey: input.backupGeminiApiKey,
+        synthesize: (options) => synthesizeWithGeminiTts({ ...options,
+          onDiagnostic: input.onTtsAttempt ? (record) => input.onTtsAttempt!({ ...record, segmentNumber, speaker: segment.speaker }) : undefined,
+        }),
         policy,
         modelName: segmentModel,
         fallbackModels: input.ttsModelFallbacks as readonly import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel[] | undefined,

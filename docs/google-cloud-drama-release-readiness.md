@@ -120,6 +120,27 @@ smoke tests described in the migration plan. Verify that unary audio starts with
 `RIFF`, tags are not spoken literally, and the final MP3/M4B plays correctly.
 No live credential or staging execution was used for this code-only migration.
 
+
+### Troubleshooting bundle
+
+The audiobook export view and error modal offer **Download troubleshooting bundle (JSON)**,
+including successful speaker snapshots, retained Director failures, cleanup/rejected text,
+provider diagnostics, recent job metadata and review flags. Each artifact includes a SHA-256
+checksum of its original stored bytes. The outer download remains valid JSON even when a
+nested Director response contains invalid JSON; original response strings are preserved.
+
+New Gemini Drama generation records every TTS HTTP attempt, including model, voice,
+transcript, style, timing, audio byte count, provider usage when returned, and structured
+quota/retry details. Separate chapter run IDs prevent retries from overwriting previous
+attempt logs. Credentials and binary audio are excluded. Downloading never calls Gemini.
+
+Capture is prospective: old successful TTS calls cannot be reconstructed. Successful
+Director output is included as validated speaker assignments rather than raw provider
+envelopes. The bundle is a live snapshot; compare job IDs and timestamps when examining
+historical failures. Save it before deleting the book. Artifacts exceeding 8 MiB or the
+32 MiB cumulative bundle input limit are listed as unavailable. Each attempt log retains
+up to 2,000 requests and explicitly reports truncation.
+
 ## Director source-span reliability (2026-10-06)
 
 Next-release note: Drama Director now returns schema-constrained direction over

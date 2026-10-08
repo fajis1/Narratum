@@ -249,3 +249,36 @@ describe('synthesizeWithGeminiTts', () => {
     })).rejects.toThrow(GeminiTtsTransportError);
   });
 });
+
+
+describe('Gemini TTS troubleshooting capture', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('captures safe request settings, usage and audio size on success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...audioPayload(), usage: { total_tokens: 8 } })));
+    const onDiagnostic = vi.fn().mockResolvedValue(undefined);
+    await synthesizeWithGeminiTts({ apiKey: testApiKey, text: 'Hi', voiceName: 'Kore', style: 'warm', onDiagnostic });
+    const record = onDiagnostic.mock.calls[0][0];
+    expect(record).toMatchObject({ httpStatus: 200, audioBytes: wavFixture().length, response: { usage: { total_tokens: 8 } }, request: { model: GEMINI_TTS_MODEL } });
+    expect(record.request.input[0].content[0]).toMatchObject({ text: 'Hi', annotations: [{ style: 'warm' }] });
+    expect(JSON.stringify(record)).not.toContain(testApiKey);
+    expect(JSON.stringify(record)).not.toContain(wavFixture().toString('base64'));
+  });
+  it('retains structured quota details and retry timing before throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ error: { message: testApiKey, status: 'RESOURCE_EXHAUSTED', details: [{ quotaId: 'daily' }] } }, { ok: false, status: 429, retryAfter: '60' })));
+    const onDiagnostic = vi.fn().mockResolvedValue(undefined);
+    await expect(synthesizeWithGeminiTts({ apiKey: testApiKey, text: 'Hi', voiceName: 'Kore', onDiagnostic })).rejects.toBeInstanceOf(GeminiTtsApiError);
+    expect(onDiagnostic.mock.calls[0][0]).toMatchObject({ httpStatus: 429, retryAfterMs: 60000, response: { error: { message: '[REDACTED]', details: [{ quotaId: 'daily' }] } } });
+  });
+  it('captures transport failures without credentials', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const onDiagnostic = vi.fn().mockResolvedValue(undefined);
+    await expect(synthesizeWithGeminiTts({ apiKey: testApiKey, text: 'Hi', voiceName: 'Kore', onDiagnostic })).rejects.toBeInstanceOf(GeminiTtsTransportError);
+    expect(onDiagnostic).toHaveBeenCalledOnce();
+  });
+  it('keeps successful audio when diagnostic retention fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(audioPayload())));
+    const result = await synthesizeWithGeminiTts({ apiKey: testApiKey, text: 'Hi', voiceName: 'Kore', onDiagnostic: async () => { throw new Error('storage'); } });
+    expect(result.audioBuffer).toEqual(wavFixture());
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+});

@@ -1,4 +1,5 @@
 import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
+import { createTtsAttemptRecorder } from '@/lib/server/audiobooks/troubleshooting';
 import { saveDramaTtsDiagnostic } from '@/lib/server/audiobooks/drama-tts-diagnostics';
 import { NextRequest, NextResponse } from 'next/server';
 import { repairSmartAudioWorkerPronunciations } from '@/lib/server/audiobooks/smart-audio-targeted-repair';
@@ -1109,6 +1110,8 @@ export async function POST(request: NextRequest) {
                 profileId: selectedProfile.id, sourceText: processedTextForTts,
                 characterMap: cloudDramaCast, segments, complete, namespace: testNamespace });
             },
+            onTtsAttempt: createTtsAttemptRecorder({ bookId, userId: storageUserId, chapterIndex,
+              profileId: selectedProfile.id, namespace: testNamespace }),
             onSynthesisFailure: (flags) => saveDramaTtsDiagnostic({
               bookId, userId: storageUserId, chapterIndex, flags, namespace: testNamespace,
             }),
