@@ -165,7 +165,7 @@ pronunciation markup. These are conservative engineering budgets, not measured
 provider guarantees; tune from the new diagnostics and staging observations.
 
 The current Gemini 3.8 `generateContent` REST contract is configured using
-`generationConfig.responseFormat.text = { mimeType: 'application/json', schema }`.
+`generationConfig.responseFormat.text = { mimeType: 'APPLICATION_JSON', schema }`.
 All cast/span IDs and performance enums derive from authoritative shared values;
 object shape and array limits are schema-constrained. Google's documented subset
 does not support boolean `const`/`enum`, so `omit_from_audio` is a required boolean
@@ -201,3 +201,18 @@ helper/test files, and `git diff --check` passed. The affected failure-log route
 and diagnostic modal retain respectively 1 and 23 existing ESLint errors; a
 read-only HEAD comparison confirmed no increase. No live Gemini or browser smoke
 was run. Existing unrelated local changes were preserved.
+
+### 2026-10-08 — Director structured-output MIME enum correction
+
+The production chapter artifact showed three identical pre-generation HTTP 400
+rejections. `responseFormat.text.mimeType` requires `APPLICATION_JSON`, not the
+`application/json` string accepted by legacy `responseMimeType`. Corrected the
+request while preserving its structured schema, immutable source spans, server
+validation and TTS failover. Contract reference:
+https://ai.google.dev/api/generate-content#v1beta.TextResponseFormat
+
+A regression transport rejects the production value and accepts the correct enum,
+then verifies exact server-owned source reconstruction. Verification: eight
+focused suites / 89 tests and all 206 unit files / 1,745 tests passed; TypeScript
+and affected-file ESLint passed. No live provider request was made. Deploy/restart
+workers before retrying affected chapters; retained failure history is preserved.

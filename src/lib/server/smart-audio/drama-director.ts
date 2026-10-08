@@ -316,9 +316,9 @@ export async function directDramaWithGemini(input: {
             {
               method: 'POST', signal: input.signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
               body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
-                // Verified against Google's current generateContent REST example
-                // for gemini-3.8-flash; schema is not merely a JSON MIME hint.
-                generationConfig: { responseFormat: { text: { mimeType: 'application/json', schema: buildDramaDirectorResponseSchema(input.castNames, sourceSpans) } }, maxOutputTokens: 24_000 },
+                // TextResponseFormat.mimeType is a REST enum, unlike the older
+                // responseMimeType string field. Keep the structured schema.
+                generationConfig: { responseFormat: { text: { mimeType: 'APPLICATION_JSON', schema: buildDramaDirectorResponseSchema(input.castNames, sourceSpans) } }, maxOutputTokens: 24_000 },
               }),
             },
           ),

@@ -118,10 +118,27 @@ describe('immutable Director metadata', () => {
     const result = await directDramaWithGemini({ ...input, apiKey: 'private-test-credential', model: 'gemini-3.8-flash', batchIndex: 7, onDiagnostic: diagnostic });
     expect(result.map((segment) => segment.text).join('')).toBe('ABCD');
     const config = JSON.parse(fetch.mock.calls[0][1].body).generationConfig;
-    expect(config.responseFormat.text).toEqual({ mimeType: 'application/json', schema: buildDramaDirectorResponseSchema(input.castNames, spans) });
+    expect(config.responseFormat.text).toEqual({ mimeType: 'APPLICATION_JSON', schema: buildDramaDirectorResponseSchema(input.castNames, spans) });
     expect(fetch.mock.calls[0][0]).not.toContain('private-test-credential');
     expect(diagnostic.mock.calls[0][0]).toMatchObject({ batchIndex: 7, finishReason: 'MAX_TOKENS', responseLength: 25, parseFailure: true, sourceSpanCount: 4, sourceByteCount: 4, promptTokenCount: 300, candidatesTokenCount: 100, totalTokenCount: 400, modelVersion: 'gemini-test' });
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private-test-credential');
+  });
+
+  it('sends the enum MIME type accepted by the provider instead of the production HTTP 400 value', async () => {
+    const fetch = vi.fn().mockImplementation((_url, request) => {
+      const config = JSON.parse(request.body).generationConfig;
+      // Mirror TextResponseFormat.MimeType's REST contract, not the old string field.
+      if (config.responseFormat?.text?.mimeType !== 'APPLICATION_JSON') {
+        return Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: "Invalid value at 'generation_config.response_format.text.mime_type': application/json" } }, { status: 400 });
+      }
+      expect(config.responseFormat.text.schema).toEqual(buildDramaDirectorResponseSchema(input.castNames, spans));
+      expect(config).not.toHaveProperty('responseMimeType');
+      return envelope(JSON.stringify({ segments: [group(['A', 'B', 'C', 'D'])] }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const result = await directDramaWithGemini({ ...input, apiKey: 'fixture', model: 'gemini-3.8-flash' });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(result.map(segment => segment.text).join('')).toBe('ABCD');
   });
 
   it('retains finish, parse and batch diagnostics in the bounded failure artifact', async () => {
