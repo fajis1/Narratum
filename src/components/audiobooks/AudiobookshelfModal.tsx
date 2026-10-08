@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
+import { catalogAuthor } from '@/lib/shared/catalog-author';
 import { Button, Input, ModalFrame } from '@/components/ui';
 
 export interface AudiobookshelfModalProps {
@@ -93,6 +94,7 @@ export function AudiobookshelfModal({
   const [isLoadingConfig, setIsLoadingConfig] = useState(false);
   const [title, setTitle] = useState(initialTitle);
   const [author, setAuthor] = useState(initialAuthor);
+  const [metadataNotice, setMetadataNotice] = useState('');
   const [series, setSeries] = useState('');
   const [libraryId, setLibraryId] = useState('');
   const [folderId, setFolderId] = useState('');
@@ -157,6 +159,7 @@ export function AudiobookshelfModal({
         setSelectedChapterIndices(initialSelectedChapterIndices);
       }
       setStatusMessage(null);
+      setMetadataNotice('');
       setMatchResult(null);
       setUploadError(null);
     } else {
@@ -282,6 +285,7 @@ export function AudiobookshelfModal({
     async (libIdOverride?: string) => {
       if (!bookId) return;
       setIsInferring(true);
+      setMetadataNotice('');
       setStatusMessage('Analyzing document with Gemini to infer canonical title and metadata...');
 
       try {
@@ -292,14 +296,17 @@ export function AudiobookshelfModal({
         if (res.ok && data.success && data.metadata) {
           const meta = data.metadata;
           const nextTitle = meta.title || title;
-          const nextAuthor = meta.author || author;
+          const suggestedAuthor = catalogAuthor(meta.author);
+          const nextAuthor = suggestedAuthor || author;
           if (meta.title) setTitle(meta.title);
-          if (meta.author) setAuthor(meta.author);
+          if (suggestedAuthor) setAuthor(suggestedAuthor);
           if (meta.series) {
             const seriesStr = meta.seriesIndex ? `${meta.series} #${meta.seriesIndex}` : meta.series;
             setSeries(seriesStr);
           }
-          toast.success('Inferred title and author with Gemini!');
+          const notice = suggestedAuthor ? 'Author suggested from document evidence. Check the name before uploading.' : 'Author not identified in the available document evidence. Your existing entry is unchanged; enter or verify the author manually.';
+          setMetadataNotice(notice);
+          toast.success(suggestedAuthor ? 'Suggested title and author.' : 'Suggested title; author could not be identified.');
           setStatusMessage(null);
           void runCheckExistingBook(nextTitle, nextAuthor, libIdOverride || libraryId);
         } else {
@@ -496,17 +503,21 @@ export function AudiobookshelfModal({
               />
             </div>
 
+            <p className="text-xs text-muted">Metadata suggestions use the filename, original document text and embedded metadata. No web search is performed.</p>
             {/* Author field */}
             <div className="space-y-1">
               <label className="text-xs font-medium text-foreground">Author</label>
               <Input
                 type="text"
                 placeholder="Brandon Sanderson"
+                aria-label="Author"
                 value={author}
                 onChange={(e) => setAuthor(e.target.value)}
                 disabled={isUploading}
               />
             </div>
+
+            {metadataNotice && <p role="status" className="text-xs text-foreground">{metadataNotice}</p>}
 
             {/* Series field */}
             <div className="space-y-1">
