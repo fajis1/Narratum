@@ -1,11 +1,12 @@
 import os from 'node:os';
 import fs from 'node:fs/promises';
+import { readMemoryHeadroom, requiredMemoryHeadroom } from './memory-headroom';
 
 export interface SystemResourceCheckResult {
   ok: boolean;
   reason?: string;
   details?: {
-    memory?: { freeBytes: number; totalBytes: number; freePercent: number };
+    memory?: { freeBytes: number; totalBytes: number; freePercent: number; requiredBytes?: number; source?: string };
     cpu?: { load1: number; cores: number; loadRatio: number };
     disk?: { freeBytes: number; totalBytes: number; freePercent: number };
   };
@@ -24,7 +25,9 @@ export function getLastSystemResourceCheck(): SystemResourceCheckResult | null {
  * Thresholds can be configured via environment variables:
  * - AUDIOBOOK_MIN_FREE_DISK_PERCENT (default: 0.20, e.g. 20%)
  * - AUDIOBOOK_MIN_FREE_DISK_GB (optional: minimum required free gigabytes)
- * - AUDIOBOOK_MIN_FREE_MEM_PERCENT (default: 0.20, e.g. 20%)
+ * - Memory default: 20% of effective RAM, capped at 2 GiB; Linux uses MemAvailable and cgroup headroom.
+ * - AUDIOBOOK_MIN_FREE_MEM_PERCENT (optional: explicit ratio, uncapped for compatibility)
+ * - AUDIOBOOK_MIN_FREE_MEM_GB (optional: absolute GiB minimum; overrides percentage)
  * - AUDIOBOOK_MAX_CPU_LOAD_RATIO (default: 0.80, e.g. 80%)
  */
 export async function checkSystemResources(options?: { forceFresh?: boolean }): Promise<SystemResourceCheckResult> {
@@ -38,18 +41,19 @@ export async function checkSystemResources(options?: { forceFresh?: boolean }): 
   }
 
   try {
-    // 1. Check Memory (default: 20% free)
-    const minMemPercent = Number(process.env.AUDIOBOOK_MIN_FREE_MEM_PERCENT ?? '0.2');
-    const freeMem = os.freemem();
-    const totalMem = os.totalmem();
-    const memFreeRatio = totalMem > 0 ? freeMem / totalMem : 1;
-    if (memFreeRatio < minMemPercent) {
+    // 1. Check allocatable memory, including the container's effective limit.
+    const memory = await readMemoryHeadroom();
+    const requiredBytes = requiredMemoryHeadroom(memory.totalBytes);
+    const memoryDetails = {
+      freeBytes: memory.availableBytes, totalBytes: memory.totalBytes,
+      freePercent: memory.availableBytes / memory.totalBytes * 100,
+      requiredBytes, source: memory.source,
+    };
+    if (memory.availableBytes < requiredBytes) {
       const result: SystemResourceCheckResult = {
         ok: false,
-        reason: `Memory low: ${(freeMem / 1024 / 1024).toFixed(2)}MB free of ${(totalMem / 1024 / 1024).toFixed(2)}MB (${(memFreeRatio * 100).toFixed(1)}% free, requires at least ${(minMemPercent * 100).toFixed(0)}%)`,
-        details: {
-          memory: { freeBytes: freeMem, totalBytes: totalMem, freePercent: memFreeRatio * 100 },
-        },
+        reason: `Memory low: ${(memory.availableBytes / 1024 ** 3).toFixed(2)} GiB available of ${(memory.totalBytes / 1024 ** 3).toFixed(2)} GiB effective RAM; ${(requiredBytes / 1024 ** 3).toFixed(2)} GiB headroom required (${memory.source}).`,
+        details: { memory: memoryDetails },
         checkedAt: now,
       };
       cachedResourceCheck = { result, timestamp: now };
@@ -66,6 +70,7 @@ export async function checkSystemResources(options?: { forceFresh?: boolean }): 
         ok: false,
         reason: `CPU load high: ${load1.toFixed(2)} on ${cpus} cores (${(cpuLoadRatio * 100).toFixed(0)}% load, maximum ${(maxCpuRatio * 100).toFixed(0)}% allowed)`,
         details: {
+          memory: memoryDetails,
           cpu: { load1, cores: cpus, loadRatio: cpuLoadRatio },
         },
         checkedAt: now,
@@ -102,6 +107,7 @@ export async function checkSystemResources(options?: { forceFresh?: boolean }): 
           ok: false,
           reason: `Disk space low: ${freeGb.toFixed(2)}GB free of ${totalGb.toFixed(2)}GB (${(diskFreeRatio * 100).toFixed(1)}% free, ${thresholdText})`,
           details: {
+            memory: memoryDetails,
             disk: { freeBytes: freeSpace, totalBytes: totalSpace, freePercent: diskFreeRatio * 100 },
           },
           checkedAt: now,
@@ -113,7 +119,7 @@ export async function checkSystemResources(options?: { forceFresh?: boolean }): 
       // Ignored if statfs is not supported
     }
 
-    const result: SystemResourceCheckResult = { ok: true, checkedAt: now };
+    const result: SystemResourceCheckResult = { ok: true, details: { memory: memoryDetails }, checkedAt: now };
     cachedResourceCheck = { result, timestamp: now };
     return result;
   } catch {
