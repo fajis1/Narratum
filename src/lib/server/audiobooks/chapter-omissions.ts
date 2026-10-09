@@ -60,4 +60,3 @@ export function isValidChapterOmissionEvidence(
     && evidence.sourceHash === chapterOmissionSourceHash(chapter)
     && getChapterOmissionReason(chapter) === evidence.reason;
 }
-
