@@ -7,6 +7,21 @@ import { getGeminiManualReviewState, isFlaggedForReview, isAutomaticallyIgnoredF
   prepareForeignWordScanRows } from '@/lib/shared/foreign-word-scan-results';
 import { exportForeignWordScan, parseForeignWordScanImportDetailed } from '@/lib/shared/foreign-word-scan-transfer';
 import { normalizeKokoroPronunciationCandidate } from '@/lib/shared/kokoro-pronunciation-policy';
+import { canPromoteForeignWordScanRow } from '@/lib/shared/foreign-word-source-integrity';
+
+test('unverified ASCII OCR candidates are blocked even when old status/outcome suggests validity', () => {
+  const original = { word: 'xatagew', latinizedOcrCandidate: true, sourceStatus: 'source_review_recommended',
+    sourceOutcome: 'valid_word', libraryPronunciation: '/katɑrɡeo/', definition: 'abolish' };
+  expect(requiresForeignWordSourceRepair(original)).toBe(true);
+  expect(selectGeminiEligibleScanRows([original])).toEqual([]);
+  const row = classifyForeignWordSourceIntegrity(original);
+  expect(row.sourceStatus).toBe('needs_source_repair');
+  expect(canPromoteForeignWordScanRow(row)).toBe(false);
+  const exported = exportForeignWordScan('pdf', [original]);
+  expect(exported.words[0]).toMatchObject({ sourceStatus: 'needs_source_repair', currentPronunciation: null, currentDefinition: null });
+  expect(selectGeminiEligibleScanRows([{ word: 'katargeo', sourceStatus: 'source_review_recommended', latinTransliterationCandidate: true }])).toHaveLength(1);
+  expect(canPromoteForeignWordScanRow({ sourceStatus: 'verified_document_reading' })).toBe(false);
+});
 
 describe('source integrity before Gemini work', () => {
   test.each(['ויפצ', 'אבכ', 'אבמ', 'אבנ', 'אבפ', 'אבצ', 'אָבצָ', 'ךאב', 'אבץג', 'שלוםλόγος', 'ኵሎabc'])(

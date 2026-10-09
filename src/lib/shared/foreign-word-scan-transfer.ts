@@ -1,4 +1,4 @@
-import { getForeignWordSourceRepairReasons } from './foreign-word-source-integrity';
+import { getForeignWordSourceRepairReasons, classifyForeignWordSourceIntegrity, requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
 import { selectGeminiManualReviewWords } from './foreign-word-scan-results';
 import {
   isKokoroSafePronunciation,
@@ -30,9 +30,18 @@ export interface ForeignWordScanTransfer {
     count: number | null;
     contexts: string[];
     occurrences: Array<Record<string, unknown>>;
+    occurrencesIncluded: number;
+    occurrenceDetailsTruncated: boolean;
     editorialSpellings: string[];
     ocrEvidence: string[];
     sourceRepairReasons?: string[];
+    rawExtractedSpellings: string[];
+    effectiveVerifiedWord: string | null;
+    rawOccurrenceCount: number | null;
+    approvedAppliedOccurrenceCount: number;
+    unmatchedApprovedOccurrenceCount: number;
+    unresolvedOccurrenceCount: number | null;
+    sourceRecoveryStatus: string | null;
     sourceStatus: string;
     sourceOutcome: string | null;
     qualityFlags: string[];
@@ -76,7 +85,7 @@ export function exportForeignWordScan(
     documentId,
     exportedAt: new Date().toISOString(),
     instructions: `${batchPrefix}Read sourceStatus, qualityFlags, and occurrences before proposing edits. Edit proposedPronunciation and proposedDefinition only for a verified complete word. Leave null to keep the current value; set omitDefinition to true to clear a definition. Source terms, statuses, and occurrence evidence are read-only: correcting damaged PDF extraction requires source recovery and a rescan, not renaming a JSON word key. Import into the same document after the scan finishes. Version 1 imports remain supported.${compactNotice}`,
-    words: words.map((row) => ({
+    words: words.map(classifyForeignWordSourceIntegrity).map((row) => ({
       word: row.word,
       count: typeof row.count === 'number' ? row.count : null,
       contexts: Array.isArray(row.contexts) ? row.contexts.filter((value): value is string => typeof value === 'string') : [],
@@ -91,6 +100,8 @@ export function exportForeignWordScan(
               context: occurrence.context,
               qualityFlags: occurrence.qualityFlags,
               sourceStatus: occurrence.sourceStatus,
+              rawSurfaceTerm: occurrence.rawSurfaceTerm,
+              sourceRecoveryStatus: occurrence.sourceRecoveryStatus,
             };
           }
           return {
@@ -111,20 +122,37 @@ export function exportForeignWordScan(
             qualityFlags: occurrence.qualityFlags,
             qualityEvidence: occurrence.qualityEvidence,
             sourceStatus: occurrence.sourceStatus,
+            rawSurfaceTerm: occurrence.rawSurfaceTerm,
+            sourceRecoveryStatus: occurrence.sourceRecoveryStatus,
           };
         }) : [],
+      occurrencesIncluded: Math.min(2, Array.isArray(row.occurrences) ? row.occurrences.length : 0),
+      occurrenceDetailsTruncated: Array.isArray(row.occurrences) && row.occurrences.length > 2,
       editorialSpellings: Array.isArray(row.editorialSpellings) ? row.editorialSpellings.filter((value): value is string => typeof value === 'string') : [],
       ocrEvidence: Array.isArray(row.ocrEvidence) ? row.ocrEvidence.filter((value): value is string => typeof value === 'string') : [],
       sourceRepairReasons: Array.isArray(row.sourceRepairReasons) ? row.sourceRepairReasons.filter((value): value is string => typeof value === 'string') : [],
       sourceStatus: typeof row.sourceStatus === 'string' ? row.sourceStatus : 'unverified',
+      rawExtractedSpellings: Array.isArray(row.sourceRecoveryRawSpellings)
+        ? row.sourceRecoveryRawSpellings.filter((value): value is string => typeof value === 'string') : [row.word],
+      effectiveVerifiedWord: row.sourceStatus === 'verified_document_reading' ? row.word : null,
+      rawOccurrenceCount: typeof row.sourceRecoveryRawOccurrenceCount === 'number' ? row.sourceRecoveryRawOccurrenceCount : typeof row.count === 'number' ? row.count : null,
+      approvedAppliedOccurrenceCount: typeof (row.sourceRecoveryCounts as Record<string, unknown> | undefined)?.applied === 'number'
+        ? (row.sourceRecoveryCounts as { applied: number }).applied : 0,
+      unmatchedApprovedOccurrenceCount: typeof (row.sourceRecoveryCounts as Record<string, unknown> | undefined)?.unmatched === 'number'
+        ? (row.sourceRecoveryCounts as { unmatched: number }).unmatched : 0,
+      unresolvedOccurrenceCount: typeof row.sourceRecoveryCounts === 'object' && row.sourceRecoveryCounts !== null
+        ? Number((row.sourceRecoveryCounts as { unresolved?: unknown }).unresolved || 0) + Number((row.sourceRecoveryCounts as { unmatched?: unknown }).unmatched || 0)
+        : typeof row.count === 'number' ? row.count : null,
+      sourceRecoveryStatus: typeof row.sourceRecoveryStatus === 'string' ? row.sourceRecoveryStatus
+        : row.sourceStatus === 'verified_document_reading' ? 'applied' : null,
       sourceOutcome: typeof row.sourceOutcome === 'string' ? row.sourceOutcome : null,
       qualityFlags: Array.isArray(row.qualityFlags) ? row.qualityFlags.filter((value): value is string => typeof value === 'string') : [],
       pronunciationSource: typeof row.pronunciationSource === 'string' ? row.pronunciationSource : null,
-      currentPronunciation: [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation,
+      currentPronunciation: requiresForeignWordSourceRepair(row) ? null : [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation,
         ...(Array.isArray(row.pronunciations) ? row.pronunciations.map((choice) =>
           typeof choice === 'string' ? choice : choice && typeof choice === 'object' ? (choice as { phonetic?: unknown }).phonetic : null) : [])]
         .find((value): value is string => typeof value === 'string' && value !== '[OMIT]' && isKokoroSafePronunciation(row.word, value)) || null,
-      currentDefinition: typeof row.definition === 'string' ? row.definition : null,
+      currentDefinition: !requiresForeignWordSourceRepair(row) && typeof row.definition === 'string' ? row.definition : null,
       proposedPronunciation: null,
       proposedDefinition: null,
       omitDefinition: Boolean(

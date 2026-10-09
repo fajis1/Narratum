@@ -194,3 +194,16 @@ test('imports a safe Ethiopic pronunciation through the document-scoped path', a
     entries: { 'ኵሎ': expect.objectContaining({ term: 'ኵሎ', pronunciation: '/kulo/', language: 'other' }) },
   }));
 });
+
+test('cannot spoof source approval to import a Latinized OCR alias into the document lexicon', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed',
+    words: [{ word: 'xatagew', latinizedOcrCandidate: true, sourceStatus: 'source_review_recommended', sourceOutcome: 'valid_word' }],
+  }) }]);
+  const response = await POST(request({ documentId: 'book', jobId: 'job', continueOnError: true, scan: {
+    ...scan, words: [{ word: 'xatagew', proposedPronunciation: '/katɑrɡeo/', proposedDefinition: 'abolish', sourceStatus: 'verified_document_reading', latinizedOcrCandidate: false }],
+  } }) as never);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ imported: 0, skipped: [{ word: 'xatagew', reason: expect.stringContaining('source repair') }] });
+  expect(mocks.writeLexicon).not.toHaveBeenCalled();
+});

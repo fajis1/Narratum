@@ -5,6 +5,19 @@ import scan_pdf_foreign_words
 
 
 class ForeignWordContextTests(unittest.TestCase):
+    def test_shared_lifecycle_fixture_indexes_multiple_pages_and_ascii_corruption(self):
+        import runpy
+        from pathlib import Path
+        fixture = runpy.run_path(str(Path(__file__).parents[1] / 'fixtures/ocr_source_recovery.py'))['fixture']()
+        rows = {row['word']: row for row in fixture['rows']}
+        for term, expected in {'xatagyéw': 75, 'xataoyéw': 8, 'téAoc': 19, 'xatagew': 1}.items():
+            self.assertEqual(rows[term]['count'], expected)
+            self.assertEqual(len(rows[term]['occurrences']), expected)
+        self.assertEqual({item['pdfPage'] for item in rows['xatagyéw']['occurrences']}, {1, 2, 3})
+        self.assertTrue(rows['xatagew']['latinizedOcrCandidate'])
+        self.assertNotIn('Ordinary', rows)
+        self.assertNotIn('katargeo', rows)
+
     def test_all_repeated_occurrences_are_retained_even_with_identical_contexts(self):
         text = 'The word xatagyéw means abolish. ' * 75
         with (
@@ -19,6 +32,27 @@ class ForeignWordContextTests(unittest.TestCase):
         self.assertLessEqual(len(row['contexts']), 2)
         for item in row['occurrences']:
             self.assertEqual(item['context'][item['contextTargetStart']:item['contextTargetEnd']], 'xatagyéw')
+
+    def test_repeated_ocr_fixture_retains_all_variants_and_occurrence_identity(self):
+        counts = {'xatagyéw': 75, 'xataoyéw': 8, 'téAoc': 19, 'év': 49, 'duaxovéw': 4}
+        text = ' '.join(f'Page {page}. ' + ' '.join(f'The source term {word} appears in this Greek discussion.' for word in words)
+                        for page, words in enumerate([
+                            [word for word, count in counts.items() for _ in range((count + 2) // 3)],
+                            [word for word, count in counts.items() for _ in range(count // 3)],
+                            [word for word, count in counts.items() for _ in range(count - (count + 2) // 3 - count // 3)],
+                        ], start=1))
+        with (
+            patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=text),
+            patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+            patch.object(scan_pdf_foreign_words, 'zipf_frequency', return_value=0.0),
+        ):
+            rows = scan_pdf_foreign_words.scan_pdf_foreign_words('fixture.pdf', target_percentile=100, mode='all_foreign', quiet=True)
+        by_word = {row['word']: row for row in rows}
+        for word, count in counts.items():
+            self.assertIn(word, by_word)
+            self.assertEqual(by_word[word]['count'], count)
+            self.assertEqual(len(by_word[word]['occurrences']), count)
+            self.assertEqual(len({(item['pdfPage'], item['pageSourceStart']) for item in by_word[word]['occurrences']}), count)
 
     def test_ethiopic_keys_keep_nearby_scholarly_transliteration_evidence(self):
         text = 'ኵሎ ኅቡኣተ ጥበቦሙ || k w ulo h· ǝ bu ʾ a t a t· ǝ babomu'
@@ -214,6 +248,25 @@ class ForeignWordContextTests(unittest.TestCase):
         self.assertIn("φρονεῖν", by_word)
         for term in rare_transliterations:
             self.assertTrue(by_word[term]["latinTransliterationCandidate"])
+        self.assertNotIn("ordinary", by_word)
+
+    def test_all_foreign_mode_flags_narrow_ascii_greek_ocr_shape_without_correcting_it(self):
+        text = "The damaged token xatagew occurs here. Xylophone and ordinary technical vocabulary remain normal."
+        scores = {"xatagew": 0.0, "xylophone": 4.0, "ordinary": 5.0, "technical": 4.0, "vocabulary": 4.0}
+        with (
+            patch.object(scan_pdf_foreign_words, "load_pdf_text", return_value=text),
+            patch.object(scan_pdf_foreign_words, "fetch_global_pronunciations", return_value={}),
+            patch.object(scan_pdf_foreign_words, "zipf_frequency", side_effect=lambda word, _language: scores.get(word, 0.0)),
+        ):
+            results = scan_pdf_foreign_words.scan_pdf_foreign_words(
+                "unused.pdf", target_percentile=100, mode="all_foreign", quiet=True,
+            )
+
+        by_word = {item["word"]: item for item in results}
+        self.assertTrue(by_word["xatagew"]["latinizedOcrCandidate"])
+        self.assertEqual(by_word["xatagew"]["sourceStatus"], "source_review_recommended")
+        self.assertIn("Possible Latinized Greek OCR", by_word["xatagew"]["sourceRepairReasons"][0])
+        self.assertNotIn("xylophone", by_word)
         self.assertNotIn("ordinary", by_word)
 
     def test_known_ocr_fragments_are_not_returned_as_dictionary_candidates(self):

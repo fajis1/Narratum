@@ -1,3 +1,4 @@
+import { scanPronunciationActionError } from '@/lib/server/smart-audio/scan-pronunciation-guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuthContext } from '@/lib/server/auth/auth';
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
@@ -79,6 +80,9 @@ export async function POST(req: NextRequest) {
     if (!word || !feedback) {
       return NextResponse.json({ error: 'Missing word or feedback' }, { status: 400 });
     }
+
+    const scanError = await scanPronunciationActionError(userId, body.scanContext, word);
+    if (scanError) return NextResponse.json({ error: scanError }, { status: 409 });
 
     // 1. Append feedback to global examples
     let examples = await getFeedbackExamples();

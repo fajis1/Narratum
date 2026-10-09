@@ -51,9 +51,30 @@ test('uses codepoint offsets for contexts containing supplementary Unicode chara
   expect(next.occurrences[0].before).toBe('😀 word ');
 });
 
+test('indexes every repeated occurrence with stable per-surface page ordinals and shared candidate family IDs', async () => {
+  const repeatedRows = [
+    { word: 'xatagyéw', sourceOutcome: 'needs_source_repair', fuzzyGroupVariants: ['xatagyéw', 'xataoyéw'], occurrences: Array.from({ length: 75 }, (_, index) => ({
+      surfaceTerm: 'xatagyéw', pdfPage: 1, pageSourceStart: index * 40, context: 'The word xatagyéw means abolish.', contextTargetStart: 9, contextTargetEnd: 17,
+    })) },
+    { word: 'xataoyéw', sourceOutcome: 'needs_source_repair', fuzzyGroupVariants: ['xatagyéw', 'xataoyéw'], occurrences: Array.from({ length: 8 }, (_, index) => ({
+      surfaceTerm: 'xataoyéw', pdfPage: 2, pageSourceStart: index * 40, context: 'The word xataoyéw means abolish.', contextTargetStart: 9, contextTargetEnd: 17,
+    })) },
+  ];
+  const first = await registerSourceRecovery('owner', 'pdf', repeatedRows);
+  expect(first.occurrences).toHaveLength(83);
+  expect(new Set(first.occurrences.map((item) => item.id)).size).toBe(83);
+  expect(new Set(first.occurrences.map((item) => item.groupId)).size).toBe(1);
+  const primary = first.occurrences.filter((item) => item.surface === 'xatagyéw');
+  expect(primary.map((item) => item.surfaceOccurrenceIndex)).toEqual(Array.from({ length: 75 }, (_, index) => index));
+  expect(primary.every((item) => item.surfaceOccurrenceCount === 75)).toBe(true);
+  const again = await registerSourceRecovery('owner', 'pdf', repeatedRows);
+  expect(again.occurrences.map((item) => item.id)).toEqual(first.occurrences.map((item) => item.id));
+  expect(again.occurrences[74].surfaceOccurrenceIndex).toBe(74);
+});
+
 test('invalidates old extraction-version approvals even when a partial rescan omits their rows', async () => {
   const current = await registerSourceRecovery('owner', 'pdf', rows);
-  current.extractionVersion = 12; current.occurrences[0].status = 'approved'; current.revision++;
+  current.extractionVersion = 12; delete current.anchorVersion; current.occurrences[0].status = 'approved'; current.revision++;
   await saveSourceRecovery('owner', current, current.revision - 1);
   const refreshed = await registerSourceRecovery('owner', 'pdf', []);
   expect(refreshed.occurrences[0].status).toBe('unresolved');
@@ -67,4 +88,39 @@ test('deletes only the specified owner’s document analysis', async () => {
   await deleteSourceRecovery('owner', 'pdf');
   expect(await readSourceRecovery('owner', 'pdf')).toBeNull();
   expect(await readSourceRecovery('other-owner', 'pdf')).not.toBeNull();
+});
+
+test('legacy v13 approvals and proposals survive detection-only refresh and partial scans', async () => {
+  const current = await registerSourceRecovery('owner', 'pdf', rows);
+  delete current.anchorVersion;
+  current.extractionVersion = 13;
+  current.occurrences[0].status = 'approved';
+  current.occurrences[0].proposal = { correctedSurface: 'καταργέω', lemma: 'καταργέω', language: 'koine_greek',
+    explanation: 'Reviewed fixture', dictionary: null, pronunciation: null, pronunciationReference: null };
+  current.revision++;
+  await saveSourceRecovery('owner', current, current.revision - 1);
+  const partial = await registerSourceRecovery('owner', 'pdf', []);
+  expect(partial.occurrences[0]).toEqual(current.occurrences[0]);
+  const refreshed = await registerSourceRecovery('owner', 'pdf', rows, { complete: true });
+  expect(refreshed.anchorVersion).toBe(1);
+  expect(refreshed.occurrences[0]).toMatchObject({ status: 'approved', proposal: current.occurrences[0].proposal });
+  const again = await registerSourceRecovery('owner', 'pdf', rows, { complete: true });
+  expect(again.occurrences).toEqual(refreshed.occurrences);
+});
+
+test('changed offsets in a full scan invalidate prior approval without deleting its audit evidence', async () => {
+  const current = await registerSourceRecovery('owner', 'pdf', rows);
+  current.occurrences[0].status = 'approved'; current.revision++;
+  await saveSourceRecovery('owner', current, current.revision - 1);
+  const changed = await registerSourceRecovery('owner', 'pdf', [{ ...rows[0], occurrences: [
+    { ...rows[0].occurrences[0], pageSourceStart: 20 },
+  ] }], { complete: true });
+  expect(changed.occurrences).toHaveLength(2);
+  expect(changed.occurrences.every((item) => item.status === 'unresolved')).toBe(true);
+  expect(changed.occurrences.find((item) => item.id === current.occurrences[0].id)?.reasons)
+    .toContain('Source anchor no longer matches the complete scan; review this reading again.');
+  expect(changed.occurrences[0].surfaceOccurrenceCount).toBe(1);
+  const partial = await registerSourceRecovery('owner', 'pdf', []);
+  expect(partial.occurrences.find((item) => item.id === changed.occurrences[0].id)?.surfaceOccurrenceCount).toBe(1);
+  expect(partial.occurrences.find((item) => item.id === current.occurrences[0].id)?.anchorInvalidated).toBe(true);
 });

@@ -111,6 +111,20 @@ describe('foreign-word scan JSON transfer', () => {
     expect(parseForeignWordScanImport(legacy, documentId, new Set(['λόγος']))).toHaveLength(1);
   });
 
+  it('labels exported occurrence examples as samples while preserving effective recovery counts', () => {
+    const exported = exportForeignWordScan(documentId, [{
+      word: 'xatagyéw', count: 75, sourceRecoveryRawOccurrenceCount: 75,
+      sourceRecoveryRawSpellings: ['xatagyéw'], sourceRecoveryCounts: { applied: 1, unmatched: 2, unresolved: 72 },
+      occurrences: Array.from({ length: 75 }, (_, index) => ({ pdfPage: index + 1, surfaceTerm: 'xatagyéw' })),
+    }]);
+    expect(exported.words[0]).toMatchObject({
+      count: 75, rawOccurrenceCount: 75, approvedAppliedOccurrenceCount: 1,
+      unmatchedApprovedOccurrenceCount: 2, unresolvedOccurrenceCount: 74,
+      occurrencesIncluded: 2, occurrenceDetailsTruncated: true,
+    });
+    expect(exported.words[0].occurrences).toHaveLength(2);
+  });
+
   it('splits large scans into numbered batch files with optional compact AI format', () => {
     const manyRows = Array.from({ length: 25 }, (_, i) => {
       const letter = String.fromCharCode(97 + i);

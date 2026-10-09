@@ -1,3 +1,4 @@
+import { scanPronunciationActionError } from '@/lib/server/smart-audio/scan-pronunciation-guard';
 import { NextResponse, NextRequest } from 'next/server';
 import { db } from '@/db';
 import { adminSettings } from '@/db/schema';
@@ -231,6 +232,8 @@ export async function POST(req: NextRequest) {
       if (!normalized) {
         return NextResponse.json({ error: 'The personal pronunciation is not safe Kokoro IPA.' }, { status: 400 });
       }
+      const scanError = await scanPronunciationActionError(auth.userId, body.scanContext, word, true);
+      if (scanError) return NextResponse.json({ error: scanError }, { status: 409 });
       const profilesDocument = await readSmartAudioProfilesDocument(auth.userId);
       const activeProfile = findSmartAudioProfileById(
         profilesDocument,
