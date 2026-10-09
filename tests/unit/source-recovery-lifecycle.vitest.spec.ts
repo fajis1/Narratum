@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { execFileSync } from 'node:child_process';
+import { resolveTestPython } from '../helpers/python';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
@@ -73,7 +74,7 @@ beforeEach(() => {
 afterEach(() => { sqlite.close(); vi.unstubAllGlobals(); if (previousPostgres === undefined) delete process.env.POSTGRES_URL; else process.env.POSTGRES_URL = previousPostgres; });
 
 test('Python detection → real scan/proposal/approval APIs → stable rescan → reviewed audiobook source', async () => {
-  const fixture = JSON.parse(execFileSync('.venv/bin/python', ['tests/fixtures/ocr_source_recovery.py'], { encoding: 'utf8' })) as { rows: Row[]; pages: { pageNumber: number; text: string }[] };
+  const fixture = JSON.parse(execFileSync(resolveTestPython(), ['tests/fixtures/ocr_source_recovery.py'], { encoding: 'utf8' })) as { rows: Row[]; pages: { pageNumber: number; text: string }[] };
   mocks.scanRows = fixture.rows;
   expect(fixture.rows.find((row) => row.word === 'xatagew')?.latinizedOcrCandidate).toBe(true);
   for (const [word, count] of [['xatagyéw', 75], ['xataoyéw', 8], ['téAoc', 19]] as const) {
