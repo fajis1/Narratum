@@ -43,18 +43,34 @@ jobs:
       run: |
         python3 -m venv .venv
         .venv/bin/pip install --disable-pip-version-check nats-py google-genai pypdf nltk
-    - name: Install SeaweedFS weed binary
+    - name: Restore pinned SeaweedFS binary
+      id: weed-cache
+      uses: actions/cache@v5
+      with:
+        path: /tmp/ci-seaweedfs
+        key: seaweedfs-4.18-${{ runner.os }}-${{ runner.arch }}-v1
+    - name: Configure trusted Docker Hub cache
+      if: steps.weed-cache.outputs.cache-hit != 'true'
+      run: bash scripts/ci-configure-docker-mirror.sh
+    - name: Retrieve pinned SeaweedFS binary
+      if: steps.weed-cache.outputs.cache-hit != 'true'
       run: |
-        WEED_PATH=$(docker run --rm --entrypoint sh chrislusf/seaweedfs:4.18 -lc 'command -v weed')
-        CID=$(docker create chrislusf/seaweedfs:4.18)
-        docker cp "${CID}:${WEED_PATH}" ./weed
+        bash scripts/ci-docker-pull-with-retry.sh chrislusf/seaweedfs:4.18
+        WEED_PATH=$(docker run --pull=never --rm --entrypoint sh chrislusf/seaweedfs:4.18 -lc 'command -v weed')
+        CID=$(docker create --pull=never chrislusf/seaweedfs:4.18)
+        trap 'docker rm -f "$CID"' EXIT
+        mkdir -p /tmp/ci-seaweedfs
+        docker cp "${CID}:${WEED_PATH}" /tmp/ci-seaweedfs/weed
         docker rm "${CID}"
-        sudo install -m 0755 ./weed /usr/local/bin/weed
-        rm -f ./weed
-        weed version
+        trap - EXIT
+    - name: Install and verify SeaweedFS version
+      run: |
+        sudo install -m 0755 /tmp/ci-seaweedfs/weed /usr/local/bin/weed
+        weed version | tee /tmp/weed-version.txt
+        grep -Eq '(^|[^0-9])4\.18([^0-9]|$)' /tmp/weed-version.txt
     - name: Install NATS server binary
       run: |
-        curl -fsSL -o /tmp/nats-server.tar.gz \
+        curl --retry 3 --retry-delay 5 --connect-timeout 20 --max-time 120 -fsSL -o /tmp/nats-server.tar.gz \
           https://github.com/nats-io/nats-server/releases/download/v2.12.1/nats-server-v2.12.1-linux-amd64.tar.gz
         tar -xzf /tmp/nats-server.tar.gz -C /tmp
         sudo install -m 0755 /tmp/nats-server-v2.12.1-linux-amd64/nats-server /usr/local/bin/nats-server
@@ -80,8 +96,8 @@ jobs:
       run: pnpm exec playwright install --with-deps
     - name: Run Playwright tests
       env:
-        API_BASE: https://api.deepinfra.com/v1/openai
-        API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+        API_BASE: http://localhost:3005
+        API_KEY: test
       run: pnpm exec playwright test --max-failures=5 --reporter=list,github,html
     - uses: actions/upload-artifact@v7
       if: ${{ failure() || cancelled() }}

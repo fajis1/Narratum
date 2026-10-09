@@ -111,8 +111,23 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Configure trusted Docker Hub cache
+        run: bash scripts/ci-configure-docker-mirror.sh
+
+      - name: Retrieve BuildKit with bounded retries
+        run: |
+          bash scripts/ci-docker-pull-with-retry.sh moby/buildkit:buildx-stable-1
+          # Use the pulled digest so bootstrap reuses the verified local image.
+          image=$(docker image inspect moby/buildkit:buildx-stable-1 --format '{{index .RepoDigests 0}}')
+          echo "CI_BUILDKIT_IMAGE=${image}" >> "$GITHUB_ENV"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: image=${{ env.CI_BUILDKIT_IMAGE }}
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       - name: Login to GitHub Container Registry (attempt 1)
         id: ghcr_login_1
@@ -159,8 +174,50 @@ jobs:
             *) echo "image_name=${{ needs.prepare.outputs.compute_worker_image_name }}" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - name: Build and push Docker image (${{ matrix.image_target }} / ${{ matrix.arch }})
-        id: build
+      - name: Build and push Docker image (${{ matrix.image_target }} / ${{ matrix.arch }}, attempt 1)
+        id: build_1
+        continue-on-error: true
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-args: |
+            ONNXRUNTIME_NODE_INSTALL_CUDA=${{ matrix.onnxruntime_cuda }}
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.image_target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_target }}-${{ matrix.arch }}
+          provenance: false
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Wait before build retry 2
+        if: steps.build_1.outcome == 'failure'
+        run: sleep 30
+
+      - name: Build and push Docker image (${{ matrix.image_target }} / ${{ matrix.arch }}, attempt 2)
+        if: steps.build_1.outcome == 'failure'
+        id: build_2
+        continue-on-error: true
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-args: |
+            ONNXRUNTIME_NODE_INSTALL_CUDA=${{ matrix.onnxruntime_cuda }}
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.image_target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_target }}-${{ matrix.arch }}
+          provenance: false
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Wait before build retry 3
+        if: steps.build_1.outcome == 'failure' && steps.build_2.outcome == 'failure'
+        run: sleep 60
+
+      - name: Build and push Docker image (${{ matrix.image_target }} / ${{ matrix.arch }}, attempt 3)
+        if: steps.build_1.outcome == 'failure' && steps.build_2.outcome == 'failure'
+        id: build_3
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -177,7 +234,8 @@ jobs:
       - name: Export digest
         run: |
           mkdir -p /tmp/digests/${{ matrix.image_target }}
-          digest="${{ steps.build.outputs.digest }}"
+          digest="${{ (steps.build_1.outcome == 'success' && steps.build_1.outputs.digest) || (steps.build_2.outcome == 'success' && steps.build_2.outputs.digest) || steps.build_3.outputs.digest }}"
+          test -n "$digest"
           touch "/tmp/digests/${{ matrix.image_target }}/${digest#sha256:}"
 
       - name: Upload digest
@@ -232,6 +290,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
 
       - name: Login to GitHub Container Registry (attempt 1)
         id: ghcr_login_1

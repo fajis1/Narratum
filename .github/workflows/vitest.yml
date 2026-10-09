@@ -22,10 +22,20 @@ jobs:
         with:
           node-version: lts/*
           package-manager-cache: false
+      - uses: actions/setup-python@v6
+        id: python
+        with:
+          python-version: '3.12'
+      # This deterministic fixture mocks extraction/wordfreq/providers and needs
+      # only Python's standard library, not production OCR/model dependencies.
+      - name: Verify deterministic OCR fixture
+        run: python -I -S tests/fixtures/ocr_source_recovery.py > /tmp/ocr-fixture.json
       - uses: pnpm/action-setup@v6
       - name: Install dependencies
         run: bash scripts/ci-install-with-retry.sh --frozen-lockfile
       - name: Apply drizzle migrations (SQLite)
         run: pnpm migrate
       - name: Run Vitest suites
+        env:
+          NARRATUM_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
         run: pnpm test:unit
