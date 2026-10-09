@@ -123,7 +123,7 @@ describe('audiobook queue cooperative eligibility', () => {
     expect(isAudiobookJobEligibleToRun(legacyExpiredJob, active, baseTime, backoffThreshold)).toBe(true);
   });
 
-  test('resumed or requeued job with error cleared to null runs immediately even with stale settingsJson', () => {
+  test('a future retry remains deferred independent of the error message', () => {
     const active = new Set<string>();
     const resumedJob: AudiobookJobCandidate = {
       id: 'resumed-job',
@@ -131,6 +131,6 @@ describe('audiobook queue cooperative eligibility', () => {
       updatedAt: baseTime,
       settingsJson: JSON.stringify({ nextAttemptAt: baseTime + 300_000 }),
     };
-    expect(isAudiobookJobEligibleToRun(resumedJob, active, baseTime, backoffThreshold)).toBe(true);
+    expect(isAudiobookJobEligibleToRun(resumedJob, active, baseTime, backoffThreshold)).toBe(false);
   });
 });

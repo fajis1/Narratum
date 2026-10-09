@@ -1,3 +1,4 @@
+import { AudiobookProcessingError, classifyAudiobookFailure } from '@/lib/shared/audiobook-processing-failure';
 import type { SmartAudioProfile } from '@/types/client';
 import { PronunciationRepairError } from './pronunciation-repair-config';
 import { resolvePronunciationAiModel } from '@/lib/shared/smart-audio-models';
@@ -12,6 +13,7 @@ export async function repairPronunciationText(input: {
   dictionary: Record<string, string>; provenance?: Record<string, string>;
   signal: AbortSignal; manualPatches?: PronunciationPatch[];
   failedChapterReason?: string;
+  durableRetry?: boolean;
   resolveAi: () => Promise<{ primaryApiKey: string; backupApiKey: string; selection: { aiModel: string; fallbackModels?: string[] } }>;
 }, diagnostics: RepairDiagnostics, secrets: string[] = []) {
   const { profile, dictionary } = input;
@@ -40,7 +42,7 @@ export async function repairPronunciationText(input: {
     diagnostics.requestedModel = selection.aiModel;
     diagnostics.fallbackModels = selection.fallbackModels;
     diagnostics.attempts = [];
-    if (!primaryApiKey && !backupApiKey) throw new PronunciationRepairError('Configure a Gemini key in the selected profile to repair findings without a dictionary match.');
+    if (!primaryApiKey && !backupApiKey) throw new AudiobookProcessingError({ failureCategory: 'provider_configuration', provider: 'gemini', stage: 'targeted_pronunciation_repair', model: selection.aiModel });
     diagnostics.aiRequested = true;
     let pending = unresolved;
     // One correction request, only for unresolved findings. Good patches stay
@@ -48,11 +50,11 @@ export async function repairPronunciationText(input: {
     for (let round = 0; round < 2 && pending.length; round += 1) {
     // Bounded retries across three models/two keys can spend ~59 minutes in
     // capped cooldowns alone. Cancellation still interrupts requests and waits.
-    const signal = AbortSignal.any([input.signal, AbortSignal.timeout(75 * 60 * 1000)]);
+    const signal = AbortSignal.any([input.signal, AbortSignal.timeout(input.durableRetry ? 120_000 : 75 * 60 * 1000)]);
     diagnostics.stage = round ? 'gemini-correction' : 'gemini-request';
     try {
     const { response, usedModel, usedBackup } = await fetchGeminiWithRateLimitFallback({
-      primaryApiKey, backupApiKey, requestedModel: selection.aiModel, fallbackModels: selection.fallbackModels, signal, maxAttempts: 3, retryRateLimitedModels: true,
+      primaryApiKey, backupApiKey, requestedModel: selection.aiModel, fallbackModels: selection.fallbackModels, signal, maxAttempts: input.durableRetry ? 1 : 3, retryRateLimitedModels: !input.durableRetry, deferTransientFailures: input.durableRetry,
       request: async (key, model) => {
         const attempt = { model, keyRole: key === primaryApiKey ? 'primary' : 'backup', status: undefined as number | undefined, round: round + 1, errorDetails: undefined as GeminiErrorDetails | undefined };
         diagnostics.attempts!.push(attempt);
@@ -74,12 +76,16 @@ export async function repairPronunciationText(input: {
     diagnostics.usedModel = usedModel;
     diagnostics.usedBackup = usedBackup;
     if (!response.ok) {
-      if ([429, 402, 403, 500, 502, 503, 504].includes(response.status)) {
-        diagnostics.apiBlocked = true;
-        const retryAfterMs = Math.max(300000, ...diagnostics.attempts!.filter(attempt => attempt.round === round + 1).map(attempt => attempt.errorDetails?.retryAfterMs || 0));
-        diagnostics.nextAttemptAt = Date.now() + Math.min(retryAfterMs, Number.MAX_SAFE_INTEGER - Date.now());
-      }
-      throw new PronunciationRepairError(`Gemini repair failed (HTTP ${response.status}). No chapter text was changed.`);
+      const details = await geminiErrorDetails(response);
+      const failure = classifyAudiobookFailure({ status: response.status, apiStatus: details.apiStatus, retryAfterMs: details.retryAfterMs }, {
+        provider: 'gemini', stage: 'targeted_pronunciation_repair', model: usedModel,
+        attempts: diagnostics.attempts?.length,
+      });
+      diagnostics.failure = failure;
+      diagnostics.apiBlocked = failure.failureCategory === 'provider_transient';
+      if (diagnostics.apiBlocked) diagnostics.nextAttemptAt = Date.now() + Math.max(300000, failure.retryAfterMs ?? 0);
+      throw new AudiobookProcessingError(failure);
+
     }
     let parsed;
     try {
@@ -106,9 +112,14 @@ export async function repairPronunciationText(input: {
     pending = pending.filter(issue => !patches.some(patch => patch.id === issue.id));
     } catch (error) {
       input.signal.throwIfAborted();
-      if (!(error instanceof PronunciationRepairError) || signal.aborted) {
-        diagnostics.apiBlocked = true;
-        diagnostics.nextAttemptAt = Date.now() + 300000;
+      if (!(error instanceof PronunciationRepairError)) {
+        const failure = classifyAudiobookFailure(error, { provider: 'gemini', stage: 'targeted_pronunciation_repair',
+          model: diagnostics.usedModel ?? diagnostics.requestedModel, attempts: diagnostics.attempts?.length });
+        diagnostics.failure = failure;
+        diagnostics.apiBlocked = failure.failureCategory === 'provider_transient';
+        if (diagnostics.apiBlocked) diagnostics.nextAttemptAt = Date.now() + Math.max(300000, failure.retryAfterMs ?? 0);
+        // Generation yields immediately; manual repair may retain safe partial proposals.
+        if (input.durableRetry) throw new AudiobookProcessingError(failure, error);
       }
       // Invalid JSON is retried once. Exhausted transport failures do not
       // restart the full transport budget; retain other valid repairs.
@@ -149,6 +160,7 @@ export async function repairPronunciationText(input: {
   const validPatches = patches.filter(patch => checks.find(finding => finding.id === patch.id)?.reasons.length === 0);
   if (!validPatches.length) {
     diagnostics.validatorReason ||= diagnostics.findings.find(finding => finding.reasons.length)?.reasons.join(' ');
+    if (diagnostics.failure && (input.durableRetry || diagnostics.failure.failureCategory === 'provider_configuration')) throw new AudiobookProcessingError(diagnostics.failure);
     throw new PronunciationRepairError(diagnostics.apiBlocked ? 'Gemini API blocked; no usable candidates received for the unresolved findings. Saved proposals are retained.' : diagnostics.validatorReason?.includes('invalid JSON') ? diagnostics.validatorReason : 'No safe repairs were found. Review the unresolved findings in the repair report.');
   }
   try {

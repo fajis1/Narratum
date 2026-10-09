@@ -8,6 +8,7 @@ import { ChapterErrorLogModal } from '@/components/audiobooks/ChapterErrorLogMod
 import {
   AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
   isGeminiRateLimitPause,
+  resolveAudiobookJobDescriptiveState,
 } from '@/lib/shared/audiobook-job-status';
 import { DRAMA_GEMINI_TTS_WORKER_MODE, WAITING_FOR_VOICES_STATUS } from '@/lib/shared/multi-voice';
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from '@/lib/shared/audiobook-runtime-phase';
@@ -53,11 +54,11 @@ function isActiveJob(job: Job): boolean {
 }
 
 function isCompletedJob(job: Job): boolean {
-  return job.status === 'completed';
+  return resolveAudiobookJobDescriptiveState(job).category === 'completed';
 }
 
 function isFailedJob(job: Job): boolean {
-  return job.status === 'error';
+  return resolveAudiobookJobDescriptiveState(job).category === 'error';
 }
 
 export function JobsInlineView() {
@@ -68,6 +69,7 @@ export function JobsInlineView() {
     progress?: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [castingJob, setCastingJob] = useState<Job | null>(null);
@@ -78,9 +80,11 @@ export function JobsInlineView() {
 
   const onRequeueJob = async (id: string) => {
     try {
-      await fetch('/api/audiobooks/queue', { method: 'PUT', body: JSON.stringify({ id }) });
+      setActionError(null);
+      const response = await fetch('/api/audiobooks/queue', { method: 'PUT', body: JSON.stringify({ id }) });
+      if (!response.ok) { const body = await response.json(); throw new Error(body.error || 'Could not retry missing chapters.'); }
       await fetchJobs();
-    } catch {}
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not retry missing chapters.'); }
   };
 
   const onRequeueAllFailed = async () => {
@@ -112,9 +116,11 @@ export function JobsInlineView() {
 
   const onTogglePauseJob = async (id: string, action: 'pause' | 'resume') => {
     try {
-      await fetch('/api/audiobooks/queue', { method: 'PATCH', body: JSON.stringify({ id, action }) });
+      setActionError(null);
+      const response = await fetch('/api/audiobooks/queue', { method: 'PATCH', body: JSON.stringify({ id, action }) });
+      if (!response.ok) { const body = await response.json(); throw new Error(body.error || 'Could not update the job.'); }
       await fetchJobs();
-    } catch {}
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not update the job.'); }
   };
 
   useEffect(() => {
@@ -235,6 +241,7 @@ export function JobsInlineView() {
   return (
     <>
     <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-8">
+      {actionError && <p role="alert" className="text-danger">{actionError}</p>}
       <div className="max-w-4xl mx-auto space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-line">
           <div>
@@ -261,7 +268,7 @@ export function JobsInlineView() {
                 <button
                   onClick={onRequeueAllFailed}
                   disabled={clearing}
-                  className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-accent/40 bg-accent/10 hover:bg-accent/20 text-accent flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
+                  className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-accent-line bg-accent-wash hover:bg-accent-wash text-accent flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
                   title="Retry all failed jobs"
                 >
                   <span>Requeue All Errors ({failedJobs.length})</span>
@@ -269,7 +276,7 @@ export function JobsInlineView() {
                 <button
                   onClick={() => onClearJobs('failed')}
                   disabled={clearing}
-                  className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-danger/40 bg-danger/10 hover:bg-danger/20 text-danger flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
+                  className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-danger bg-danger-wash hover:bg-danger-wash text-danger flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
                   title="Dismiss all failed jobs from queue history"
                 >
                   <span>Dismiss All Errors ({failedJobs.length})</span>
@@ -362,13 +369,13 @@ export function JobsInlineView() {
         ) : (
           <div className="space-y-4">
             {filteredJobs.map((job) => {
+              const descriptiveState = resolveAudiobookJobDescriptiveState(job);
               const isQueued = job.status === 'queued' || job.status === 'waiting_for_pdf';
               const isPauseRequested = job.status === AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS;
               const isWaitingForVoices = job.status === WAITING_FOR_VOICES_STATUS
                 || (job.status === 'queued' && job.error === 'waiting_for_voices');
               const geminiCooldown = readAudiobookGeminiCooldown(job.settingsJson, job.status);
               const isWaitingForGpu = job.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE;
-              const isFinished = job.status === 'completed' || job.status === 'error';
               const isGeminiDramaJob = profileWorkerModes[jobProfileId(job)] === DRAMA_GEMINI_TTS_WORKER_MODE;
               const isGeminiDramaStarting = isGeminiDramaJob
                 && job.status === 'running'
@@ -397,7 +404,7 @@ export function JobsInlineView() {
                       <div className="flex items-center flex-wrap gap-y-1">
                         Status:{' '}
                         <span className={`uppercase font-semibold ml-1 ${
-                          geminiCooldown ? 'text-warning' : job.status === 'completed'
+                          descriptiveState.category === 'waiting' || descriptiveState.badgeText === 'Incomplete' ? 'text-warning' : isCompletedJob(job)
                             ? 'text-success'
                             : job.status === 'error'
                             ? 'text-danger'
@@ -405,7 +412,7 @@ export function JobsInlineView() {
                             ? 'text-accent'
                             : 'text-warning'
                         }`}>
-                          {geminiCooldown ? 'waiting for Gemini' : isGeminiRateLimitPause(job.error) && job.status === 'queued' ? 'paused (rate limit)' : job.status}
+                          {descriptiveState.badgeText}
                         </span>
                         {geminiCooldown && <span className="ml-3 text-warning">{Math.round(job.progress || 0)}% complete · progress preserved</span>}
                         {isWaitingForGpu && (
@@ -492,7 +499,7 @@ export function JobsInlineView() {
                           Review Progress
                         </a>
                       )}
-                      {job.status === 'completed' && (
+                      {isCompletedJob(job) && (
                         <a href={`/listen/${job.documentId}`} className="text-accent font-semibold hover:underline bg-surface-sunken border border-accent px-2 py-1 rounded">
                           Listen / Download
                         </a>
@@ -507,12 +514,12 @@ export function JobsInlineView() {
                           Resume
                         </button>
                       )}
-                      {job.status === 'error' && (
+                      {(job.status === 'error' || (job.status === 'completed' && !!job.error)) && (
                         <>
                           <button
                             type="button"
                             onClick={() => setErrorLogJob(job)}
-                            className="text-amber-500 font-semibold hover:underline bg-surface-sunken border border-amber-500/40 px-2 py-1 rounded flex items-center gap-1"
+                            className="text-warning font-semibold hover:underline bg-surface-sunken border border-warning px-2 py-1 rounded flex items-center gap-1"
                             title="Inspect chapter validation errors and failure details"
                           >
                             <span>📋 Error Log</span>
@@ -524,7 +531,7 @@ export function JobsInlineView() {
                             Review Chapters
                           </a>
                           <button onClick={() => { onRequeueJob(job.id); }} className="text-accent font-semibold hover:underline bg-surface-sunken border border-accent px-2 py-1 rounded">
-                            Requeue
+                            Retry Missing Chapters
                           </button>
                         </>
                       )}

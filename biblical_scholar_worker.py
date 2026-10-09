@@ -8,7 +8,9 @@ from google import genai
 from gemini_rate_limiter import (
     call_gemini_with_capacity_fallback,
     extract_gemini_usage,
+    gemini_failure_diagnostic,
     ordered_gemini_models,
+    gemini_error_details,
 )
 
 # --- PER-KEY/MODEL RATE LIMITER STATE ---
@@ -47,6 +49,12 @@ async def process_message(msg):
     validation_feedback = data.get("validation_feedback", "")
     rejected_output = data.get("rejected_output", "")
     raw_text = data.get("raw_text")
+    correlation = {"jobId": data.get("job_id"), "bookId": data.get("book_id"), "chapterIndex": data.get("chapter_index"), "chapterTitle": data.get("chapter_title"), "workerMode": data.get("worker_mode") or "biblical-scholar"}
+    attempts: list[dict[str, object]] = []
+
+    def record_attempt(attempt: dict[str, object]) -> None:
+        attempts.append(attempt)
+
     
     text_length = len(raw_text) if raw_text else 0
     print(f"\n[📦] INCOMING BATCH SIZE (SCHOLAR PROFILE): {text_length} characters")
@@ -113,12 +121,14 @@ async def process_message(msg):
             min_delay=MIN_DELAY,
             max_delay=MAX_DELAY,
             max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
+            attempt_recorder=record_attempt,
         )
         if generated is None:
             await msg.respond(json.dumps({
                 "status": "rate_limit",
                 "message": "All configured Gemini cleanup models are rate limited.",
                 "cooldownSeconds": MAX_DELAY,
+                "diagnostic": gemini_failure_diagnostic(correlation, ai_model, attempts),
             }).encode())
             return
         response, ai_model = generated
@@ -133,12 +143,14 @@ async def process_message(msg):
                     min_delay=MIN_DELAY,
                     max_delay=MAX_DELAY,
                     max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
+                    attempt_recorder=record_attempt,
                 )
                 if repaired is None:
                     await msg.respond(json.dumps({
                         "status": "rate_limit",
                         "message": "The Gemini quality-repair model is rate limited.",
                         "cooldownSeconds": MAX_DELAY,
+                        "diagnostic": gemini_failure_diagnostic(correlation, ai_model, attempts),
                     }).encode())
                     return
                 response, ai_model = repaired
@@ -186,7 +198,8 @@ async def process_message(msg):
 
     except Exception as e:
         print(f"[!] Critical API Error: {e}")
-        await msg.respond(json.dumps({"status": "error", "message": str(e)}).encode())
+        details = gemini_error_details(e)
+        await msg.respond(json.dumps({"status": "error", "message": details["message"], "diagnostic": gemini_failure_diagnostic(correlation, ai_model, attempts, e)}).encode())
 
 async def main():
     nc = NATS()

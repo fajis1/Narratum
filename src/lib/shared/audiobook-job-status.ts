@@ -1,3 +1,4 @@
+import { isKokoroModel } from './kokoro';
 import { readAudiobookGeminiCooldown, geminiCooldownExplanation } from './audiobook-gemini-cooldown';
 export const GEMINI_RATE_LIMIT_PAUSE_MESSAGE =
   'Gemini API limits paused this audiobook. Completed chapters are preserved, and OpenReader will retry automatically when API capacity becomes available.';
@@ -72,6 +73,19 @@ export function resolveAudiobookJobDescriptiveState(
   const isWaitingForVoices = job.status === 'waiting_for_voices' || job.error === 'waiting_for_voices';
   const isWaitingForPdf = job.status === 'waiting_for_pdf';
 
+  let retrySettings: Record<string, unknown> = {};
+  try { retrySettings = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson ?? {}) as Record<string, unknown>; } catch {}
+  const retry = retrySettings.providerRetry as { failure?: { provider?: string; model?: string }; exhausted?: boolean } | undefined;
+  if (job.status === 'queued' && retry && !retry.exhausted && typeof retrySettings.nextAttemptAt === 'number' && retrySettings.nextAttemptAt > Date.now()) {
+    const provider = isKokoroModel(retry.failure?.model) ? 'Kokoro' : retry.failure?.provider === 'gemini' ? 'Gemini' : retry.failure?.provider ?? 'provider';
+    return { reason: job.error ?? `Waiting for ${provider}; retry scheduled.`, category: 'waiting', isPaused: false,
+      isDegraded: false, badgeText: `Waiting for ${provider}`, badgeVariant: 'warning' };
+  }
+  if ((job.status === 'completed' && /chapters? require.*manual review|incomplete audiobook/i.test(job.error ?? ''))
+    || (['completed', 'error'].includes(job.status) && Array.isArray(retrySettings.missingChapterIndexes) && retrySettings.missingChapterIndexes.length > 0)) {
+    return { reason: job.error ?? 'Chapter recordings are missing. Retry missing chapters.', category: 'error', isPaused: false,
+      isDegraded: false, badgeText: 'Incomplete', badgeVariant: 'warning' };
+  }
   if (job.status === 'completed') {
     return {
       reason: 'Audiobook generation complete.',

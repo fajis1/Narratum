@@ -1,9 +1,16 @@
+import { persistAudiobookChapter } from './chapter-record';
+import { mergeJobSettings } from './retry-settings';
+import { scanPronunciationIssues } from '@/lib/shared/pronunciation-issues';
+import { readAudiobookCompleteness } from './completeness';
+import { AudiobookProcessingError, classifyAudiobookFailure, failureSummary, planProviderRetry, type AudiobookFailure, type ProviderRetry } from '@/lib/shared/audiobook-processing-failure';
+import { batchRefineTextHash } from './batch-refine-assessment';
+import { isMissingBlobError } from './blobstore';
 import { resolveSourceRecoveryLexicon } from '@/lib/server/smart-audio/source-recovery-lexicon';
 import { readSourceRecovery } from '@/lib/server/smart-audio/source-recovery-store';
 import { applySourceRecovery, sourceRecoverySnapshot, sourceRecoveryPronunciations, assertRecoveredReadings } from '@/lib/shared/source-recovery';
 import type { SourceRecoverySnapshot } from '@/types/source-recovery';
 import { withGeminiRecoveryContext, setGeminiRecoveryChapter, publishGeminiRecoveryCooldown } from '@/lib/server/smart-audio/gemini-recovery-context';
-import { writeAudiobookGeminiCooldown, type AudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
+import { type AudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
 import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
 import { createTtsAttemptRecorder } from '@/lib/server/audiobooks/troubleshooting';
 import { saveDramaTtsDiagnostic } from '@/lib/server/audiobooks/drama-tts-diagnostics';
@@ -27,7 +34,7 @@ import { resolveTtsCredentials } from '@/lib/server/admin/resolve-credentials';
 import { getResolvedRuntimeConfig } from '@/lib/server/runtime-config';
 import { getAudiobookObjectBuffer, listAudiobookObjects, putAudiobookObject } from '@/lib/server/audiobooks/blobstore';
 import { savePronunciationFailure } from '@/lib/server/audiobooks/pronunciation-failures';
-import { providerDiagnosticFileName, safeProviderDiagnosticValue } from '@/lib/server/audiobooks/provider-diagnostics';
+import { providerDiagnosticFileName, safeProviderDiagnosticValue, sanitizedFailureDetail } from '@/lib/server/audiobooks/provider-diagnostics';
 import { encodeChapterFileName } from '@/lib/server/audiobooks/chapters';
 import { createOrReuseCurrentPdfParseOperation } from '@/lib/server/pdf-parse/operation';
 import { extractPdfToc, computeTocBoundaries } from '@/lib/server/pdf-parse/toc';
@@ -41,17 +48,13 @@ import {
 } from '@/lib/shared/kokoro-pronunciation-policy';
 import {
   AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
-  GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
-  GEMINI_CLEANUP_TIMEOUT_PAUSE_MESSAGE,
-  GOOGLE_CLOUD_TTS_DAILY_PAUSE_MESSAGE,
-  calculateRemainingDailyQuotaMs,
   formatSystemResourcePauseMessage,
-  isSystemResourcePause,
   SYSTEM_RESOURCES_PAUSE_PREFIX,
 } from '@/lib/shared/audiobook-job-status';
 import { isAudiobookJobEligibleToRun } from './queue-eligibility';
 export { isAudiobookJobEligibleToRun } from './queue-eligibility';
 import {
+  resolvePronunciationAiModel,
   resolveCleanupAiModel,
   resolveCleanupAiModels,
   resolveDramaDirectorModel,
@@ -219,6 +222,47 @@ async function updateClaimedAudiobookJob(
   }
 }
 
+async function saveProcessingFailure(job: typeof audiobookJobs.$inferSelect, failure: AudiobookFailure, details: Record<string, unknown> = {}) {
+  if (failure.chapterIndex === undefined) return;
+  const settings = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : job.settingsJson ?? {};
+  const now = Date.now();
+  const artifact = { schemaVersion: 1, createdAt: new Date(now).toISOString(), jobId: job.id,
+    bookId: job.documentId, chapterIndex: failure.chapterIndex, stage: failure.stage, failure, ...details,
+    workerResponse: { message: failureSummary(failure) } };
+  const canonical = providerDiagnosticFileName(failure.chapterIndex);
+  try {
+    await putAudiobookObject(job.documentId, job.userId, canonical.replace('.json', `__${now}-${randomUUID()}.json`), Buffer.from(JSON.stringify(artifact)), 'application/json', settings.testNamespace || null);
+    await putAudiobookObject(job.documentId, job.userId, canonical, Buffer.from(JSON.stringify(artifact)), 'application/json', settings.testNamespace || null);
+  } catch { serverLogger.warn({ event: 'audiobook.provider_diagnostic.save_failed', jobId: job.id, failure }, 'Provider diagnostics could not be saved; durable job state is retained.'); }
+}
+
+async function deferProviderFailure(job: typeof audiobookJobs.$inferSelect, failure: AudiobookFailure): Promise<void> {
+  const [current] = await db.select({ settingsJson: audiobookJobs.settingsJson }).from(audiobookJobs).where(eq(audiobookJobs.id, job.id)).limit(1);
+  const settings = typeof current?.settingsJson === 'string' ? JSON.parse(current.settingsJson) : current?.settingsJson ?? {};
+  const retry = planProviderRetry(failure, settings.providerRetry as ProviderRetry | undefined);
+  const now = Date.now();
+  const message = retry.exhausted
+    ? `${failureSummary(failure)} Automatic retry budget exhausted. Check provider health, then retry missing chapters.`
+    : `${failureSummary(failure)} Waiting for ${failure.provider ?? 'provider'}; automatic retry scheduled.`;
+  await updateClaimedAudiobookJob(job.id, 'running', {
+    status: retry.exhausted ? 'error' : 'queued', updatedAt: now,
+    completedAt: retry.exhausted ? now : null, error: message,
+    settingsJson: mergeJobSettings({ providerRetry: retry, nextAttemptAt: retry.exhausted ? null : retry.nextAttemptAt }),
+  });
+  serverLogger.warn({ event: 'audiobook.queue.provider.retry_scheduled', jobId: job.id, failure, retryCount: retry.count, nextAttemptAt: retry.nextAttemptAt, exhausted: retry.exhausted }, 'Durable provider retry state persisted.');
+  await saveProcessingFailure(job, failure, { retryScheduled: !retry.exhausted,
+    nextAttemptAt: retry.exhausted ? undefined : retry.nextAttemptAt, retryCount: retry.count });
+}
+
+async function recordProviderRecovery(jobId: string, provider: string, stage: string, chapterIndex: number | undefined): Promise<void> {
+  const [row] = await db.select({ settingsJson: audiobookJobs.settingsJson }).from(audiobookJobs).where(eq(audiobookJobs.id, jobId)).limit(1);
+  const settings = typeof row?.settingsJson === 'string' ? JSON.parse(row.settingsJson) : row?.settingsJson ?? {};
+  const retry = settings.providerRetry as ProviderRetry | undefined;
+  if (retry?.failure.provider === provider && retry.failure.stage === stage && retry.failure.chapterIndex === chapterIndex) {
+    await updateClaimedAudiobookJob(jobId, 'running', { settingsJson: mergeJobSettings({ providerRetry: null, nextAttemptAt: null }) });
+  }
+}
+
 async function workerStillOwnsAudiobookJob(jobId: string): Promise<boolean> {
   const rows = await db.select({ status: audiobookJobs.status })
     .from(audiobookJobs)
@@ -249,11 +293,9 @@ async function publishAudiobookGpuStatus(
 
   const now = Date.now();
   const updated = await updateAudiobookJobIfStatus(jobId, 'running', {
-    settingsJson: writeAudiobookGpuRuntimeStatus(
-      rows[0].settingsJson,
-      status?.state ?? null,
-      now,
-    ),
+    settingsJson: mergeJobSettings({ ...writeAudiobookGpuRuntimeStatus({}, status?.state ?? null, now),
+      runtimePhase: status?.state === 'waiting_for_qwen' || status?.state === 'starting_kokoro' ? 'waiting_for_gpu' : null,
+      gpuQueueState: status?.state ?? null, runtimePhaseUpdatedAt: status ? now : null }),
     updatedAt: now,
   });
   if (!updated && status) throw new AudiobookJobStoppedError();
@@ -285,6 +327,7 @@ async function generateQueuedAudiobookTts(
   }, 1_000);
 
   let lastLoggedState: GpuArbiterState | null = null;
+  let lastObservedState: GpuArbiterState | undefined;
   try {
     return await generateSegmentedAudiobookTtsBuffer(
       request,
@@ -293,6 +336,7 @@ async function generateQueuedAudiobookTts(
       {
         requestIdentity,
         onStatus: async (status) => {
+          if (status) lastObservedState = status.state;
           try {
             await publishAudiobookGpuStatus(jobId, status);
           } catch (error) {
@@ -320,7 +364,7 @@ async function generateQueuedAudiobookTts(
     if (controller.signal.aborted && !await workerStillOwnsAudiobookJob(jobId)) {
       throw new AudiobookJobStoppedError();
     }
-    throw error;
+    throw new AudiobookProcessingError({ ...classifyAudiobookFailure(error, { provider: request.provider, model: requestIdentity.model ?? undefined, stage: 'tts_recording' }), gpuState: lastObservedState }, error);
   } finally {
     clearInterval(cancellationTimer);
     await publishAudiobookGpuStatus(jobId, null).catch(() => {});
@@ -665,7 +709,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
       .from(audiobookJobs).where(and(eq(audiobookJobs.id, job.id), eq(audiobookJobs.status, 'running'))).limit(1);
     if (!current) return;
     await updateAudiobookJobIfStatus(job.id, 'running', {
-      settingsJson: JSON.stringify(writeAudiobookGeminiCooldown(current.settingsJson, cooldown)),
+      settingsJson: mergeJobSettings({ geminiCooldown: cooldown }),
       updatedAt: Date.now(),
     });
   };
@@ -676,6 +720,7 @@ async function processSingleAudiobookJob(job: typeof audiobookJobs.$inferSelect)
 }
 
 async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$inferSelect) {
+  const processingSecrets: string[] = [];
   const updateProgress = async (progress: number) => {
     await updateClaimedAudiobookJob(job.id, 'running', { progress, updatedAt: Date.now() });
   };
@@ -812,14 +857,22 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       ? findSmartAudioProfileById(profilesDocument, String(jobSettings.smartAudioProfileId || ''))
       : null;
     if (useSmartAudio && !selectedProfile) {
-      throw new Error('The selected Smart Audio profile could not be loaded.');
+      throw new AudiobookProcessingError({ failureCategory: 'provider_configuration', provider: 'gemini', stage: 'profile_selection' });
     }
+    processingSecrets.push(selectedProfile?.geminiApiKey || '', selectedProfile?.backupGeminiApiKey || '');
     // Scholar and bibliography-catcher both get layout engine structural tags so
     // Gemini can understand PDF structure. Previously only bib-catcher had this.
     const useLayoutTags = isScholarLikeMode(selectedProfile?.workerMode);
 
 
-    if (doc.type === 'pdf') {
+    let pinnedChapters: typeof chapters | undefined;
+    try {
+      const pinned = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, 'audiobook.source-chapters.json', testNamespace)).toString('utf8'));
+      if (pinned.schemaVersion === 1 && Array.isArray(pinned.chapters) && pinned.chapters.every((c: { index: number; text: string; title: string }) => Number.isInteger(c.index) && c.index >= 0 && typeof c.text === 'string' && typeof c.title === 'string') && new Set(pinned.chapters.map((c: { index: number }) => c.index)).size === pinned.chapters.length) pinnedChapters = pinned.chapters;
+      else throw new Error('Invalid pinned chapter source mapping; restore the original mapping before resuming.');
+    } catch (error) { if (!isMissingBlobError(error)) throw error; }
+    if (pinnedChapters) chapters = pinnedChapters;
+    else if (doc.type === 'pdf') {
       let artifact = await readCurrentParsedPdfArtifact({ documentId: doc.id, namespace: testNamespace });
       if (!artifact) {
         const opState = await createOrReuseCurrentPdfParseOperation({ documentId: doc.id, namespace: testNamespace });
@@ -851,11 +904,11 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       
       const buffer = await getDocumentBlob(doc.id, testNamespace);
       const toc = await extractPdfToc(buffer);
-      let boundaries = computeTocBoundaries(toc, doc.pages || 9999);
+      const boundaries = computeTocBoundaries(toc, doc.pages || 9999);
       
       // FALLBACK MULTIVALENT SYSTEM: If digital TOC is missing, scan the vision-engine text!
       if (toc.length === 0 && parsedPdf && parsedPdf.pages) {
-        console.log('\n[FALLBACK SCANNER] Digital TOC missing. Scanning vision engine text for boundaries...');
+        serverLogger.info({ event: 'audiobook.toc.fallback_scan' }, 'Digital TOC missing; scanning parsed text for boundaries.');
         
         // --- 1. Find Start Matter (scan first 30% forwards) ---
         const startLimit = Math.floor(parsedPdf.pages.length * 0.3);
@@ -869,7 +922,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
           );
           if (hasStartMatterTitle) {
             boundaries.startPage = page.pageNumber;
-            console.log(`[FALLBACK SCANNER] Found Start Matter (Introduction/Chapter 1)! Setting start page to ${boundaries.startPage}`);
+            serverLogger.info({ event: 'audiobook.toc.fallback_start', startPage: boundaries.startPage }, 'Found start matter.');
             break;
           }
         }
@@ -893,12 +946,12 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         }
         if (fallbackEndPage < boundaries.endPage) {
           boundaries.endPage = fallbackEndPage;
-          console.log(`[FALLBACK SCANNER] Found End Matter! Setting end page to ${boundaries.endPage}`);
+          serverLogger.info({ event: 'audiobook.toc.fallback_end', endPage: boundaries.endPage }, 'Found end matter.');
         }
       }
 
       serverLogger.info({ event: 'audiobook.toc.boundaries', startPage: boundaries.startPage, endPage: boundaries.endPage }, 'Computed TOC boundaries for PDF');
-      console.log(`\n==========================================\n  TOC BOUNDARY CALCULATED\n  Start Page (Gemini hint before this): ${boundaries.startPage}\n  End Page (Gemini hint after this): ${boundaries.endPage}\n==========================================\n`);
+      serverLogger.info({ event: 'audiobook.toc.resolved', startPage: boundaries.startPage, endPage: boundaries.endPage }, 'Chapter boundaries resolved.');
 
       const preparedPdfBlocks = preparePdfAudiobookBlocks({
         parsed: parsedPdf,
@@ -1037,13 +1090,13 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
     const runtimeConfig = await getResolvedRuntimeConfig();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const settings = jobSettings as Record<string, any>;
-    if (usesCurrentBatching) {
+    if (!pinnedChapters && usesCurrentBatching) {
       chapters = batchAudiobookText(
         truncateAudiobookEndMatter(chapters),
         cleanupTargetCharacters,
       );
     }
-    if (useLayoutTags) {
+    if (!pinnedChapters && useLayoutTags) {
       chapters = chapters
         .map((chapter) => ({
           ...chapter,
@@ -1053,6 +1106,41 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         .filter((chapter) => Boolean(chapter.text));
     }
     if (chapters.length === 0) throw new Error('No audiobook content found before end matter');
+    if (!pinnedChapters && existingBook.length) {
+      const extractedIndices = chapters.filter(c => c.text.trim()).map(c => c.index);
+      if (Array.isArray(jobSettings.expectedChapterIndexes) && JSON.stringify(extractedIndices) !== JSON.stringify(jobSettings.expectedChapterIndexes)) {
+        throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'legacy_chapter_mapping_verification' },
+          new Error('Extracted chapter indexes do not match the saved expected chapter set. Restore the original source mapping before retrying.'));
+      }
+      const retainedObjects = await listAudiobookObjects(bookId, userId, testNamespace);
+      for (const object of retainedObjects.filter(o => /^\d{4,6}__pronunciation_failure\.json$/.test(o.fileName))) {
+        const index = Number(object.fileName.split('__')[0]) - 1;
+        const retained = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, object.fileName, testNamespace)).toString('utf8'));
+        const chapter = chapters.find(c => c.index === index);
+        if (!chapter || (typeof retained.sourceText === 'string' && retained.sourceText !== (chapter.cleanupText ?? chapter.text))) {
+          throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'legacy_chapter_mapping_verification', chapterIndex: index },
+            new Error('The retained failed chapter source differs from the recovered mapping. Restore the original source mapping before retrying.'));
+        }
+      }
+      const recorded = await db.select({ chapterIndex: audiobookChapters.chapterIndex }).from(audiobookChapters)
+        .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, userId)));
+      for (const row of recorded) {
+        const chapter = chapters.find(c => c.index === row.chapterIndex);
+        if (!chapter) throw new Error('Existing chapter boundaries do not match the saved generation settings. Restore the original mapping before retrying.');
+        try {
+          const original = (await getAudiobookObjectBuffer(bookId, userId, `${String(row.chapterIndex + 1).padStart(4, '0')}__original.txt`, testNamespace)).toString('utf8');
+          if (original !== chapter.text) throw new Error('Existing chapter source differs from the recovered chapter mapping. Restore the original source before retrying.');
+        } catch (error) {
+          throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'legacy_chapter_mapping_verification', chapterIndex: row.chapterIndex },
+            isMissingBlobError(error) ? new Error('The original source text for a recorded chapter is unavailable. Restore the original source/chapter mapping before retrying; existing recordings were preserved.') : error);
+        }
+      }
+    }
+    if (!pinnedChapters) await putAudiobookObject(bookId, userId, 'audiobook.source-chapters.json',
+      Buffer.from(JSON.stringify({ schemaVersion: 1, chapters })), 'application/json', testNamespace);
+    const expectedChapterIndexes = chapters.filter(c => c.text.trim()).map(c => c.index);
+    await updateClaimedAudiobookJob(job.id, 'running', { settingsJson: mergeJobSettings({ expectedChapterIndexes }) });
+
     const format = (settings.format as 'mp3' | 'm4b') || 'm4b';
 
     const creds = selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? null : await resolveTtsCredentials({
@@ -1064,9 +1152,10 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
     });
 
     if (creds && 'error' in creds) {
-      throw new Error(`Failed to resolve TTS credentials: ${creds.error}. Background generation requires admin TTS providers.`);
+      throw new AudiobookProcessingError({ failureCategory: 'provider_configuration', stage: 'tts_credentials' });
     }
 
+    if (creds) processingSecrets.push(creds.apiKey || '');
     let processedLength = 0;
     let totalBytes = 0;
     const totalLength = chapters.reduce((sum, c) => sum + c.text.length, 0);
@@ -1092,7 +1181,8 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         texts: chapters.map((chapter) => chapter.text), knownPronunciations: {
           ...pronunciationsFromBookLexicon(bookLexicon), ...resolvedPronunciations,
         },
-      });
+      }).catch(error => { throw new AudiobookProcessingError(classifyAudiobookFailure(error, { provider: 'gemini', stage: 'source_recovery_lexicon', model: resolvePronunciationAiModel(selectedProfile) }), error); });
+      await recordProviderRecovery(job.id, 'gemini', 'source_recovery_lexicon', undefined);
       if (localLexicon) {
         Object.assign(documentPronunciations, pronunciationsFromBookLexicon(localLexicon));
         Object.assign(resolvedPronunciations, documentPronunciations);
@@ -1146,25 +1236,11 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
           },
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/\bHTTP (429|503)\b/.test(message)) {
-          const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
-          jobSettingsParsed.nextAttemptAt = Date.now() + 300 * 1000;
-          await updateClaimedAudiobookJob(job.id, 'running', {
-            status: 'queued',
-            createdAt: job.createdAt,
-            updatedAt: Date.now(),
-            error: GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
-            settingsJson: JSON.stringify(jobSettingsParsed),
-          });
-          serverLogger.warn({
-            event: 'audiobook.queue.scholar_lexicon.rate_limit',
-            bookId,
-          }, 'Pronunciation and definition auto-scan paused by Gemini API limits.');
-          return;
-        }
-        throw error;
+        const failure = classifyAudiobookFailure(error, { provider: 'gemini', stage: 'pronunciation_definition_scan', model: resolvePronunciationAiModel(selectedProfile) });
+        if (failure.failureCategory === 'provider_transient') { await deferProviderFailure(job, failure); return; }
+        throw new AudiobookProcessingError(failure, error);
       }
+      await recordProviderRecovery(job.id, 'gemini', 'pronunciation_definition_scan', undefined);
       await writeBookLexicon(userId, doc.id, bookLexicon);
 
       const termsNeedingGeneratedPronunciations = new Set(
@@ -1350,7 +1426,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       }
     }
     if (useSmartAudio && (!nc || !sc)) {
-      throw new Error('Smart Audio was enabled, but the cleanup worker connection could not be established.');
+      throw new AudiobookProcessingError({ failureCategory: 'provider_transient', provider: 'nats', stage: 'cleanup_worker_connection' });
     }
 
     if (recoverySnapshot && jobSettings.sourceRecoveryPronunciationSnapshot === undefined) {
@@ -1370,6 +1446,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
 
     let continuityState = "Beginning of book.";
     const failedChapterIndexes: number[] = [];
+    const omittedChapterIndexes = new Set<number>(jobSettings.omittedChapterIndexes ?? []);
 
     const markChapterForReview = async (chapterIndex: number, chapterLength: number) => {
       if (!failedChapterIndexes.includes(chapterIndex)) failedChapterIndexes.push(chapterIndex);
@@ -1386,7 +1463,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         return;
       }
 
-      if (!chapter.text.trim()) continue;
+      if (!chapter.text.trim() || omittedChapterIndexes.has(chapter.index)) continue;
 
       // CRASH RECOVERY: Check if chapter already exists in DB
       const existing = await db.select().from(audiobookChapters).where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, userId), eq(audiobookChapters.chapterIndex, chapter.index)));
@@ -1397,9 +1474,39 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       }
 
       let processedTextForTts = chapter.text;
+      const cacheFile = `${String(chapter.index + 1).padStart(4, '0')}__validated.json`;
+      const canonicalFile = `${String(chapter.index + 1).padStart(4, '0')}__text.txt`;
+      const cacheAllowed = useSmartAudio && selectedProfile?.workerMode !== MULTI_VOICE_WORKER_MODE && selectedProfile?.workerMode !== DRAMA_GEMINI_TTS_WORKER_MODE;
+      const cacheIdentity = batchRefineTextHash(JSON.stringify({ source: chapter, profile: { ...selectedProfile, geminiApiKey: undefined, backupGeminiApiKey: undefined },
+        recovery: recoverySnapshot, recoveryPronunciations: documentPronunciations, characters: multiVoiceCharacters, dictionary: { ...globalPronunciations, ...pronunciationsFromBookLexicon(bookLexicon), ...selectedProfile?.pronunciations, ...documentPronunciations }, validationVersion: 1, batchVersion: jobSettings.cleanupBatchVersion }));
+      let canonicalHash: string | null = null;
+      try { canonicalHash = batchRefineTextHash((await getAudiobookObjectBuffer(bookId, userId, canonicalFile, testNamespace)).toString('utf8')); }
+      catch (error) { if (!isMissingBlobError(error)) throw error; }
+      let validatedCacheUsed = false;
+      if (cacheAllowed) {
+        try {
+          const cached = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, cacheFile, testNamespace)).toString('utf8'));
+          if (cached.version === 1 && cached.identity === cacheIdentity && cached.canonicalHash === canonicalHash && typeof cached.text === 'string') {
+            if (cached.textHash !== batchRefineTextHash(cached.text)) throw new SmartAudioOutputValidationError('Validated chapter checkpoint changed after validation; recording was blocked.');
+            if (scanPronunciationIssues(cached.text).length) throw new SmartAudioOutputValidationError('Cached chapter failed pronunciation validation. Review the retained text before recording.');
+            processedTextForTts = resolveSmartAudioWorkerResult({ status: 'success', cleaned_text: cached.text }, {
+              authoritativePronunciations: { ...globalPronunciations, ...pronunciationsFromBookLexicon(bookLexicon), ...selectedProfile?.pronunciations, ...documentPronunciations },
+              sourceText: chapter.cleanupText ?? chapter.text,
+              requirePronunciationTagsForForeignScripts: isScholarLikeSmartAudioMode(selectedProfile?.workerMode),
+            }).text;
+            assertRecoveredReadings(chapter.cleanupText ?? chapter.text, processedTextForTts, recoverySnapshot);
+            if (typeof cached.title === 'string') chapter.title = cached.title;
+            validatedCacheUsed = true;
+          }
+        } catch (error) { if (!isMissingBlobError(error)) throw error; }
+      }
+
       
 
-      if (useSmartAudio && nc && sc) {
+      if (canonicalHash !== null && !validatedCacheUsed) {
+        throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'saved_review_text_requires_recording', chapterIndex: chapter.index });
+      }
+      if (!validatedCacheUsed && useSmartAudio && nc && sc) {
         const smartAudioProfileId = String(settings.smartAudioProfileId || '');
         const currentProfilesDocument = await readSmartAudioProfilesDocument(userId);
         const currentSelectedProfile = findSmartAudioProfileById(currentProfilesDocument, smartAudioProfileId);
@@ -1410,6 +1517,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
           // Key is stored per-profile; fall back to empty string which causes
           // the Python worker to return {status:"error"} and skip smart audio.
           const geminiApiKey = (currentSelectedProfile?.geminiApiKey || '').trim();
+          if (!geminiApiKey && !currentSelectedProfile?.backupGeminiApiKey?.trim()) throw new AudiobookProcessingError({ failureCategory: 'provider_configuration', provider: 'gemini', stage: 'smart_audio_cleanup', chapterIndex: chapter.index, model: resolveCleanupAiModel(currentSelectedProfile) });
 
           const backupGeminiApiKey = (currentSelectedProfile?.backupGeminiApiKey || '').trim();
           const currentPronunciations = filterKokoroCompatiblePronunciationRecord({
@@ -1503,21 +1611,14 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
           let workerResult = applyAuthoritativeBookTags(JSON.parse(sc.decode(msg.data))) as Record<string, unknown>;
 
           if (workerResult.status === "rate_limit") {
-            const cooldownSeconds = typeof workerResult.cooldownSeconds === 'number' && workerResult.cooldownSeconds > 0
-              ? workerResult.cooldownSeconds
-              : 300;
-            serverLogger.warn({ event: 'audiobook.queue.smart_audio.rate_limit', bookId, chapter: chapter.index, cooldownSeconds }, `Python worker reported rate limit. Yielding job with ${cooldownSeconds}s cooldown.`);
-            if (nc) await nc.close();
-            const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
-            jobSettingsParsed.nextAttemptAt = Date.now() + cooldownSeconds * 1000;
-            await updateClaimedAudiobookJob(job.id, 'running', {
-              status: 'queued',
-              createdAt: job.createdAt,
-              updatedAt: Date.now(),
-              error: GEMINI_RATE_LIMIT_PAUSE_MESSAGE,
-              settingsJson: JSON.stringify(jobSettingsParsed),
-            });
-            return;
+            const diagnostic = workerResult.diagnostic as Record<string, unknown> | undefined;
+            const upstream = diagnostic?.error as Record<string, unknown> | undefined;
+            const failure = classifyAudiobookFailure(upstream ?? {}, { provider: 'gemini', stage: 'smart_audio_cleanup',
+              chapterIndex: chapter.index, model: typeof diagnostic?.modelRequested === 'string' ? diagnostic.modelRequested : resolveCleanupAiModel(currentSelectedProfile),
+              attempts: Array.isArray(diagnostic?.attempts) ? diagnostic.attempts.length : undefined });
+            if (!failure.httpStatus) failure.failureCategory = 'provider_transient'; // Legacy explicit capacity envelope, not a fabricated HTTP status.
+            failure.retryAfterMs = Math.max(failure.retryAfterMs ?? 0, typeof workerResult.cooldownSeconds === 'number' ? workerResult.cooldownSeconds * 1000 : 0);
+            throw new AudiobookProcessingError(failure);
           }
 
           if (workerResult.status === "success") {
@@ -1793,7 +1894,11 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
                 serverLogger.warn({ event: 'audiobook.provider_diagnostic.save_failed', jobId: job.id, bookId, chapter: chapter.index, error: errorToLog(persistenceError) }, 'Could not persist Smart Audio provider diagnostic.');
               }
             }
-            throw new Error(`Python worker returned error: ${workerResult.message || workerResult.status || 'unknown response'}`, { cause: diagnostic });
+            const diagnosticRecord = diagnostic && typeof diagnostic === 'object' ? diagnostic as Record<string, unknown> : {};
+            throw new AudiobookProcessingError(classifyAudiobookFailure({ ...diagnosticRecord, cause: diagnosticRecord.error,
+              message: workerResult.message }, { provider: 'gemini', stage: 'smart_audio_cleanup', chapterIndex: chapter.index,
+              model: typeof diagnosticRecord.modelRequested === 'string' ? diagnosticRecord.modelRequested : resolveCleanupAiModel(currentSelectedProfile),
+              attempts: Array.isArray(diagnosticRecord.attempts) ? diagnosticRecord.attempts.length : undefined }));
           }
         } catch (e) {
           if (e instanceof AudiobookJobStoppedError) throw e;
@@ -1801,6 +1906,13 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
             serverLogger.error({ event: 'audiobook.drama.cleanup.failure', jobId: job.id, bookId, chapterIndex: chapter.index, workerMode: currentSelectedProfile.workerMode, error: errorToLog(e) }, 'Smart Audio cleanup failed.');
           }
 
+          const failure = classifyAudiobookFailure(e, { provider: 'gemini', stage: 'smart_audio_cleanup', chapterIndex: chapter.index,
+            model: resolveCleanupAiModel(currentSelectedProfile) });
+          if (failure.failureCategory === 'provider_transient' || (e instanceof SmartAudioTargetedRepairError && e.apiBlocked)) {
+            if (nc) await nc.close();
+            await deferProviderFailure(job, { ...failure, failureCategory: 'provider_transient' });
+            return;
+          }
           if (e instanceof SmartAudioTargetedRepairError || e instanceof SmartAudioOutputValidationError) {
             serverLogger.warn({
               event: 'audiobook.queue.chapter_held_for_review',
@@ -1813,68 +1925,9 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
             continue;
           }
 
-          const isNatsTimeout = e instanceof Error && (
-            e.message.includes('TIMEOUT') ||
-            ('code' in e && (e as { code: string }).code === 'TIMEOUT')
-          );
-
-          if (isNatsTimeout) {
-            serverLogger.warn({
-              event: 'audiobook.queue.smart_audio.nats_timeout_yield',
-              jobId: job.id,
-              bookId,
-              chapter: chapter.index,
-              workerMode: currentSelectedProfile?.workerMode || 'standard',
-              timeoutMs: resolveSmartAudioNatsTimeoutMs(currentSelectedProfile?.workerMode),
-            }, 'Smart Audio NATS request timed out. Yielding job to queue with 5-minute cooldown instead of aborting.');
-            if (nc) await nc.close();
-            const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
-            jobSettingsParsed.nextAttemptAt = Date.now() + 300 * 1000;
-            await updateClaimedAudiobookJob(job.id, 'running', {
-              status: 'queued',
-              createdAt: job.createdAt,
-              updatedAt: Date.now(),
-              error: GEMINI_CLEANUP_TIMEOUT_PAUSE_MESSAGE,
-              settingsJson: JSON.stringify(jobSettingsParsed),
-            });
-            return;
-          }
-
-          serverLogger.error({ event: 'audiobook.queue.smart_audio.failed', error: e }, 'Smart audio processing failed. Aborting generation.');
+          serverLogger.error({ event: 'audiobook.queue.smart_audio.failed', error: { failure } }, 'Smart Audio failed with a technical or configuration error.');
           if (nc) await nc.close();
-          
-          const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
-          const retries = typeof jobSettingsParsed.smartAudioRetries === 'number' ? jobSettingsParsed.smartAudioRetries : 0;
-          
-          if (retries < 1) {
-            jobSettingsParsed.smartAudioRetries = retries + 1;
-            serverLogger.info({ event: 'audiobook.queue.smart_audio.retry_scheduled' }, 'Scheduling auto-retry in 5 minutes...');
-            
-            await updateClaimedAudiobookJob(job.id, 'running', {
-              settingsJson: JSON.stringify(jobSettingsParsed), 
-              status: 'error', 
-              error: e instanceof SmartAudioTargetedRepairError
-                ? 'Pronunciation repair API retries were exhausted. Will automatically retry in 5 minutes...'
-                : 'Smart audio failed to connect. Will automatically retry in 5 minutes...'
-            });
-            
-            setTimeout(async () => {
-              try {
-                // If it's still in error state (user hasn't manually cancelled or requeued it)
-                const currentJobCheck = await db.select({ status: audiobookJobs.status }).from(audiobookJobs).where(eq(audiobookJobs.id, job.id));
-                if (currentJobCheck.length > 0 && currentJobCheck[0].status === 'error') {
-                  serverLogger.info({ event: 'audiobook.queue.smart_audio.auto_requeue' }, 'Auto-requeuing delayed smart audio job...');
-                  await db.update(audiobookJobs).set({ status: 'queued', error: null, progress: 0 }).where(eq(audiobookJobs.id, job.id));
-                }
-              } catch (retryErr) {
-                serverLogger.error({ event: 'audiobook.queue.smart_audio.auto_requeue.error', error: retryErr }, 'Failed to auto-requeue job');
-              }
-            }, 5 * 60 * 1000);
-            
-            return;
-          }
-          
-          throw new Error(`Smart audio processing failed after auto-retry. Error: ${(e as any).message || e}. Job aborted so it can be requeued later.`);
+          throw new AudiobookProcessingError(failure, e);
         }
       }
       
@@ -1883,16 +1936,25 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       const cleanupSource = chapter.cleanupText ?? chapter.text;
       if (!cleanedTrimmed && cleanupSource.includes('end-matter (e.g. bibliography')) {
           serverLogger.info({ event: 'audiobook.queue.smart_audio.end_matter_confirmed', bookId }, 'Gemini confirmed end-matter and omitted it. Halting generation for the rest of the book!');
-          break; // Stop generating the rest of the book!
+          for (const remaining of chapters.filter(c => c.index >= chapter.index)) omittedChapterIndexes.add(remaining.index);
+          await updateClaimedAudiobookJob(job.id, 'running', { settingsJson: mergeJobSettings({ omittedChapterIndexes: [...omittedChapterIndexes] }) });
+          break; // Validated end-matter omission, not a missing recording.
       }
       
       // If the text is empty but it wasn't end-matter (e.g. just a blank page or copyright), we skip TTS but continue to next chapter
       if (!cleanedTrimmed) {
+          omittedChapterIndexes.add(chapter.index);
+          await updateClaimedAudiobookJob(job.id, 'running', { settingsJson: mergeJobSettings({ omittedChapterIndexes: [...omittedChapterIndexes] }) });
           continue;
       }
       processedTextForTts = validateSmartAudioOutput(processedTextForTts, {
         requirePronunciationTagsForForeignScripts: isScholarLikeSmartAudioMode(selectedProfile?.workerMode),
       });
+
+      if (cacheAllowed && !validatedCacheUsed) await putAudiobookObject(bookId, userId, cacheFile,
+        Buffer.from(JSON.stringify({ version: 1, identity: cacheIdentity, canonicalHash, text: processedTextForTts, textHash: batchRefineTextHash(processedTextForTts), title: chapter.title })), 'application/json', testNamespace);
+      await recordProviderRecovery(job.id, 'gemini', 'targeted_pronunciation_repair', chapter.index);
+      await recordProviderRecovery(job.id, 'gemini', 'smart_audio_cleanup', chapter.index);
 
       // Smart Audio may replace the inherited layout heading with a concise
       // title for this cleanup batch. Encode the file only after that title is
@@ -1905,6 +1967,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
           try {
             const drama = await generateCloudDramaAudiobook({
               cleanedText: processedTextForTts,
+              deferProviderFailures: true,
               characterMap: resolvedDocumentSettings.smartAudioCharacters!,
               geminiApiKey: selectedProfile.geminiApiKey || '',
               backupGeminiApiKey: selectedProfile.backupGeminiApiKey,
@@ -1975,6 +2038,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
           job.id,
           {
             text: processedTextForTts,
+            model: typeof settings.ttsModel === 'string' ? settings.ttsModel : creds!.adminRecord?.defaultModel ?? undefined,
             voice: settings.voice || 'alloy',
             speed: settings.speed || 1,
             format: 'mp3',
@@ -2000,45 +2064,18 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         if (error instanceof AudiobookJobStoppedError) throw error;
         const message = error instanceof Error ? error.message : String(error);
 
-        // ── Smart HTTP Errorcode / Quota Handling for Cloud Drama & TTS ───────
-        const isGeminiTtsQuota = isGeminiTtsQuotaExhaustedError(error);
-        const isGeminiQuota = isGeminiTtsQuota || /\bHTTP (429|402|403|503)\b/.test(message) ||
-          /resource_exhausted|quota exceeded|rate limit|too many requests|payment required|billing/i.test(message);
-
-        if (isGeminiQuota) {
+        const ttsProvider = selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? 'gemini' : creds?.provider;
+        const failure = classifyAudiobookFailure(error, { provider: ttsProvider, model: typeof settings.ttsModel === 'string' ? settings.ttsModel : creds?.adminRecord?.defaultModel ?? undefined,
+          stage: 'tts_recording', chapterIndex: chapter.index });
+        if (failure.failureCategory === 'provider_transient' || isGeminiTtsQuotaExhaustedError(error)) {
           if (nc) await nc.close();
-          const jobSettingsParsed = typeof job.settingsJson === 'string' ? JSON.parse(job.settingsJson) : (job.settingsJson || {});
-
-          const isDaily = !isGeminiTtsQuota && (/daily|quota|credit/i.test(message) || /\b429\b/.test(message));
-          const cooldownMs = isGeminiTtsQuota && error instanceof GeminiTtsQuotaExhaustedError && error.retryAfterMs !== undefined
-            ? Math.max(1_000, error.retryAfterMs)
-            : isDaily ? calculateRemainingDailyQuotaMs() : 300 * 1000;
-
-          jobSettingsParsed.nextAttemptAt = Date.now() + cooldownMs;
-
-          const pauseMessage = GEMINI_RATE_LIMIT_PAUSE_MESSAGE;
-
-          await updateClaimedAudiobookJob(job.id, 'running', {
-            status: 'queued',
-            createdAt: job.createdAt,
-            updatedAt: Date.now(),
-            error: pauseMessage,
-            settingsJson: JSON.stringify(jobSettingsParsed),
-          });
-
-          serverLogger.warn({
-            event: isGeminiTtsQuota ? 'audiobook.queue.gemini_tts.quota_paused' : 'audiobook.queue.drama_director.rate_limit_paused',
-            jobId: job.id,
-            bookId,
-            chapter: chapter.index,
-            cooldownSeconds: Math.round(cooldownMs / 1000),
-            error: message,
-          }, isGeminiTtsQuota
-            ? `Gemini TTS quota/rate limit reached. Yielding job with ${Math.round(cooldownMs / 1000)}s cooldown.`
-            : `Drama Director hit Gemini API limits. Yielding job with ${Math.round(cooldownMs / 1000)}s cooldown.`
-          );
+          await deferProviderFailure(job, { ...failure, failureCategory: 'provider_transient',
+            retryAfterMs: error instanceof GeminiTtsQuotaExhaustedError ? error.retryAfterMs : failure.retryAfterMs });
           return;
         }
+        const isContentFailure = error instanceof DramaDirectorValidationError || (error as { name?: string })?.name === 'DramaDirectorValidationError'
+          || (error instanceof CloudDramaGenerationError && failure.failureCategory !== 'provider_configuration');
+        if (!isContentFailure) throw new AudiobookProcessingError(failure, error);
 
         const issues = (error instanceof DramaDirectorValidationError || (error as { name?: string })?.name === 'DramaDirectorValidationError') && Array.isArray((error as { issues?: string[] }).issues)
           ? (error as { issues: string[] }).issues
@@ -2109,8 +2146,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       }
 
       try {
-        await db.insert(audiobookChapters).values({
-          id: randomUUID(),
+        await persistAudiobookChapter({
           bookId,
           userId,
           chapterIndex: chapter.index,
@@ -2129,22 +2165,27 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         throw insertErr;
       }
 
+      await putAudiobookObject(bookId, userId, `${String(chapter.index + 1).padStart(4, '0')}__recording_state.json`,
+        Buffer.from(JSON.stringify({ recordedAt: Date.now(), textHash: batchRefineTextHash(processedTextForTts), jobId: job.id })), 'application/json', testNamespace);
+      await recordProviderRecovery(job.id, selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE ? 'gemini' : creds!.provider, 'tts_recording', chapter.index);
       processedLength += chapter.text.length;
       await updateProgress(Math.floor((processedLength / totalLength) * 100));
     }
 
     if (nc) await nc.close();
 
+    const { missingChapterIndexes, activeReviewChapterIndexes } = await readAudiobookCompleteness(bookId, userId, testNamespace);
     await updateClaimedAudiobookJob(job.id, 'running', {
-      status: 'completed',
-      completedAt: Date.now(),
-      progress: 100,
-      error: failedChapterIndexes.length
-        ? `${failedChapterIndexes.length} chapter${failedChapterIndexes.length === 1 ? '' : 's'} require${failedChapterIndexes.length === 1 ? 's' : ''} manual review before full-book download.`
-        : null,
+      status: missingChapterIndexes.length || activeReviewChapterIndexes.length ? 'error' : 'completed', completedAt: Date.now(),
+      progress: missingChapterIndexes.length ? Math.floor(100 * (expectedChapterIndexes.length - missingChapterIndexes.length) / expectedChapterIndexes.length) : 100,
+      error: missingChapterIndexes.length ? `Incomplete audiobook: ${missingChapterIndexes.length} chapters are missing. Review content findings or retry missing chapters.` : activeReviewChapterIndexes.length ? `${activeReviewChapterIndexes.length} chapters require content review before full-book export.` : null,
+      settingsJson: mergeJobSettings({ missingChapterIndexes }),
     });
+    const storedObjects = await listAudiobookObjects(bookId, userId, testNamespace);
+    totalBytes = storedObjects.filter(o => /\.(mp3|m4b)$/.test(o.fileName) && !o.fileName.startsWith('complete.')).reduce((sum, o) => sum + o.size, 0);
     await db.update(audiobooks).set({ totalBytes }).where(and(eq(audiobooks.id, bookId), eq(audiobooks.userId, userId)));
-    serverLogger.info({ event: 'audiobook.queue.complete', jobId: job.id, documentId: job.documentId }, `Successfully completed audiobook job ${job.id}`);
+    if (missingChapterIndexes.length || activeReviewChapterIndexes.length) return;
+    serverLogger.info({ event: 'audiobook.queue.complete', jobId: job.id, documentId: job.documentId }, 'All required chapter recordings are present.');
 
     if (jobSettings.useSmartAudio) {
       // Post-generation pronunciation repair sweep (fire-and-don't-fail)
@@ -2171,16 +2212,15 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       serverLogger.info({ event: 'audiobook.queue.stopped', jobId: job.id }, 'Worker stopped after the job changed state.');
       return;
     }
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    
-    // Auto-requeue transient connectivity crashes (like server reloads or NATS timeouts)
-    if (errorMsg.includes('terminated') || errorMsg.includes('fetch failed') || errorMsg.includes('timeout')) {
-      serverLogger.warn({ event: 'audiobook.queue.process.requeue', error: errorMsg }, 'Transient error detected, moving job to back of queue.');
-      await updateAudiobookJobIfStatus(job.id, 'running', { status: 'queued', createdAt: Date.now() });
+    const failure = classifyAudiobookFailure(err, { stage: 'audiobook_processing' });
+    if (failure.failureCategory === 'cancelled') return;
+    if (failure.failureCategory === 'provider_transient') {
+      await deferProviderFailure(job, failure);
       return;
     }
-    
-    serverLogger.error({ event: 'audiobook.queue.process.error', error: err instanceof Error ? err.stack : String(err) }, 'Error processing audiobook queue');
-    await markError(errorMsg);
+    serverLogger.error({ event: 'audiobook.queue.process.error', error: { failure } }, 'Audiobook processing failed; no pronunciation-review artifact was created.');
+    const detail = failure.failureCategory === 'technical_unknown' ? sanitizedFailureDetail(err, processingSecrets) : undefined;
+    await saveProcessingFailure(job, failure, { detail });
+    await updateAudiobookJobIfStatus(job.id, 'running', { status: 'error', error: failureSummary(failure), completedAt: Date.now(), settingsJson: mergeJobSettings({ lastProcessingFailure: { ...failure, detail } }) });
   }
 }

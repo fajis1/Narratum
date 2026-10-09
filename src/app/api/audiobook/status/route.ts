@@ -1,3 +1,4 @@
+import { readAudiobookCompleteness } from '@/lib/server/audiobooks/completeness';
 import { NextRequest, NextResponse } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
@@ -83,7 +84,8 @@ export async function GET(request: NextRequest) {
       if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
     }
 
-    const allChapterIndices = new Set<number>();
+    const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
+    const allChapterIndices = new Set<number>(completeness.expectedChapterIndexes.filter(i => !completeness.omittedChapterIndexes.includes(i)));
     for (const chapter of chapterObjects) {
       allChapterIndices.add(chapter.index);
     }
@@ -117,23 +119,27 @@ export async function GET(request: NextRequest) {
           (o.fileName.endsWith('.txt') && !o.fileName.endsWith('__original.txt') && !o.fileName.endsWith('__changelog.txt'))
         )
       );
-      const hasRejected = objects.some((o) => o.fileName === `${oneBasedPrefix}rejected.txt`);
-      const hasFailure = objects.some((o) => o.fileName === `${oneBasedPrefix}pronunciation_failure.json`);
+      const retainedRejected = objects.some((o) => o.fileName === `${oneBasedPrefix}rejected.txt`);
+      const retainedFailure = objects.some((o) => o.fileName === `${oneBasedPrefix}pronunciation_failure.json`);
       const isEmptyText = !txtFileObj || txtFileObj.size < 5; // empty or extremely small
       const hasAudio = Boolean(chapterObj);
-      const needsReview = hasRejected || hasFailure || isEmptyText || !hasAudio;
+      const activeFailure = completeness.activeReviewChapterIndexes.includes(index) || (!completeness.recordedChapterIndexes.includes(index) && retainedRejected);
+      const hasRejected = activeFailure && retainedRejected;
+      const hasFailure = activeFailure && retainedFailure;
+      const needsReview = activeFailure || isEmptyText || !hasAudio;
 
       return {
         index: chapter.index,
         title: titleByIndex.get(chapter.index) ?? chapter.title,
         duration: durationByIndex.get(chapter.index),
-        status: (hasRejected || hasFailure) ? 'error' : (!hasAudio ? 'pending' : 'completed'),
+        status: activeFailure ? 'error' : (!hasAudio ? 'pending' : 'completed'),
         bookId,
         format: chapterObj?.format ?? 'mp3',
         isEmptyText,
         hasAudio,
         hasRejected,
         hasFailure,
+        hasHistoricalFailure: retainedFailure && !activeFailure,
         needsReview,
       };
     });
@@ -146,7 +152,7 @@ export async function GET(request: NextRequest) {
       settings = null;
     }
 
-    const hasComplete = objectNames.includes('complete.mp3') || objectNames.includes('complete.m4b');
+    const hasComplete = completeness.complete && (objectNames.includes('complete.mp3') || objectNames.includes('complete.m4b'));
     const exists = chapters.length > 0 || hasComplete || settings !== null;
 
     if (!exists) {
@@ -171,6 +177,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       chapters,
+      incomplete: !completeness.complete,
+      missingChapterIndexes: completeness.missingChapterIndexes,
       exists: true,
       hasComplete,
       bookId,

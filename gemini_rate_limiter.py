@@ -2,6 +2,7 @@ import asyncio
 import math
 import re
 import time
+from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable, MutableMapping, Sequence, TypeVar
 
 
@@ -75,13 +76,29 @@ def gemini_error_details(error: Exception) -> dict[str, object]:
     status_value = getattr(status, "value", status)
     http_status = status_value if isinstance(status_value, int) else None
     message = str(error)
-    match = re.search(r"\b(429|500|502|503|504)\b", message)
+    match = re.search(r"\b([45]\d{2})\b", message)
     if http_status is None and match:
         http_status = int(match.group(1))
     api_status = getattr(error, "status", None) or getattr(status, "name", None)
     if not isinstance(api_status, str):
-        api_status = next((value for value in ("RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED") if value in message.upper()), None)
+        api_status = next((value for value in ("RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED", "PERMISSION_DENIED", "UNAUTHENTICATED") if value in message.upper()), None)
+    retry_after_ms = None
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None) or getattr(error, "headers", None)
+    if hasattr(headers, "get"):
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after:
+            try:
+                retry_after_ms = max(0, int(float(retry_after) * 1000))
+            except (ValueError, TypeError):
+                try:
+                    retry_after_ms = max(0, int((parsedate_to_datetime(retry_after).timestamp() - time.time()) * 1000))
+                except (ValueError, TypeError, OverflowError):
+                    pass
+    message = re.sub(r"AIza[a-zA-Z0-9_-]{20,}|Bearer\s+[^\s,}]+|([?&]key=)[^&\s]+", "[redacted]", message, flags=re.IGNORECASE)
+    message = re.sub(r"(api[_-]?key|authorization|token|password)\s*[:=]\s*[^\s,}]+", r"\1=[redacted]", message, flags=re.IGNORECASE)
     return {
+        "retryAfterMs": retry_after_ms,
         "httpStatus": http_status,
         "apiStatus": api_status if isinstance(api_status, str) else None,
         "exceptionType": type(error).__name__,
@@ -89,9 +106,20 @@ def gemini_error_details(error: Exception) -> dict[str, object]:
     }
 
 
+def gemini_failure_diagnostic(correlation: dict, model: str, attempts: list[dict], error: Exception | None = None) -> dict:
+    last_error = next((attempt for attempt in reversed(attempts) if attempt.get("outcome") == "error"), {})
+    details = gemini_error_details(error) if error else {key: last_error.get(key) for key in ("httpStatus", "apiStatus", "exceptionType", "retryAfterMs")}
+    return {"schemaVersion": 1, "provider": "gemini", "stage": "smart_audio_cleanup", **correlation,
+            "modelRequested": model, "attempts": attempts[-50:], "error": details}
+
+
 def is_gemini_retryable_error(error: Exception) -> bool:
     details = gemini_error_details(error)
-    if details["httpStatus"] in (429, 500, 502, 503, 504):
+    if details["httpStatus"] in (400, 401, 402, 403, 404, 422):
+        return details["httpStatus"] == 403 and details["apiStatus"] == "RESOURCE_EXHAUSTED" and bool(details["retryAfterMs"])
+    if isinstance(error, (TimeoutError, ConnectionError)) or type(error).__name__ in ("ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "ConnectError", "ReadError", "NetworkError"):
+        return True
+    if details["httpStatus"] in (408, 429, 500, 502, 503, 504):
         return True
     if details["apiStatus"] in ("RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"):
         return True
@@ -178,6 +206,7 @@ async def call_gemini_with_capacity_fallback(
 
                         curr = int(api_state.get("current_delay", 0) or 0)
                         next_delay = min_delay if curr == 0 else min(curr * 2, max_delay)
+                        next_delay = max(next_delay, math.ceil(float(details.get("retryAfterMs") or 0) / 1000))
                         api_state["current_delay"] = next_delay
                         api_state["resume_at"] = time.time() + next_delay
                         print(f"  -> [LIMIT] API retryable error ({model}); cooldown {next_delay} seconds.")

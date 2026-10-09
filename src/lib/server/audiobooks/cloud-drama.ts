@@ -25,6 +25,7 @@ export class CloudDramaGenerationError extends Error {
 /** Direct and synthesize a cleaned chapter while preserving failed lines for review. */
 export async function generateCloudDramaAudiobook(input: {
   cleanedText: string;
+  deferProviderFailures?: boolean;
   characterMap: SmartAudioCharacterMap;
   geminiApiKey: string;
   backupGeminiApiKey?: string;
@@ -100,6 +101,7 @@ export async function generateCloudDramaAudiobook(input: {
         modelName: segmentModel,
         fallbackModels: input.ttsModelFallbacks as readonly import('@/lib/server/smart-audio/gemini-tts-client').GeminiTtsModel[] | undefined,
         signal: input.signal,
+        deferProviderFailures: input.deferProviderFailures,
       });
       reviewFlags.push(...result.reviewFlags);
       const audioBytes = result.chunks.reduce((total, chunk) => total + (chunk.audioBuffer?.length || 0), 0);

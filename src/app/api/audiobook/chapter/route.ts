@@ -1,3 +1,4 @@
+import { persistAudiobookChapter } from '@/lib/server/audiobooks/chapter-record';
 import { sourceRecoveryPronunciations, assertRecoveredReadings } from '@/lib/shared/source-recovery';
 import type { SourceRecoverySnapshot } from '@/types/source-recovery';
 import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
@@ -1280,7 +1281,7 @@ export async function POST(request: NextRequest) {
     await deleteAudiobookObject(bookId, storageUserId, 'complete.m4b.manifest.json', testNamespace).catch(() => {});
     await Promise.all([
       deleteAudiobookObject(bookId, storageUserId, `${chapterPrefix}rejected.txt`, testNamespace).catch(() => {}),
-      deleteAudiobookObject(bookId, storageUserId, `${chapterPrefix}pronunciation_failure.json`, testNamespace).catch(() => {}),
+      // Failure JSON is retained as history; the success receipt resolves it.
     ]);
 
     if (!normalizedExistingSettings && incomingSettings) {
@@ -1307,22 +1308,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    await db
-      .insert(audiobookChapters)
-      .values({
-        id: `${bookId}-${chapterIndex}`,
-        bookId,
-        userId: storageUserId,
-        chapterIndex,
-        title: data.chapterTitle,
-        duration,
-        format,
-        filePath: finalChapterName,
-      })
-      .onConflictDoUpdate({
-        target: [audiobookChapters.id, audiobookChapters.userId],
-        set: { title: data.chapterTitle, duration, format, filePath: finalChapterName },
-      });
+    await persistAudiobookChapter({ bookId, userId: storageUserId, chapterIndex,
+      title: data.chapterTitle, duration, format, filePath: finalChapterName });
+
+    await putAudiobookObject(bookId, storageUserId, `${chapterPrefix}recording_state.json`,
+      Buffer.from(JSON.stringify({ recordedAt: Date.now() })), 'application/json', testNamespace);
 
     const response = NextResponse.json({
       index: chapterIndex,

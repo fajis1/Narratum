@@ -1,3 +1,4 @@
+import { readAudiobookCompleteness } from '@/lib/server/audiobooks/completeness';
 import { NextRequest, NextResponse } from 'next/server';
 export const maxDuration = 300; // 5 minutes max duration for large audiobook generation
 import { spawn } from 'child_process';
@@ -111,7 +112,11 @@ export async function GET(request: NextRequest) {
 
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
-    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name));
+    const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
+    if (!completeness.complete) return NextResponse.json({ error: 'Audiobook is incomplete. Retry missing chapters before full-book export.',
+      code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE', missingChapterIndexes: completeness.missingChapterIndexes }, { status: 409 });
+    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name)
+      && !completeness.recordedChapterIndexes.includes(Number(name.split('__')[0]) - 1));
     if (failedChapterFiles.length) {
       return NextResponse.json({
         error: `${failedChapterFiles.length} chapter${failedChapterFiles.length === 1 ? '' : 's'} require${failedChapterFiles.length === 1 ? 's' : ''} review and successful replacement recording before full-book download.`,
@@ -245,7 +250,11 @@ export async function POST(request: NextRequest) {
 
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
-    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name));
+    const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
+    if (!completeness.complete) return NextResponse.json({ error: 'Audiobook is incomplete. Retry missing chapters before full-book export.',
+      code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE', missingChapterIndexes: completeness.missingChapterIndexes }, { status: 409 });
+    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name)
+      && !completeness.recordedChapterIndexes.includes(Number(name.split('__')[0]) - 1));
     if (failedChapterFiles.length) {
       return NextResponse.json({
         error: `${failedChapterFiles.length} chapter${failedChapterFiles.length === 1 ? '' : 's'} require${failedChapterFiles.length === 1 ? 's' : ''} review and successful replacement recording before full-book download.`,

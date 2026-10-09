@@ -101,10 +101,12 @@ describe('Audiobook Review Route & Component Contracts', () => {
     expect(textSource).toContain("type === 'rejected'");
   });
 
-  test('chapter route deletes rejection artifacts upon successful replacement recording', () => {
+  test('chapter route resolves rejection artifacts with a success receipt while retaining diagnostic history', () => {
     const chapterSource = readSource('src/app/api/audiobook/chapter/route.ts');
     expect(chapterSource).toContain(`${'${chapterPrefix}'}rejected.txt`);
-    expect(chapterSource).toContain(`${'${chapterPrefix}'}pronunciation_failure.json`);
+    expect(chapterSource).not.toContain('deleteAudiobookObject(bookId, storageUserId, `${chapterPrefix}pronunciation_failure.json`');
+    expect(chapterSource).toContain(`${'${chapterPrefix}'}recording_state.json`);
+    expect(chapterSource).toContain('recordedAt: Date.now()');
     expect(chapterSource).toContain('deleteAudiobookObject');
   });
 

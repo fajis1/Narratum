@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useMemo } from 'react';
-import { categorizeErrors } from '@/lib/shared/audiobook-error-category';
+import { categorizeErrors, describeAudiobookFailure } from '@/lib/shared/audiobook-error-category';
 import { ModalFrame } from '@/components/ui';
 import type { AudiobookFailureLogResponse } from '@/app/api/audiobook/failure-log/route';
 
@@ -132,13 +132,13 @@ export function ChapterErrorLogModal({
         <div className="p-5 overflow-y-auto space-y-4 flex-1">
           {loading && (
             <div className="py-12 flex flex-col items-center justify-center gap-3 text-text-soft">
-              <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <div className="w-6 h-6 border-2 border-line border-t-transparent rounded-full animate-spin" />
               <p className="text-xs">Loading diagnostic logs from server…</p>
             </div>
           )}
 
           {fetchError && (
-            <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-sm">
+            <div className="p-4 rounded-lg bg-danger-wash border border-danger text-danger  text-sm">
               <p className="font-semibold">Could not load diagnostic log</p>
               <p className="text-xs mt-1">{fetchError}</p>
             </div>
@@ -152,17 +152,17 @@ export function ChapterErrorLogModal({
               </p>
               {/* Overall Job Error Banner */}
               {effectiveJobError && (
-                <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/30 text-text-strong text-xs space-y-1">
-                  <div className="flex items-center gap-2 text-red-600 dark:text-red-400 font-semibold">
+                <div className="p-3.5 rounded-lg bg-danger-wash border border-danger text-text-strong text-xs space-y-1">
+                  <div className="flex items-center gap-2 text-danger  font-semibold">
                     <span>⚠️</span>
                     <span>Queue Job Failure</span>
                     {data?.jobStatus && (
-                      <span className="uppercase text-[10px] px-1.5 py-0.2 rounded bg-red-500/20">
+                      <span className="uppercase text-[10px] px-1.5 py-0.2 rounded bg-danger-wash">
                         {data.jobStatus}
                       </span>
                     )}
                   </div>
-                  <p className="font-mono text-[11px] break-words text-red-700 dark:text-red-300">
+                  <p className="font-mono text-[11px] break-words text-danger ">
                     {effectiveJobError}
                   </p>
                 </div>
@@ -176,7 +176,7 @@ export function ChapterErrorLogModal({
                     onClick={() => setSelectedChapterTab('all')}
                     className={`px-3 py-1.5 rounded font-medium shrink-0 transition-colors ${
                       selectedChapterTab === 'all'
-                        ? 'bg-indigo-600 text-white shadow-sm'
+                        ? 'bg-accent text-surface shadow-sm'
                         : 'bg-surface-raised hover:bg-surface-sunken text-text-soft'
                     }`}
                   >
@@ -189,7 +189,7 @@ export function ChapterErrorLogModal({
                       onClick={() => setSelectedChapterTab(f.chapterIndex)}
                       className={`px-3 py-1.5 rounded font-medium shrink-0 transition-colors flex items-center gap-1.5 ${
                         selectedChapterTab === f.chapterIndex
-                          ? 'bg-indigo-600 text-white shadow-sm'
+                          ? 'bg-accent text-surface shadow-sm'
                           : 'bg-surface-raised hover:bg-surface-sunken text-text-soft'
                       }`}
                     >
@@ -209,7 +209,7 @@ export function ChapterErrorLogModal({
               )}
 
               {activeFailures.map((failure) => {
-                const diag = categorizeErrors(failure.errors, effectiveJobError, failure.hasDirectorDiagnostic);
+                const diag = describeAudiobookFailure(failure, categorizeErrors(failure.errors, effectiveJobError, failure.hasDirectorDiagnostic));
                 return (
                   <article
                     key={failure.chapterIndex}
@@ -229,7 +229,7 @@ export function ChapterErrorLogModal({
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-warning-wash text-warning  border border-warning">
                           <span>{diag.categoryIcon}</span>
                           <span>{diag.categoryLabel}</span>
                         </span>
@@ -237,7 +237,7 @@ export function ChapterErrorLogModal({
                           <button
                             type="button"
                             onClick={() => onNavigateToChapter(failure.chapterIndex)}
-                            className="px-2 py-0.5 text-xs font-semibold text-indigo-500 hover:underline"
+                            className="px-2 py-0.5 text-xs font-semibold text-accent hover:underline"
                           >
                             Open in Editor ↗
                           </button>
@@ -249,7 +249,7 @@ export function ChapterErrorLogModal({
                     <div className="p-3 rounded-lg bg-surface border border-line-soft text-xs space-y-2">
                       <p className="text-text-strong leading-relaxed">{diag.explanation}</p>
                       {diag.tips.length > 0 && (
-                        <div className="space-y-1 pt-1 border-t border-line-soft/60">
+                        <div className="space-y-1 pt-1 border-t border-line-soft">
                           <p className="font-semibold text-text-soft uppercase tracking-wider text-[10px]">
                             Recommendations to Resolve:
                           </p>
@@ -263,6 +263,7 @@ export function ChapterErrorLogModal({
                     </div>
 
                     {/* Exact Error Messages Log Box */}
+                    {failure.state && <p className="text-sm text-soft">{failure.state === 'recovered_history' ? 'Recovered — retained diagnostic history' : failure.state === 'retry_scheduled' ? 'Temporary provider failure — automatic retry scheduled' : failure.state === 'manual_review' ? 'Content requires review' : 'Unresolved technical or provider failure'}</p>}
                     {failure.hasProviderDiagnostic && (
                       <div className="text-xs text-text-soft rounded-lg border border-line-soft p-3">
                         <span className="font-semibold">Provider summary: </span>
@@ -275,11 +276,11 @@ export function ChapterErrorLogModal({
                           <span>Diagnostic Error Output ({failure.errors.length})</span>
                           <span>Line by Line</span>
                         </div>
-                        <div className="p-3 rounded-lg bg-zinc-950 text-zinc-200 border border-zinc-800 font-mono text-[11px] space-y-1 max-h-48 overflow-y-auto">
+                        <div className="p-3 rounded-lg bg-surface-sunken text-foreground border border-line font-mono text-[11px] space-y-1 max-h-48 overflow-y-auto">
                           {failure.errors.map((err, idx) => (
                             <div key={idx} className="flex gap-2">
-                              <span className="text-red-400 select-none shrink-0">{idx + 1}.</span>
-                              <span className="break-words text-red-200">{err}</span>
+                              <span className="text-danger select-none shrink-0">{idx + 1}.</span>
+                              <span className="break-words text-danger">{err}</span>
                             </div>
                           ))}
                         </div>
@@ -289,7 +290,7 @@ export function ChapterErrorLogModal({
                       <a
                         href={`/api/audiobook/director-diagnostics?bookId=${encodeURIComponent(bookId)}&chapterIndex=${failure.chapterIndex}`}
                         download
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-500 text-xs font-semibold"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent bg-accent-wash hover:bg-accent-wash text-accent text-xs font-semibold"
                       >
                         <span>⬇</span> Download full Gemini response (JSON)
                       </a>
@@ -301,7 +302,7 @@ export function ChapterErrorLogModal({
                       </a>
                     )}
                     {diag.category === 'drama_director' && failure.chapterIndex != null && !failure.hasDirectorDiagnostic && (
-                      <p className="text-[11px] text-amber-600 dark:text-amber-300">
+                      <p className="text-[11px] text-warning ">
                         No retained Gemini response is available for this failure. Re-recording will save the full response if validation fails again.
                       </p>
                     )}
@@ -311,8 +312,8 @@ export function ChapterErrorLogModal({
 
               {/* Segment Review Flags Breakdown */}
               {activeReviewFlags.length > 0 && (
-                <div className="rounded-xl border border-amber-300/30 bg-amber-50/50 dark:bg-amber-950/20 p-4 space-y-2">
-                  <h3 className="text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
+                <div className="rounded-xl border border-warning bg-warning-wash p-4 space-y-2">
+                  <h3 className="text-xs font-bold text-warning  flex items-center gap-1.5">
                     <span>🚩</span>
                     <span>Segment Performance Flags ({activeReviewFlags.length})</span>
                   </h3>
@@ -320,7 +321,7 @@ export function ChapterErrorLogModal({
                     {activeReviewFlags.map((flag) => (
                       <div
                         key={flag.id}
-                        className="rounded border border-amber-700/20 bg-surface p-2.5 text-xs text-text-strong space-y-1"
+                        className="rounded border border-line bg-surface p-2.5 text-xs text-text-strong space-y-1"
                       >
                         <div className="flex items-center justify-between text-[11px]">
                           <span className="font-semibold">
@@ -328,7 +329,7 @@ export function ChapterErrorLogModal({
                             {flag.speaker ? ` · ${flag.speaker}` : ''}
                           </span>
                           {flag.kind && (
-                            <span className="capitalize px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px]">
+                            <span className="capitalize px-1.5 py-0.2 rounded bg-warning-wash text-warning  text-[10px]">
                               {flag.kind.replaceAll('-', ' ')}
                             </span>
                           )}
@@ -339,7 +340,7 @@ export function ChapterErrorLogModal({
                           </p>
                         )}
                         {flag.reason && (
-                          <p className="text-amber-700 dark:text-amber-300 text-[11px] font-medium">
+                          <p className="text-warning  text-[11px] font-medium">
                             {flag.reason}
                           </p>
                         )}
@@ -375,7 +376,7 @@ export function ChapterErrorLogModal({
               <button
                 type="button"
                 onClick={onRequeue}
-                className="px-3 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-500 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                className="px-3 py-1.5 rounded-lg border border-accent bg-accent-wash hover:bg-accent-wash text-accent text-xs font-semibold flex items-center gap-1.5 transition-colors"
                 title="Retry queued audiobook generation"
               >
                 <span>🔄 Requeue Audiobook</span>
@@ -388,7 +389,7 @@ export function ChapterErrorLogModal({
               <button
                 type="button"
                 onClick={() => onNavigateToChapter(chapterIndex)}
-                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors"
+                className="px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-strong text-surface text-xs font-semibold transition-colors"
               >
                 Review & Edit Chunk {chapterIndex + 1} 🎙️
               </button>

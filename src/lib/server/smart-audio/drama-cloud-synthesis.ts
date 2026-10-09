@@ -364,6 +364,7 @@ export async function synthesizeGeminiDramaSegment(input: {
   synthesize?: (options: GeminiTtsSynthesisOptions) => Promise<GeminiTtsSynthesisResult>;
   wait?: (milliseconds: number) => Promise<void>;
   signal?: AbortSignal;
+  deferProviderFailures?: boolean;
 }): Promise<DramaSynthesisResult> {
   if (input.segment.omit_from_audio) {
     return { chunks: [{ sourceText: input.segment.text, requestText: '', audioBuffer: null, needsPlaceholder: false, omitted: true }], reviewFlags: [] };
@@ -460,6 +461,7 @@ export async function synthesizeGeminiDramaSegment(input: {
           ([401, 402, 403, 404, 429, 500, 502, 503, 504].includes(lastError.statusCode) || lastError.providerStatus === 'RESOURCE_EXHAUSTED'))) break;
     }
     if (!succeeded) {
+      if (input.deferProviderFailures && lastError instanceof Error) throw lastError;
       if (quotaError) {
         throw new GeminiTtsQuotaExhaustedError(
           `Gemini TTS quota or rate limit exhausted after available key/model fallbacks (HTTP ${quotaError.statusCode}).`,

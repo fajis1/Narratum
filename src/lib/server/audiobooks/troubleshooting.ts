@@ -48,7 +48,7 @@ export function createTtsAttemptRecorder(input: {
 }
 
 export function isTroubleshootingArtifact(name: string): boolean {
-  return /^(?:drama-director-failure-chapter-\d+\.json|\d+__(?:drama_segments|tts_attempts(?:-[a-zA-Z0-9-]+)?|provider_failure|pronunciation_failure)\.json|\d+__(?:text|rejected|changelog)\.txt|audiobook\.meta\.json)$/.test(name);
+  return /^(?:drama-director-failure-chapter-\d+\.json|\d+__(?:drama_segments|tts_attempts(?:-[a-zA-Z0-9-]+)?|provider_failure(?:__[a-zA-Z0-9-]+)?|pronunciation_failure)\.json|\d+__(?:text|rejected|changelog)\.txt|audiobook\.meta\.json)$/.test(name);
 }
 
 export async function collectTroubleshootingArtifacts(bookId: string, userId: string, namespace: string | null) {

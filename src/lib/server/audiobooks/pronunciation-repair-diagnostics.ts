@@ -1,3 +1,4 @@
+import type { AudiobookFailure } from '@/lib/shared/audiobook-processing-failure';
 import { buildKokoroPronunciationInstructions, type PronunciationGuidanceProfile } from '@/lib/shared/kokoro-pronunciation-policy';
 import { classifyForeignNarrationToken } from '@/lib/shared/foreign-narration-token';
 import { SCHOLAR_EDITORIAL_WORD_INSTRUCTIONS } from '@/lib/shared/scholar-editorial-words';
@@ -19,7 +20,8 @@ export type RepairDiagnostics = {
   aiRequested?: boolean;
   requestedModel?: string; fallbackModels?: string[]; usedModel?: string; usedBackup?: boolean;
   httpStatus?: number; responseId?: string; finishReason?: string;
-  apiBlocked?: boolean; nextAttemptAt?: number;
+  apiBlocked?: boolean;
+  failure?: AudiobookFailure; nextAttemptAt?: number;
   attempts?: { model?: string; keyRole: string; status?: number; round?: number; errorDetails?: import('../smart-audio/gemini-error-details').GeminiErrorDetails }[];
   requestErrors?: { round: number; reason: string }[];
   findingCount?: number; missingIds?: string[]; duplicateIds?: string[]; unexpectedIds?: string[];

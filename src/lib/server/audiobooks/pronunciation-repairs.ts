@@ -1,3 +1,4 @@
+import { clearRetrySchedule } from './retry-settings';
 import { repairPronunciationText } from './pronunciation-repair-engine';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, ne } from 'drizzle-orm';
@@ -33,11 +34,21 @@ export async function pronunciationCatalog(bookId: string, userId: string) {
       return settings?.jobType !== 'pronunciation-repair';
     } catch { return true; }
   }).map((job: { id: string; status: string }) => ({ id: job.id, status: job.status }));
+  const recovered = new Set<number>();
+  for (const object of objects.filter(item => /^\d{4,6}__recording_state\.json$/.test(item.fileName))) {
+    const index = Number(object.fileName.split('__')[0]) - 1;
+    const failureName = object.fileName.replace('__recording_state.json', '__pronunciation_failure.json');
+    if (!objects.some(item => item.fileName === failureName)) continue;
+    const receipt = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, object.fileName, null)).toString('utf8'));
+    const failure = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, failureName, null)).toString('utf8'));
+    if (typeof receipt.recordedAt === 'number' && receipt.recordedAt >= (failure.createdAt ?? 0)) recovered.add(index);
+  }
   const chosen = new Map<number, { chapterIndex: number; fileName: string; failed: boolean; modified: number }>();
   for (const object of objects) {
     const match = /^(\d{1,6})__(text|rejected)\.txt$/u.exec(object.fileName);
     if (!match || Number(match[1]) < 1) continue;
     const chapterIndex = Number(match[1]) - 1;
+    if (match[2] === 'rejected' && recovered.has(chapterIndex)) continue;
     const candidate = { chapterIndex, fileName: object.fileName, failed: match[2] === 'rejected', modified: object.lastModified };
     const current = chosen.get(chapterIndex);
     if (!current || candidate.modified > current.modified || (candidate.modified === current.modified && !candidate.failed)) chosen.set(chapterIndex, candidate);
@@ -46,6 +57,7 @@ export async function pronunciationCatalog(bookId: string, userId: string) {
   // though approval has already written a newer canonical text object.
   for (const object of objects.filter(item => /^\d{1,6}__rejected\.txt$/u.test(item.fileName))) {
     const index = Number(object.fileName.split('__')[0]) - 1;
+    if (recovered.has(index)) continue;
     if (chosen.get(index)?.failed) continue;
     const metadataName = object.fileName.replace('__rejected.txt', '__pronunciation_failure.json');
     if (!objects.some(item => item.fileName === metadataName)) continue;
@@ -234,7 +246,7 @@ export async function resumeRepairedPronunciationJob(bookId: string, userId: str
   const recorded = await db.select({ id: audiobookChapters.id }).from(audiobookChapters).where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, userId), eq(audiobookChapters.chapterIndex, chapter.chapterIndex))).limit(1);
   if (!recorded.length) throw new PronunciationRepairError('Approve the repair and wait for this chapter to finish recording before resuming generation.');
   await assertPronunciationBookIdle(bookId, userId);
-  const updated = await db.update(audiobookJobs).set({ status: 'queued', error: null, updatedAt: Date.now(), startedAt: null })
+  const updated = await db.update(audiobookJobs).set({ status: 'queued', error: null, updatedAt: Date.now(), startedAt: null, settingsJson: clearRetrySchedule() })
     .where(and(eq(audiobookJobs.id, chapter.jobId), eq(audiobookJobs.userId, userId), eq(audiobookJobs.documentId, bookId), inArray(audiobookJobs.status, ['error', 'paused']))).returning({ id: audiobookJobs.id });
   if (!updated.length) throw new PronunciationRepairError('The original job is no longer paused or failed.');
   return chapter.jobId;

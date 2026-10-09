@@ -4,6 +4,8 @@ from pathlib import Path
 from gemini_rate_limiter import (
     call_gemini_with_capacity_fallback,
     extract_gemini_usage,
+    gemini_error_details,
+    gemini_failure_diagnostic,
     is_gemini_retryable_error,
     ordered_gemini_models,
     refresh_gemini_cooldown,
@@ -15,6 +17,32 @@ class GeminiRateLimiterTests(unittest.TestCase):
         for status in (429, 500, 502, 503, 504):
             self.assertTrue(is_gemini_retryable_error(RuntimeError(f"{status} INTERNAL")))
         self.assertFalse(is_gemini_retryable_error(RuntimeError("400 INVALID_ARGUMENT")))
+    def test_permanent_denial_is_not_retried_even_if_message_mentions_quota(self):
+        class Denied(Exception):
+            code = 403
+            status = "PERMISSION_DENIED"
+        self.assertFalse(is_gemini_retryable_error(Denied("quota access forbidden")))
+        self.assertFalse(is_gemini_retryable_error(RuntimeError("401 UNAUTHENTICATED")))
+
+    def test_temporary_quota_denial_requires_retry_after_evidence(self):
+        class Quota(Exception):
+            code = 403
+            status = "RESOURCE_EXHAUSTED"
+            headers = {"retry-after": "900"}
+        self.assertTrue(is_gemini_retryable_error(Quota("quota")))
+        self.assertEqual(gemini_error_details(Quota("quota"))["retryAfterMs"], 900000)
+
+    def test_transport_timeout_is_retryable(self):
+        self.assertTrue(is_gemini_retryable_error(TimeoutError("request timed out")))
+
+    def test_diagnostics_redact_credentials_and_retain_actual_status(self):
+        details = gemini_error_details(RuntimeError("503 UNAVAILABLE api_key=private-test-token Bearer private-bearer-token"))
+        self.assertNotIn("private-test", str(details))
+        self.assertNotIn("private-bearer", str(details))
+        diagnostic = gemini_failure_diagnostic({"chapterIndex": 7}, "test-model", [{"outcome": "error", **details}])
+        self.assertEqual(diagnostic["error"]["httpStatus"], 503)
+        self.assertEqual(diagnostic["chapterIndex"], 7)
+
     def test_usage_metadata_is_normalized_without_prompt_content(self):
         class Usage:
             prompt_token_count = 120

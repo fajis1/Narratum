@@ -1,3 +1,4 @@
+import { AudiobookProcessingError } from '@/lib/shared/audiobook-processing-failure';
 import type { SmartAudioProfile } from '@/types/client';
 import { repairPronunciationText } from './pronunciation-repair-engine';
 import { batchRefineTextHash } from './batch-refine-assessment';
@@ -31,9 +32,10 @@ export async function repairSmartAudioWorkerPronunciations(value: unknown, input
     if (typeof text !== 'string' || !scanPronunciationIssues(text, input.dictionary).length) return text;
     const diagnostics: RepairDiagnostics = { version: 1, promptVersion: PRONUNCIATION_REPAIR_PROMPT_VERSION,
       stage: 'scan', sourceHash: batchRefineTextHash(text), aiRequested: false };
+    let contentValidated = false;
     try {
       const repaired = await repairPronunciationText({ text, original: input.sourceText, profile: input.profile,
-        dictionary: input.dictionary, signal: input.signal,
+        dictionary: input.dictionary, signal: input.signal, durableRetry: true,
         resolveAi: async () => ({ primaryApiKey: input.profile.geminiApiKey || '', backupApiKey: input.profile.backupGeminiApiKey || '',
           selection: { aiModel: resolvePronunciationAiModel(input.profile),
             fallbackModels: input.profile.aiModelFallbacks?.filter(model => model !== resolvePronunciationAiModel(input.profile)).slice(0, 2) } }),
@@ -41,6 +43,7 @@ export async function repairSmartAudioWorkerPronunciations(value: unknown, input
       // Automatic recovery cannot accept partial proposals or source-word
       // reconstruction: those remain available through the human review tool.
       assertPronunciationRepair(text, repaired.proposedText);
+      contentValidated = true;
       changed ||= repaired.proposedText !== text;
 
       if (diagnostics.findings?.length) {
@@ -73,9 +76,14 @@ export async function repairSmartAudioWorkerPronunciations(value: unknown, input
       }
 
       return repaired.proposedText;
-    } catch {
+    } catch (error) {
       input.signal.throwIfAborted();
-      throw new SmartAudioTargetedRepairError(diagnostics.apiBlocked === true);
+      if (error instanceof AudiobookProcessingError) throw error;
+      if (diagnostics.failure) throw new AudiobookProcessingError(diagnostics.failure, error);
+      if (contentValidated) throw error;
+      const wrapped = new SmartAudioTargetedRepairError(false);
+      wrapped.cause = error;
+      throw wrapped;
     } finally {
       serverLogger.info({ event: 'smart_audio.targeted_pronunciation_repair', findingCount: diagnostics.findingCount,
         remainingCount: diagnostics.remainingFindings?.length, aiRequested: diagnostics.aiRequested,

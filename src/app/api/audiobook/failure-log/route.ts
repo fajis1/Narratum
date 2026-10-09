@@ -1,3 +1,6 @@
+import { errorResponse } from '@/lib/server/errors/next-response';
+import { readAudiobookCompleteness } from '@/lib/server/audiobooks/completeness';
+import { classifyAudiobookFailure, type AudiobookFailureCategory } from '@/lib/shared/audiobook-processing-failure';
 import { NextRequest, NextResponse } from 'next/server';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/db';
@@ -15,6 +18,11 @@ import type { SmartAudioReviewFlag } from '@/types/document-settings';
 export const dynamic = 'force-dynamic';
 
 export interface ChapterFailureLogItem {
+  failureCategory?: AudiobookFailureCategory;
+  state?: 'manual_review' | 'retry_scheduled' | 'unresolved' | 'recovered_history';
+  retryScheduled?: boolean;
+  nextAttemptAt?: number;
+  retryCount?: number;
   chapterIndex: number;
   chapterTitle?: string;
   errors: string[];
@@ -29,6 +37,7 @@ export interface ChapterFailureLogItem {
   model?: string;
   httpStatus?: number;
   apiStatus?: string;
+  detail?: string;
   attempts?: number;
 }
 
@@ -41,6 +50,7 @@ export interface AudiobookFailureLogResponse {
   historySemantics?: 'retained-diagnostics';
   failures: ChapterFailureLogItem[];
   reviewFlags: SmartAudioReviewFlag[];
+  providerHistoryFiles?: string[];
 }
 
 export async function GET(request: NextRequest) {
@@ -87,6 +97,7 @@ export async function GET(request: NextRequest) {
         status: audiobookJobs.status,
         error: audiobookJobs.error,
         createdAt: audiobookJobs.createdAt,
+        settingsJson: audiobookJobs.settingsJson,
       })
       .from(audiobookJobs)
       .where(and(eq(audiobookJobs.documentId, bookId), eq(audiobookJobs.userId, storageUserId)))
@@ -124,6 +135,7 @@ export async function GET(request: NextRequest) {
         return match ? [Number.parseInt(match[1], 10)] : [];
       }),
     );
+    const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objects.map(o => o.fileName));
     const providerDiagnostics = new Map<number, Record<string, unknown>>();
     await Promise.all(objects.filter((object) => /^\d{4}__provider_failure\.json$/.test(object.fileName)).map(async (object) => {
       try {
@@ -228,6 +240,35 @@ export async function GET(request: NextRequest) {
     failures.sort((a, b) => a.chapterIndex - b.chapterIndex);
 
     for (const failure of failures) {
+      if (failure.errors.some(message => message.startsWith('TTS recording failed:'))) {
+        const legacy = classifyAudiobookFailure({ message: failure.errors.map(message => message.replace(/^TTS recording failed:\s*/, '')).join(' ') }, { provider: 'tts', stage: 'tts_recording' });
+        failure.failureCategory = legacy.failureCategory; failure.provider = legacy.provider; failure.stage = legacy.stage; failure.httpStatus = legacy.httpStatus;
+      } else if (failure.errors.some(message => message.includes('Gemini could not finish pronunciation repairs after retries'))) {
+        failure.failureCategory = 'technical_unknown'; failure.provider = 'gemini'; failure.stage = 'targeted_pronunciation_repair';
+      }
+      const diagnostic = providerDiagnostics.get(failure.chapterIndex);
+      failure.detail = typeof diagnostic?.detail === 'string' ? diagnostic.detail : undefined;
+      const metadata = diagnostic?.failure as Record<string, unknown> | undefined;
+      const providerCreatedAt = typeof diagnostic?.createdAt === 'string' ? Date.parse(diagnostic.createdAt) : 0;
+      const newerContentFinding = completeness.activeReviewChapterIndexes.includes(failure.chapterIndex) && (failure.createdAt ?? 0) > providerCreatedAt && failure.failureCategory !== 'technical_unknown' && failure.failureCategory !== 'provider_transient';
+      if (newerContentFinding) failure.failureCategory = 'content_validation';
+      if (metadata && !newerContentFinding) {
+        failure.failureCategory = metadata.failureCategory as AudiobookFailureCategory;
+        failure.provider = typeof metadata.provider === 'string' ? metadata.provider : undefined;
+        failure.stage = typeof metadata.stage === 'string' ? metadata.stage : undefined;
+        failure.httpStatus = typeof metadata.httpStatus === 'number' ? metadata.httpStatus : undefined;
+        failure.apiStatus = typeof metadata.providerCode === 'string' ? metadata.providerCode : undefined;
+        failure.model = typeof metadata.model === 'string' ? metadata.model : undefined;
+        failure.attempts = typeof metadata.attempts === 'number' ? metadata.attempts : undefined;
+        failure.retryCount = typeof diagnostic?.retryCount === 'number' ? diagnostic.retryCount : undefined;
+      }
+      let jobSettings: Record<string, unknown> = {};
+      try { jobSettings = typeof job?.settingsJson === 'string' ? JSON.parse(job.settingsJson) : job?.settingsJson ?? {}; } catch {}
+      const retry = jobSettings.providerRetry as { failure?: { chapterIndex?: number }; exhausted?: boolean } | undefined;
+      failure.retryScheduled = job?.status === 'queued' && retry?.failure?.chapterIndex === failure.chapterIndex && !retry.exhausted;
+      failure.nextAttemptAt = failure.retryScheduled && typeof jobSettings.nextAttemptAt === 'number' ? jobSettings.nextAttemptAt : undefined;
+      failure.state = completeness.recordedChapterIndexes.includes(failure.chapterIndex) && !completeness.activeReviewChapterIndexes.includes(failure.chapterIndex) ? 'recovered_history'
+        : failure.retryScheduled ? 'retry_scheduled' : failure.failureCategory && failure.failureCategory !== 'content_validation' ? 'unresolved' : 'manual_review';
       failure.hasDirectorDiagnostic = directorDiagnosticIndices.has(failure.chapterIndex);
       failure.hasProviderDiagnostic = providerDiagnostics.has(failure.chapterIndex);
     }
@@ -239,14 +280,12 @@ export async function GET(request: NextRequest) {
       jobStatus: job?.status ?? null,
       failures,
       historySemantics: 'retained-diagnostics',
+      providerHistoryFiles: objects.filter(o => /^\d{4}__provider_failure__.+\.json$/.test(o.fileName)).map(o => o.fileName),
       reviewFlags: filteredReviewFlags,
     };
 
     return NextResponse.json(responseData);
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to retrieve audiobook failure log' },
-      { status: 500 },
-    );
+    return errorResponse(error, { apiErrorMessage: 'Failed to retrieve audiobook failure log' });
   }
 }

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from gemini_rate_limiter import (
     call_gemini_with_capacity_fallback,
     extract_gemini_usage,
+    gemini_failure_diagnostic,
     gemini_error_details,
     ordered_gemini_models,
 )
@@ -144,6 +145,7 @@ async def process_message(msg):
                 "status": "rate_limit",
                 "message": "All configured Gemini cleanup models are rate limited.",
                 "cooldownSeconds": MAX_DELAY,
+                "diagnostic": gemini_failure_diagnostic(correlation, ai_model, attempts),
             }).encode())
             return
         response, ai_model = generated
@@ -158,12 +160,14 @@ async def process_message(msg):
                     min_delay=MIN_DELAY,
                     max_delay=MAX_DELAY,
                     max_in_flight_delay=MAX_IN_FLIGHT_DELAY,
+                    attempt_recorder=record_attempt,
                 )
                 if repaired is None:
                     await msg.respond(json.dumps({
                         "status": "rate_limit",
                         "message": "The Gemini quality-repair model is rate limited.",
                         "cooldownSeconds": MAX_DELAY,
+                        "diagnostic": gemini_failure_diagnostic(correlation, ai_model, attempts),
                     }).encode())
                     return
                 response, ai_model = repaired

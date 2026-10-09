@@ -1,3 +1,4 @@
+import { assertAudiobookComplete } from './completeness';
 import { spawn } from 'child_process';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -74,6 +75,7 @@ export async function executeAudiobookCombine(
   try {
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
+    await assertAudiobookComplete(bookId, storageUserId, testNamespace, objectNames);
     let chapters = listChapterObjects(objectNames);
     if (chapters.length === 0) throw new Error('No chapters found');
 
