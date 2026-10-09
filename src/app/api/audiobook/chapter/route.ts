@@ -33,6 +33,7 @@ import {
   encodeChapterFileName,
   encodeChapterTitleTag,
   ffprobeAudio,
+  resolveChapterRecordings,
 } from '@/lib/server/audiobooks/chapters';
 import { isS3Configured } from '@/lib/server/storage/s3';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
@@ -308,20 +309,6 @@ function chapterEncodeArgs(
     'mp3',
     outputPath,
   ];
-}
-
-function findChapterFileNameByIndex(fileNames: string[], index: number): { fileName: string; title: string; format: 'mp3' | 'm4b' } | null {
-  const matches = fileNames
-    .map((fileName) => {
-      const decoded = decodeChapterFileName(fileName);
-      if (!decoded) return null;
-      if (decoded.index !== index) return null;
-      return { fileName, title: decoded.title, format: decoded.format };
-    })
-    .filter((value): value is { fileName: string; title: string; format: 'mp3' | 'm4b' } => Boolean(value))
-    .sort((a, b) => a.fileName.localeCompare(b.fileName));
-
-  return matches.at(-1) ?? null;
 }
 
 export async function POST(request: NextRequest) {
@@ -1409,42 +1396,23 @@ export async function GET(request: NextRequest) {
     }
 
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
-    const chapter = findChapterFileNameByIndex(
-      objects.map((object) => object.fileName),
-      chapterIndex,
-    );
-
+    const chapterRows = await db.select({
+      chapterIndex: audiobookChapters.chapterIndex,
+      title: audiobookChapters.title,
+      filePath: audiobookChapters.filePath,
+      format: audiobookChapters.format,
+    }).from(audiobookChapters).where(and(
+      eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, storageUserId),
+      eq(audiobookChapters.chapterIndex, chapterIndex),
+    ));
+    const resolved = resolveChapterRecordings(objects.map(object => object.fileName), chapterRows, [chapterIndex]);
+    const chapter = resolved.chapters[0];
     if (!chapter) {
-      await db
-        .delete(audiobookChapters)
-        .where(
-          and(
-            eq(audiobookChapters.bookId, bookId),
-            eq(audiobookChapters.userId, storageUserId),
-            eq(audiobookChapters.chapterIndex, chapterIndex),
-          ),
-        );
-      return NextResponse.json({ error: 'Chapter not found' }, { status: 404 });
+      return NextResponse.json({ error: `Chapter ${chapterIndex + 1} has no valid authoritative audio recording. Retry the missing chapter or resolve its recording metadata.`,
+        code: 'AUDIOBOOK_CHAPTER_AUDIO_MISSING', chapterIndex, issues: resolved.issues }, { status: 409 });
     }
 
-    let buffer: Buffer;
-    try {
-      buffer = await getAudiobookObjectBuffer(bookId, storageUserId, chapter.fileName, testNamespace);
-    } catch (error) {
-      if (isMissingBlobError(error)) {
-        await db
-          .delete(audiobookChapters)
-          .where(
-            and(
-              eq(audiobookChapters.bookId, bookId),
-              eq(audiobookChapters.userId, storageUserId),
-              eq(audiobookChapters.chapterIndex, chapterIndex),
-            ),
-          );
-        return NextResponse.json({ error: 'Chapter not found' }, { status: 404 });
-      }
-      throw error;
-    }
+    const buffer = await getAudiobookObjectBuffer(bookId, storageUserId, chapter.fileName, testNamespace);
 
     const mimeType = chapter.format === 'mp3' ? 'audio/mpeg' : 'audio/mp4';
     

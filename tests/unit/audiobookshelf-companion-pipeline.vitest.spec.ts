@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   resolveAudiobookshelfConfig: vi.fn(),
   triggerAudiobookshelfScan: vi.fn(),
   tagAudiobookshelfItem: vi.fn(),
+  readAudiobookCompleteness: vi.fn(),
 }));
 
 vi.mock('@/db', () => ({
@@ -38,8 +39,12 @@ vi.mock('@/lib/server/audiobooks/epub-generator', () => ({
   compileDocumentToEpub: mocks.compileDocumentToEpub,
 }));
 
+vi.mock('@/lib/server/audiobooks/completeness', () => ({
+  readAudiobookCompleteness: mocks.readAudiobookCompleteness,
+}));
+
 describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
-  let uploadedFormDataEntries: Array<[string, any]> = [];
+  let uploadedFormDataEntries: Array<[string, FormDataEntryValue]> = [];
   let fetchedUrls: string[] = [];
 
   beforeEach(() => {
@@ -54,24 +59,37 @@ describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
     process.env.AUDIOBOOKSHELF_FOLDER_ID = 'folder-1';
 
     // Mock DB queries for book and doc
-    mocks.dbSelect.mockImplementation(() => ({
+    mocks.dbSelect.mockImplementation((selection: { filePath?: unknown } | undefined) => ({
       from: () => ({
         where: () => ({
+          then: (resolve: (rows: Array<Record<string, unknown>>) => unknown) => resolve(selection?.filePath ? [{
+            chapterIndex: 0,
+            title: 'Chapter 1',
+            filePath: '0001__audio.m4b',
+            format: 'm4b',
+          }] : [
+            {
+              id: 'book-1',
+              userId: 'user-1',
+              title: 'The Way of Kings',
+              author: 'Brandon Sanderson',
+              name: 'The Way of Kings.pdf',
+              type: 'pdf',
+            },
+          ]),
           orderBy: () => Promise.resolve([]),
-          then: (resolve: any) =>
-            resolve([
-              {
-                id: 'book-1',
-                userId: 'user-1',
-                title: 'The Way of Kings',
-                author: 'Brandon Sanderson',
-                name: 'The Way of Kings.pdf',
-                type: 'pdf',
-              },
-            ]),
         }),
       }),
     }));
+    mocks.readAudiobookCompleteness.mockResolvedValue({
+      expectedChapterIndexes: [0],
+      missingChapterIndexes: [],
+      recordedChapterIndexes: [0],
+      omittedChapterIndexes: [],
+      invalidOmissionChapterIndexes: [],
+      activeReviewChapterIndexes: [],
+      complete: true,
+    });
 
     // Mock blobstore objects
     mocks.listAudiobookObjects.mockResolvedValue([
@@ -246,21 +264,25 @@ describe('Audiobookshelf Companion eBook Pipeline & Guardrail', () => {
   });
 
   test('Original EPUB: When original document is already .epub, uploads directly without compilation', async () => {
-    mocks.dbSelect.mockImplementation(() => ({
+    mocks.dbSelect.mockImplementation((selection: { filePath?: unknown } | undefined) => ({
       from: () => ({
         where: () => ({
           orderBy: () => Promise.resolve([]),
-          then: (resolve: any) =>
-            resolve([
-              {
-                id: 'book-1',
-                userId: 'user-1',
-                title: 'The Way of Kings',
-                author: 'Brandon Sanderson',
-                name: 'The Way of Kings.epub',
-                type: 'epub',
-              },
-            ]),
+          then: (resolve: (rows: Array<Record<string, unknown>>) => unknown) => resolve(selection?.filePath ? [{
+            chapterIndex: 0,
+            title: 'Chapter 1',
+            filePath: '0001__audio.m4b',
+            format: 'm4b',
+          }] : [
+            {
+              id: 'book-1',
+              userId: 'user-1',
+              title: 'The Way of Kings',
+              author: 'Brandon Sanderson',
+              name: 'The Way of Kings.epub',
+              type: 'epub',
+            }
+          ]),
         }),
       }),
     }));

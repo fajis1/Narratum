@@ -2,7 +2,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { audiobookJobs, audiobookChapters } from '@/db/schema';
 import { getAudiobookObjectBuffer, isMissingBlobError, listAudiobookObjects } from './blobstore';
-import { decodeChapterFileName } from './chapters';
+import { resolveChapterRecordings } from './chapters';
 import { createChapterOmissionEvidence, getChapterOmissionReason, isValidChapterOmissionEvidence } from './chapter-omissions';
 
 export function missingAudiobookChapters(expected: number[], recorded: number[], omitted: number[] = []): number[] {
@@ -42,10 +42,6 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
   }
   const records = await db.select({ chapterIndex: audiobookChapters.chapterIndex, filePath: audiobookChapters.filePath, format: audiobookChapters.format }).from(audiobookChapters)
     .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, userId)));
-  const recorded = records.filter((c: { chapterIndex: number; filePath: string; format: string }) => {
-    const referenced = decodeChapterFileName(c.filePath);
-    return objectNames.includes(c.filePath) && referenced?.index === c.chapterIndex && referenced.format === c.format;
-  }).map((c: { chapterIndex: number }) => c.chapterIndex);
   const legacyOmitted = new Set<number>(Array.isArray(settings.omittedChapterIndexes)
     ? settings.omittedChapterIndexes.filter((index: unknown): index is number => typeof index === 'number' && Number.isInteger(index) && index >= 0)
     : []);
@@ -74,7 +70,9 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
     else if (expected.includes(index)) invalidOmissionChapterIndexes.push(index);
   }
   const omitted = verifiedOmissionIndexes;
-  const missing = missingAudiobookChapters(expected, recorded, omitted);
+  const resolution = resolveChapterRecordings(objectNames, records, expected, omitted);
+  const recorded = resolution.chapters.map(chapter => chapter.index);
+  const missing = resolution.missingChapterIndexes;
   const activeReviewChapterIndexes: number[] = [];
   for (const name of objectNames.filter(n => /^\d{4,6}__pronunciation_failure\.json$/.test(n))) {
     const index = Number(name.split('__')[0]) - 1;
@@ -90,6 +88,7 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
 
   return { expectedChapterIndexes: expected, missingChapterIndexes: missing, recordedChapterIndexes: recorded,
     omittedChapterIndexes: omitted, invalidOmissionChapterIndexes, activeReviewChapterIndexes,
+    chapterReferenceIssues: resolution.issues,
     complete: expected.length > 0 && missing.length === 0 && activeReviewChapterIndexes.length === 0 };
 }
 
@@ -98,7 +97,8 @@ export async function assertAudiobookComplete(bookId: string, userId: string, na
   if (state.activeReviewChapterIndexes.length) throw new Error(`Chapter content review is required before full-book compilation: ${state.activeReviewChapterIndexes.length} chapters.`);
   if (!state.complete) {
     const invalidOmissions = state.invalidOmissionChapterIndexes.length;
-    throw new Error(`Incomplete audiobook: ${state.missingChapterIndexes.length} required chapter recordings are missing.${invalidOmissions ? ` ${invalidOmissions} saved chapter omission(s) lack valid source evidence and must be retried or reviewed.` : ''} Retry missing chapters before full-book compilation.`);
+    const invalidReferences = state.chapterReferenceIssues.length;
+    throw new Error(`Incomplete audiobook: ${state.missingChapterIndexes.length} required chapter recordings are missing.${invalidReferences ? ` Chapter audio references need repair for chapter${invalidReferences === 1 ? '' : 's'} ${state.chapterReferenceIssues.map(issue => issue.chapterIndex + 1).join(', ')}.` : ''}${invalidOmissions ? ` ${invalidOmissions} saved chapter omission(s) lack valid source evidence and must be retried or reviewed.` : ''} Retry missing chapters before full-book compilation.`);
   }
   return state;
 }

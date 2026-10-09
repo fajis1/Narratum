@@ -5,12 +5,11 @@ import { db } from '@/db';
 import { audiobooks, audiobookChapters, audiobookJobs } from '@/db/schema';
 import { requireAuthContext } from '@/lib/server/auth/auth';
 import { getAudiobookObjectBuffer, isMissingBlobError, listAudiobookObjects } from '@/lib/server/audiobooks/blobstore';
-import { decodeChapterFileName, listChapterObjects } from '@/lib/server/audiobooks/chapters';
-import { pruneAudiobookChaptersNotOnDisk } from '@/lib/server/audiobooks/prune';
+import { listChapterObjects, resolveChapterRecordings } from '@/lib/server/audiobooks/chapters';
 import { isS3Configured } from '@/lib/server/storage/s3';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
 import type { AudiobookGenerationSettings } from '@/types/client';
-import type { TTSAudiobookChapter, TTSAudiobookFormat } from '@/types/tts';
+import type { TTSAudiobookChapter } from '@/types/tts';
 import { errorToLog, serverLogger } from '@/lib/server/logger';
 import { errorResponse } from '@/lib/server/errors/next-response';
 
@@ -61,19 +60,15 @@ export async function GET(request: NextRequest) {
 
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((object) => object.fileName);
-    const chapterObjects = listChapterObjects(objectNames);
-
-    await pruneAudiobookChaptersNotOnDisk(
-      bookId,
-      storageUserId,
-      chapterObjects.map((chapter) => chapter.index),
-    );
+    const chapterInventory = listChapterObjects(objectNames);
 
     const chapterRows = await db
       .select({
         chapterIndex: audiobookChapters.chapterIndex,
         duration: audiobookChapters.duration,
         title: audiobookChapters.title,
+        filePath: audiobookChapters.filePath,
+        format: audiobookChapters.format,
       })
       .from(audiobookChapters)
       .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, storageUserId)));
@@ -85,8 +80,10 @@ export async function GET(request: NextRequest) {
     }
 
     const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
+    const chapterResolution = resolveChapterRecordings(objectNames, chapterRows, completeness.expectedChapterIndexes, completeness.omittedChapterIndexes);
+    const chapterObjects = chapterResolution.chapters;
     const allChapterIndices = new Set<number>(completeness.expectedChapterIndexes.filter(i => !completeness.omittedChapterIndexes.includes(i)));
-    for (const chapter of chapterObjects) {
+    for (const chapter of chapterInventory) {
       allChapterIndices.add(chapter.index);
     }
     for (const fileName of objectNames) {
@@ -179,6 +176,7 @@ export async function GET(request: NextRequest) {
       chapters,
       incomplete: !completeness.complete,
       missingChapterIndexes: completeness.missingChapterIndexes,
+      chapterReferenceIssues: chapterResolution.issues,
       invalidOmissionChapterIndexes: completeness.invalidOmissionChapterIndexes,
       exists: true,
       hasComplete,

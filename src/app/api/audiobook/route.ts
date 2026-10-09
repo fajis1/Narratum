@@ -28,6 +28,7 @@ import {
   escapeFFMetadata,
   ffprobeAudio,
   listChapterObjects,
+  resolveChapterRecordings,
 } from '@/lib/server/audiobooks/chapters';
 import { isS3Configured } from '@/lib/server/storage/s3';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
@@ -138,6 +139,8 @@ export async function GET(request: NextRequest) {
         chapterIndex: audiobookChapters.chapterIndex,
         duration: audiobookChapters.duration,
         title: audiobookChapters.title,
+        filePath: audiobookChapters.filePath,
+        format: audiobookChapters.format,
       })
       .from(audiobookChapters)
       .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, storageUserId)));
@@ -147,10 +150,8 @@ export async function GET(request: NextRequest) {
       durationByIndex.set(row.chapterIndex, Number(row.duration ?? 0));
       if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
     }
-    chapters = chapters.map((chapter) => ({
-      ...chapter,
-      title: titleByIndex.get(chapter.index) ?? chapter.title,
-    }));
+    chapters = resolveChapterRecordings(objectNames, chapterRows, completeness.expectedChapterIndexes, completeness.omittedChapterIndexes).chapters
+      .map((chapter) => ({ ...chapter, title: titleByIndex.get(chapter.index) ?? chapter.title }));
 
     const chapterFormats = new Set(chapters.map((chapter) => chapter.format));
     if (chapterFormats.size > 1) {
@@ -278,6 +279,8 @@ export async function POST(request: NextRequest) {
       .select({
         chapterIndex: audiobookChapters.chapterIndex,
         title: audiobookChapters.title,
+        filePath: audiobookChapters.filePath,
+        format: audiobookChapters.format,
       })
       .from(audiobookChapters)
       .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, storageUserId)));
@@ -285,10 +288,8 @@ export async function POST(request: NextRequest) {
     for (const row of chapterRows) {
       if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
     }
-    chapters = chapters.map((chapter) => ({
-      ...chapter,
-      title: titleByIndex.get(chapter.index) ?? chapter.title,
-    }));
+    chapters = resolveChapterRecordings(objectNames, chapterRows, completeness.expectedChapterIndexes, completeness.omittedChapterIndexes).chapters
+      .map((chapter) => ({ ...chapter, title: titleByIndex.get(chapter.index) ?? chapter.title }));
     
     const format: TTSAudiobookFormat = requestedFormat ?? chapters[0].format;
     const completeName = `complete.${format}`;
