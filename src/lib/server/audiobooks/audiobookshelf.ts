@@ -9,7 +9,8 @@ import {
 } from './blobstore';
 import { getDocumentBlob } from '@/lib/server/documents/blobstore';
 import { executeAudiobookCombine } from './combine';
-import { listChapterObjects } from './chapters';
+import { resolveChapterRecordings } from './chapters';
+import { readAudiobookCompleteness } from './completeness';
 import { fetchGeminiWithRateLimitFallback, GEMINI_MODEL_FALLBACKS } from '@/lib/server/smart-audio/gemini-failover';
 import { readSmartAudioProfilesDocument } from '@/lib/server/smart-audio-profiles';
 import { compileDocumentToEpub } from './epub-generator';
@@ -897,19 +898,12 @@ export async function uploadBookToAudiobookshelf(
     Array.isArray(options.selectedChapterIndices) &&
     options.selectedChapterIndices.length > 0;
 
-  const chapters = listChapterObjects(objectNames);
-  if (chapters.length === 0) {
-    throw new Error('No chapters found for this audiobook.');
-  }
-
-  const format: TTSAudiobookFormat = chapters[0].format || 'm4b';
-  const completeAudioName = `complete.${format}`;
-  const manifestName = `${completeAudioName}.manifest.json`;
-
   const chapterRows = await db
     .select({
       chapterIndex: audiobookChapters.chapterIndex,
       title: audiobookChapters.title,
+      filePath: audiobookChapters.filePath,
+      format: audiobookChapters.format,
     })
     .from(audiobookChapters)
     .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, userId)));
@@ -918,11 +912,26 @@ export async function uploadBookToAudiobookshelf(
     if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
   }
 
+  const completeness = await readAudiobookCompleteness(bookId, userId, namespace, objectNames);
+  if (!isChapterMode && !completeness.complete) {
+    throw new Error(`Cannot upload incomplete audiobook; missing chapter(s): ${completeness.missingChapterIndexes.map(index => index + 1).join(', ')}.`);
+  }
+  const requestedIndices = isChapterMode
+    ? [...new Set(options.selectedChapterIndices!)]
+    : completeness.expectedChapterIndexes;
+  const resolution = resolveChapterRecordings(objectNames, chapterRows, requestedIndices, isChapterMode ? [] : completeness.omittedChapterIndexes);
+  if (resolution.issues.length || resolution.missingChapterIndexes.length) {
+    throw new Error(`Cannot upload chapter audio without valid authoritative records for chapter(s): ${resolution.missingChapterIndexes.map(index => index + 1).join(', ')}.`);
+  }
+  const chapters = resolution.chapters.map(chapter => ({ ...chapter, title: titleByIndex.get(chapter.index) || chapter.title }));
+  if (chapters.length === 0) throw new Error('No chapters found for this audiobook.');
+
+  const format: TTSAudiobookFormat = chapters[0].format || 'm4b';
+  const completeAudioName = `complete.${format}`;
+  const manifestName = `${completeAudioName}.manifest.json`;
+
   // 2. Check for held/rejected chapters
-  const targetChapterIndices = isChapterMode ? new Set(options.selectedChapterIndices) : null;
-  const targetChapters = isChapterMode
-    ? chapters.filter((c) => targetChapterIndices!.has(c.index))
-    : chapters;
+  const targetChapters = chapters;
 
   if (isChapterMode) {
     if (targetChapters.length === 0) {

@@ -316,3 +316,16 @@ describe('Gemini key failover', () => {
     }
   });
 });
+
+test('durable callers preserve a quick model fallback without sleeping through an outage', async () => {
+  const request = vi.fn().mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(new Response('{}', { status: 200 }));
+  const result = await fetchGeminiWithRateLimitFallback({ primaryApiKey: 'fixture', requestedModel: 'gemini-primary', fallbackModels: ['gemini-backup'], deferTransientFailures: true, request });
+  expect(result).toMatchObject({ usedModel: 'gemini-backup', usedModelFallback: true });
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+test('durable callers yield immediately on Retry-After instead of probing another model', async () => {
+  const request = vi.fn().mockResolvedValue(new Response(null, { status: 429, headers: { 'retry-after': '600' } }));
+  const result = await fetchGeminiWithRateLimitFallback({ primaryApiKey: 'fixture', requestedModel: 'gemini-primary', fallbackModels: ['gemini-backup'], deferTransientFailures: true, request });
+  expect(result.response.status).toBe(429); expect(request).toHaveBeenCalledTimes(1);
+});

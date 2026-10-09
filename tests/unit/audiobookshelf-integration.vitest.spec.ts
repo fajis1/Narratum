@@ -387,7 +387,7 @@ describe('Audiobookshelf Integration', () => {
     });
 
     test('falls back gracefully to deterministic matching when Gemini API errors', async () => {
-      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
         new Response('Internal Server Error', { status: 500 }),
       );
 

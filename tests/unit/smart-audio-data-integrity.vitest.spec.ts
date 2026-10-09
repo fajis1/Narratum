@@ -14,7 +14,7 @@ describe('Smart Audio data-integrity guards', () => {
     expect(worker).not.toContain('audiobook_err.txt');
     expect(worker).not.toContain("appendFileSync('/home/cisco/openreader");
     expect(worker).toContain("event: 'audiobook.queue.smart_audio.failed'");
-    expect(worker).toContain("event: 'audiobook.queue.smart_audio.retry_scheduled'");
+    expect(worker).toContain("event: 'audiobook.queue.provider.retry_scheduled'");
   });
 
   test('shows and persists the final Smart Audio title instead of the inherited blob title', () => {
@@ -184,7 +184,7 @@ describe('Smart Audio data-integrity guards', () => {
     expect(queueRoute).toContain('parseJobSettings(previousJob?.settingsJson)');
     expect(queueRoute).toContain("typeof value === 'string'");
     expect(worker).toContain('cleanupBatchTargetForVersion(jobSettings.cleanupBatchVersion)');
-    expect(worker).toContain('if (usesCurrentBatching)');
+    expect(worker).toContain('if (!pinnedChapters && usesCurrentBatching)');
     expect(worker).toContain("'audiobook.meta.json'");
     expect(pipeline).toContain(
       'let cleanupBatchVersion = CURRENT_AUDIOBOOK_BATCH_VERSION;',

@@ -14,7 +14,7 @@ describe('Audiobook troubleshooting artifacts', () => {
     expect(result).toEqual({ sourceText: 'Hello', usage: { totalTokens: 12, inputTokenCount: 5 }, nested: { voice: 'Kore' }, error: 'Bearer [REDACTED] [REDACTED]' });
   });
   it('only exports approved diagnostic and manuscript artifacts', () => {
-    for (const name of ['drama-director-failure-chapter-0000.json', '0002__drama_segments.json', '0002__tts_attempts-run-id.json', '0002__provider_failure.json', '0002__rejected.txt', 'audiobook.meta.json']) expect(isTroubleshootingArtifact(name)).toBe(true);
+    for (const name of ['drama-director-failure-chapter-0000.json', '0002__drama_segments.json', '0002__tts_attempts-run-id.json', '0002__provider_failure.json', '0002__rejected.txt', 'audiobook.meta.json', 'audiobook.omissions.json']) expect(isTroubleshootingArtifact(name)).toBe(true);
     for (const name of ['complete.mp3', 'settings.json', '.env', '../0002__rejected.txt']) expect(isTroubleshootingArtifact(name)).toBe(false);
   });
   it('retains each attempt and uses distinct filenames for independent runs', async () => {

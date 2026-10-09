@@ -1,3 +1,4 @@
+import { readAudiobookCompleteness } from '@/lib/server/audiobooks/completeness';
 import { NextRequest, NextResponse } from 'next/server';
 export const maxDuration = 300; // 5 minutes max duration for large audiobook generation
 import { spawn } from 'child_process';
@@ -27,6 +28,7 @@ import {
   escapeFFMetadata,
   ffprobeAudio,
   listChapterObjects,
+  resolveChapterRecordings,
 } from '@/lib/server/audiobooks/chapters';
 import { isS3Configured } from '@/lib/server/storage/s3';
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
@@ -111,7 +113,14 @@ export async function GET(request: NextRequest) {
 
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
-    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name));
+    const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
+    if (!completeness.complete) return NextResponse.json({ error: completeness.invalidOmissionChapterIndexes.length
+      ? 'Some saved chapter omissions no longer match the pinned source. Retry or review those chapters before full-book export.'
+      : 'Audiobook is incomplete. Retry missing chapters before full-book export.',
+    code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE',
+    missingChapterIndexes: completeness.missingChapterIndexes, invalidOmissionChapterIndexes: completeness.invalidOmissionChapterIndexes }, { status: 409 });
+    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name)
+      && !completeness.recordedChapterIndexes.includes(Number(name.split('__')[0]) - 1));
     if (failedChapterFiles.length) {
       return NextResponse.json({
         error: `${failedChapterFiles.length} chapter${failedChapterFiles.length === 1 ? '' : 's'} require${failedChapterFiles.length === 1 ? 's' : ''} review and successful replacement recording before full-book download.`,
@@ -130,6 +139,8 @@ export async function GET(request: NextRequest) {
         chapterIndex: audiobookChapters.chapterIndex,
         duration: audiobookChapters.duration,
         title: audiobookChapters.title,
+        filePath: audiobookChapters.filePath,
+        format: audiobookChapters.format,
       })
       .from(audiobookChapters)
       .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, storageUserId)));
@@ -139,10 +150,8 @@ export async function GET(request: NextRequest) {
       durationByIndex.set(row.chapterIndex, Number(row.duration ?? 0));
       if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
     }
-    chapters = chapters.map((chapter) => ({
-      ...chapter,
-      title: titleByIndex.get(chapter.index) ?? chapter.title,
-    }));
+    chapters = resolveChapterRecordings(objectNames, chapterRows, completeness.expectedChapterIndexes, completeness.omittedChapterIndexes).chapters
+      .map((chapter) => ({ ...chapter, title: titleByIndex.get(chapter.index) ?? chapter.title }));
 
     const chapterFormats = new Set(chapters.map((chapter) => chapter.format));
     if (chapterFormats.size > 1) {
@@ -245,7 +254,14 @@ export async function POST(request: NextRequest) {
 
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
-    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name));
+    const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
+    if (!completeness.complete) return NextResponse.json({ error: completeness.invalidOmissionChapterIndexes.length
+      ? 'Some saved chapter omissions no longer match the pinned source. Retry or review those chapters before full-book export.'
+      : 'Audiobook is incomplete. Retry missing chapters before full-book export.',
+    code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE',
+    missingChapterIndexes: completeness.missingChapterIndexes, invalidOmissionChapterIndexes: completeness.invalidOmissionChapterIndexes }, { status: 409 });
+    const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name)
+      && !completeness.recordedChapterIndexes.includes(Number(name.split('__')[0]) - 1));
     if (failedChapterFiles.length) {
       return NextResponse.json({
         error: `${failedChapterFiles.length} chapter${failedChapterFiles.length === 1 ? '' : 's'} require${failedChapterFiles.length === 1 ? 's' : ''} review and successful replacement recording before full-book download.`,
@@ -263,6 +279,8 @@ export async function POST(request: NextRequest) {
       .select({
         chapterIndex: audiobookChapters.chapterIndex,
         title: audiobookChapters.title,
+        filePath: audiobookChapters.filePath,
+        format: audiobookChapters.format,
       })
       .from(audiobookChapters)
       .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, storageUserId)));
@@ -270,10 +288,8 @@ export async function POST(request: NextRequest) {
     for (const row of chapterRows) {
       if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
     }
-    chapters = chapters.map((chapter) => ({
-      ...chapter,
-      title: titleByIndex.get(chapter.index) ?? chapter.title,
-    }));
+    chapters = resolveChapterRecordings(objectNames, chapterRows, completeness.expectedChapterIndexes, completeness.omittedChapterIndexes).chapters
+      .map((chapter) => ({ ...chapter, title: titleByIndex.get(chapter.index) ?? chapter.title }));
     
     const format: TTSAudiobookFormat = requestedFormat ?? chapters[0].format;
     const completeName = `complete.${format}`;

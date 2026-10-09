@@ -36,16 +36,16 @@ test('unresolved findings use the shared Gemini engine and rate-limit fallback p
   mocks.gemini.mockResolvedValue({ response: new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ patches: [{ id: '0', replacement: '[λόγος](/lɒɡɒs/)' }] }) }] } }] })), usedModel: 'gemini-3.7-flash' });
   const result = await repairSmartAudioWorkerPronunciations({ status: 'success', cleaned_text: input.sourceText }, { ...input, dictionary: {} });
   expect(result).toMatchObject({ cleaned_text: 'The [λόγος](/lɒɡɒs/) remains.' });
-  expect(mocks.gemini).toHaveBeenCalledWith(expect.objectContaining({ retryRateLimitedModels: true, maxAttempts: 3 }));
+  expect(mocks.gemini).toHaveBeenCalledWith(expect.objectContaining({ deferTransientFailures: true, retryRateLimitedModels: false, maxAttempts: 1 }));
 });
-test('blocked repair is retained for review and never sent to the resolver or whole-chapter retry', async () => {
+test('provider-blocked repair preserves cause and never creates a manual-review artifact', async () => {
   mocks.gemini.mockImplementation(async () => ({ response: new Response(null, { status: 429 }) }));
   const resolve = vi.fn(), requestRepair = vi.fn(), onUnrecoverable = vi.fn();
   const initialResult = { status: 'success', cleaned_text: input.sourceText };
   await expect(resolveSmartAudioWithValidationRecovery({ initialResult, resolve, requestRepair, onUnrecoverable,
     authoritativePronunciations: {}, targetedRepair: value => repairSmartAudioWorkerPronunciations(value, { ...input, dictionary: {} }),
-  })).rejects.toThrow('Gemini could not finish pronunciation repairs');
-  expect(onUnrecoverable).toHaveBeenCalledWith(initialResult, expect.any(Array));
+  })).rejects.toMatchObject({ failure: { failureCategory: 'provider_transient', provider: 'gemini', httpStatus: 429 } });
+  expect(onUnrecoverable).not.toHaveBeenCalled();
   expect(resolve).not.toHaveBeenCalled(); expect(requestRepair).not.toHaveBeenCalled();
 });
 test('cancellation aborts without an AI request', async () => {

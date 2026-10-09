@@ -1,7 +1,9 @@
+import { clearRetrySchedule } from '@/lib/server/audiobooks/retry-settings';
+import { readAudiobookCompleteness } from '@/lib/server/audiobooks/completeness';
 import { sourceRecoveryGenerationSettings } from '@/lib/shared/source-recovery';
 import { NextResponse, NextRequest } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { eq, and, asc, lt, inArray } from 'drizzle-orm';
+import { eq, and, asc, lt, inArray, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { audiobookChapters, audiobookJobs, audiobooks, documents, documentSettings } from '@/db/schema';
 import { requireAuthContext } from '@/lib/server/auth/auth';
@@ -24,11 +26,7 @@ import { isKokoroCompatiblePronunciation } from '@/lib/shared/kokoro-pronunciati
 import { queuedAudiobookBatchVersion } from '@/lib/shared/audiobook-batching';
 import {
   AUDIOBOOK_ADMIN_PAUSE_REQUESTED_STATUS,
-  resolveAudiobookJobDescriptiveState,
-  isSystemResourcePause,
-  formatSystemResourcePauseMessage,
 } from '@/lib/shared/audiobook-job-status';
-import { checkSystemResources } from '@/lib/server/audiobooks/system-monitor';
 import { mergeDocumentSettings } from '@/lib/shared/document-settings';
 import {
   getCharacterMapReadiness,
@@ -462,6 +460,23 @@ export async function DELETE(req: NextRequest) {
   }
 }
 
+async function retryExistingJob(id: string, userId: string): Promise<string | null> {
+  const [job] = await db.select().from(audiobookJobs).where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, userId))).limit(1);
+  if (!job) return 'Job not found.';
+  if (!['error', 'completed', 'paused', 'queued'].includes(job.status)) return 'This job is already active.';
+  if (job.status === 'completed') {
+    const settings = parseJobSettings(job.settingsJson);
+    if (settings.jobType) return 'This completed maintenance job cannot be resumed as an audiobook.';
+    const completeness = await readAudiobookCompleteness(job.documentId, userId, typeof settings.testNamespace === 'string' ? settings.testNamespace : null);
+    if (completeness.complete) return 'All required chapters are already recorded.';
+  }
+  const updated = await db.update(audiobookJobs).set({ status: 'queued', error: null, completedAt: null, updatedAt: Date.now(), settingsJson: clearRetrySchedule() })
+    .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, userId), eq(audiobookJobs.status, job.status),
+      sql`not exists (select 1 from ${audiobookJobs} as other_job where other_job.document_id = ${job.documentId} and other_job.user_id = ${userId} and other_job.id <> ${id} and other_job.status in ('queued', 'running', 'waiting_for_pdf', 'pausing', 'waiting_for_voices'))`))
+    .returning({ id: audiobookJobs.id });
+  return updated.length ? null : 'Another job for this audiobook is active, or its state changed. Finish or pause it before retrying.';
+}
+
 export async function PUT(req: NextRequest) {
   try {
     const ctxOrRes = await requireAuthContext(req);
@@ -473,18 +488,17 @@ export async function PUT(req: NextRequest) {
     if (!id && !requeueAllFailed) return NextResponse.json({ error: 'Missing id or requeueAllFailed' }, { status: 400 });
 
     if (requeueAllFailed === true) {
-      await db.update(audiobookJobs)
-        .set({ status: 'queued', error: null, progress: 0, startedAt: null, updatedAt: Date.now() })
+      const failedJobs = await db.select({ id: audiobookJobs.id }).from(audiobookJobs)
         .where(and(eq(audiobookJobs.status, 'error'), eq(audiobookJobs.userId, ctxOrRes.userId)));
+      for (const job of failedJobs) await retryExistingJob(job.id, ctxOrRes.userId);
       runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
       wakeAudiobookQueue();
       return NextResponse.json({ success: true });
     }
 
-    await db.update(audiobookJobs)
-      .set({ status: 'queued', error: null, progress: 0, startedAt: null, updatedAt: Date.now() })
-      .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId)));
-      
+    const conflict = await retryExistingJob(id, ctxOrRes.userId);
+    if (conflict) return NextResponse.json({ error: conflict }, { status: 409 });
+
     runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
     wakeAudiobookQueue();
     return NextResponse.json({ success: true });
@@ -511,36 +525,8 @@ export async function PATCH(req: NextRequest) {
         .set({ status: 'paused', updatedAt: Date.now() })
         .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId), inArray(audiobookJobs.status, ['queued', 'running', 'waiting_for_pdf'])));
     } else if (action === 'resume') {
-      const existingRows = await db.select({ settingsJson: audiobookJobs.settingsJson })
-        .from(audiobookJobs)
-        .where(and(eq(audiobookJobs.id, id), eq(audiobookJobs.userId, ctxOrRes.userId)))
-        .limit(1);
-
-      let updatedSettingsJson: string | undefined = undefined;
-      if (existingRows.length > 0) {
-        try {
-          const parsed = typeof existingRows[0].settingsJson === 'string'
-            ? JSON.parse(existingRows[0].settingsJson)
-            : (existingRows[0].settingsJson || {});
-          if (parsed && typeof parsed === 'object') {
-            delete parsed.nextAttemptAt;
-            updatedSettingsJson = JSON.stringify(parsed);
-          }
-        } catch {}
-      }
-
-      await db.update(audiobookJobs)
-        .set({
-          status: 'queued',
-          error: null,
-          updatedAt: Date.now(),
-          ...(updatedSettingsJson ? { settingsJson: updatedSettingsJson } : {}),
-        })
-        .where(and(
-          eq(audiobookJobs.id, id),
-          eq(audiobookJobs.userId, ctxOrRes.userId),
-          inArray(audiobookJobs.status, ['paused', 'queued']),
-        ));
+      const conflict = await retryExistingJob(id, ctxOrRes.userId);
+      if (conflict) return NextResponse.json({ error: conflict }, { status: 409 });
 
       runTaskNow('process-audiobook-queue').catch((err) => serverLogger.error({ event: 'audiobook.queue.wake.error', error: errorToLog(err) }, 'Failed to wake queue'));
       wakeAudiobookQueue();

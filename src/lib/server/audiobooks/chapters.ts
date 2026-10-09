@@ -246,6 +246,54 @@ export async function findStoredChapterByIndex(
 
 export type ChapterObject = { index: number; fileName: string; format: 'mp3' | 'm4b'; title: string };
 
+export type ChapterRecordingRow = { chapterIndex: number; filePath: string; format: string; title?: string; duration?: number | null };
+export type ChapterRecordingIssue = { chapterIndex: number; reason: 'missing_record' | 'duplicate_records' | 'invalid_reference' | 'missing_audio' };
+
+/** Resolve audio only through the persisted chapter record. Never guess between filename variants. */
+export function resolveChapterRecordings(
+  objectNames: string[],
+  records: ChapterRecordingRow[],
+  expectedIndexes: number[],
+  omittedIndexes: number[] = [],
+): { chapters: ChapterObject[]; missingChapterIndexes: number[]; issues: ChapterRecordingIssue[] } {
+  const names = new Set(objectNames);
+  const byIndex = new Map<number, ChapterRecordingRow[]>();
+  for (const record of records) byIndex.set(record.chapterIndex, [...(byIndex.get(record.chapterIndex) ?? []), record]);
+  const omitted = new Set(omittedIndexes);
+  const chapters: ChapterObject[] = [];
+  const issues: ChapterRecordingIssue[] = [];
+  const required = [...new Set(expectedIndexes)].filter(index => !omitted.has(index)).sort((a, b) => a - b);
+
+  for (const chapterIndex of required) {
+    const rows = byIndex.get(chapterIndex) ?? [];
+    if (!rows.length) {
+      issues.push({ chapterIndex, reason: 'missing_record' });
+      continue;
+    }
+    if (rows.length !== 1) {
+      issues.push({ chapterIndex, reason: 'duplicate_records' });
+      continue;
+    }
+    const row = rows[0];
+    const decoded = decodeChapterFileName(row.filePath);
+    if (!decoded || decoded.index !== chapterIndex || decoded.format !== row.format) {
+      issues.push({ chapterIndex, reason: 'invalid_reference' });
+      continue;
+    }
+    if (!names.has(row.filePath)) {
+      issues.push({ chapterIndex, reason: 'missing_audio' });
+      continue;
+    }
+    chapters.push({ index: chapterIndex, fileName: row.filePath, format: decoded.format, title: row.title?.trim() || decoded.title });
+  }
+
+  return {
+    chapters,
+    missingChapterIndexes: required.filter(index => !chapters.some(chapter => chapter.index === index)),
+    issues,
+  };
+}
+
 export function listChapterObjects(objectNames: string[]): ChapterObject[] {
   const chapters = objectNames
     .filter((name) => !name.startsWith('complete.'))
@@ -260,22 +308,9 @@ export function listChapterObjects(objectNames: string[]): ChapterObject[] {
       } satisfies ChapterObject;
     })
     .filter((value): value is ChapterObject => Boolean(value))
-    .sort((a, b) => a.index - b.index);
+    .sort((a, b) => a.index - b.index || a.fileName.localeCompare(b.fileName));
 
-  const deduped = new Map<number, ChapterObject>();
-  for (const chapter of chapters) {
-    const existing = deduped.get(chapter.index);
-    if (!existing) {
-      deduped.set(chapter.index, chapter);
-      continue;
-    }
-    // Deterministic tie-breaker: largest filename alphabetically wins.
-    // This ensures if both "0026__Chapter 26.m4b" and "0026__Imperial.m4b" exist,
-    // we always pick the same one.
-    if (chapter.fileName > existing.fileName) {
-      deduped.set(chapter.index, chapter);
-    }
-  }
-
-  return Array.from(deduped.values()).sort((a, b) => a.index - b.index);
+  // This is an object inventory, not an authority resolver. Keep every name so
+  // consumers cannot mistake deterministic filename ordering for ownership.
+  return chapters;
 }

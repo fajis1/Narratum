@@ -1,3 +1,4 @@
+import { AudiobookProcessingError, classifyAudiobookFailure } from '@/lib/shared/audiobook-processing-failure';
 import {
   discardInvalidSmartAudioPronunciationTags,
   SmartAudioOutputValidationError,
@@ -9,7 +10,8 @@ import { resolveSmartAudioValidationRepairModel } from '@/lib/shared/smart-audio
 type WorkerRecord = Record<string, unknown>;
 
 function throwIfRecoveryCancelled(error: unknown): void {
-  if (error instanceof Error && ['AbortError', 'TimeoutError', 'AudiobookJobStoppedError'].includes(error.name)) throw error;
+  if (!(error instanceof SmartAudioOutputValidationError)) throw error;
+  if (error instanceof Error && ['AbortError', 'AudiobookJobStoppedError'].includes(error.name)) throw error;
 }
 
 export type SmartAudioValidationRecovery<T> = {
@@ -172,6 +174,13 @@ export async function resolveSmartAudioWithValidationRecovery<T>(input: {
 
     try {
       const response = await input.requestRepair(input.initialResult, error);
+      const responseRecord = workerRecord(response);
+      if (responseRecord && responseRecord.status !== 'success') {
+        const diagnostic = workerRecord(responseRecord.diagnostic) ?? {};
+        const failure = classifyAudiobookFailure({ ...diagnostic, cause: diagnostic.error, message: responseRecord.message }, { provider: 'gemini', stage: 'smart_audio_validation_repair' });
+        if (responseRecord.status === 'rate_limit' && failure.httpStatus === undefined) failure.failureCategory = 'provider_transient';
+        throw new AudiobookProcessingError(failure);
+      }
       const repaired = input.targetedRepair ? await input.targetedRepair(response) : response;
       const repairedRecord = workerRecord(repaired);
       if (repairedRecord?.status === 'success') {
@@ -265,7 +274,7 @@ export async function resolveSmartAudioWithValidationRecovery<T>(input: {
           validationErrors: [...validationErrors, "Forcefully transliterated untagged foreign text as a final fallback."],
           discardedTags: 0,
         };
-      } catch (e) {
+      } catch {
         // ignore
       }
     }

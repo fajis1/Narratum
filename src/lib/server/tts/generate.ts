@@ -1,3 +1,4 @@
+import { AudiobookProcessingError, classifyAudiobookFailure } from '@/lib/shared/audiobook-processing-failure';
 import OpenAI from 'openai';
 import Replicate from 'replicate';
 import { SpeechCreateParams } from 'openai/resources/audio/speech.mjs';
@@ -25,7 +26,6 @@ import {
   REPLICATE_KOKORO_82M_VERSIONED_MODEL,
   speechSdkProviderPrefix,
 } from '@/lib/shared/tts-provider-catalog';
-import { isKokoroModel } from '@/lib/shared/kokoro';
 import { resolveTtsProviderModelPolicy } from '@/lib/shared/tts-provider-policy';
 import {
   resolveReplicateLanguageInput,
@@ -956,6 +956,11 @@ export async function generateTTSBuffer(
         const buffer = await runProviderRequest(resolved, controller.signal, upstreamSettings);
         ttsAudioCache.set(cacheKey, buffer);
         return buffer;
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        const failure = classifyAudiobookFailure(error, { provider: resolved.provider, model: resolved.model, stage: 'tts_recording' });
+        if (failure.failureCategory === 'technical_unknown') throw error;
+        throw new AudiobookProcessingError(failure, error);
       } finally {
         inflightRequests.delete(cacheKey);
       }

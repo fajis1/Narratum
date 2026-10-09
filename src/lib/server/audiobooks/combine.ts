@@ -1,3 +1,4 @@
+import { assertAudiobookComplete } from './completeness';
 import { spawn } from 'child_process';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -7,7 +8,7 @@ import { db } from '@/db';
 import { audiobooks, audiobookChapters } from '@/db/schema';
 import { errorToLog, serverLogger } from '@/lib/server/logger';
 import { getAudiobookObjectBuffer, putAudiobookObject, listAudiobookObjects, } from './blobstore';
-import { escapeFFMetadata, ffprobeAudio, decodeChapterFileName, listChapterObjects } from './chapters';
+import { escapeFFMetadata, ffprobeAudio, resolveChapterRecordings } from './chapters';
 import { getFFmpegPath } from './ffmpeg-bin';
 import type { TTSAudiobookFormat } from '@/types/tts';
 export async function runFFmpeg(args: string[], signal?: AbortSignal): Promise<void> {
@@ -74,27 +75,33 @@ export async function executeAudiobookCombine(
   try {
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
-    let chapters = listChapterObjects(objectNames);
-    if (chapters.length === 0) throw new Error('No chapters found');
+    const completeness = await assertAudiobookComplete(bookId, storageUserId, testNamespace, objectNames);
 
     const chapterRows = await db
       .select({
         chapterIndex: audiobookChapters.chapterIndex,
         duration: audiobookChapters.duration,
         title: audiobookChapters.title,
+        filePath: audiobookChapters.filePath,
+        format: audiobookChapters.format,
       })
       .from(audiobookChapters)
       .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, storageUserId)));
+    const resolution = resolveChapterRecordings(objectNames, chapterRows, completeness.expectedChapterIndexes, completeness.omittedChapterIndexes);
+    if (resolution.issues.length || resolution.missingChapterIndexes.length) {
+      throw new Error(`Cannot compile audiobook: authoritative chapter recordings are missing or invalid for chapter${resolution.missingChapterIndexes.length === 1 ? '' : 's'} ${resolution.missingChapterIndexes.map(index => index + 1).join(', ')}.`);
+    }
     const durationByIndex = new Map<number, number>();
     const titleByIndex = new Map<number, string>();
     for (const row of chapterRows) {
       durationByIndex.set(row.chapterIndex, Number(row.duration ?? 0));
       if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
     }
-    chapters = chapters.map((chapter) => ({
+    const chapters = resolution.chapters.map((chapter) => ({
       ...chapter,
       title: titleByIndex.get(chapter.index) ?? chapter.title,
     }));
+    if (chapters.length === 0) throw new Error('No chapters found');
 
     const completeName = `complete.${format}`;
     const manifestName = `${completeName}.manifest.json`;

@@ -2,21 +2,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-export function getUpstreamStatus(error: unknown): number | undefined {
-  if (!isRecord(error)) return undefined;
+export function getUpstreamStatus(error: unknown, depth = 0): number | undefined {
+  if (!isRecord(error) || depth > 6) return undefined;
+  if (isRecord(error.failure) && typeof error.failure.httpStatus === 'number') return error.failure.httpStatus;
   if (typeof error.status === 'number') return error.status;
   if (typeof error.statusCode === 'number') return error.statusCode;
   const response = isRecord(error.response) ? error.response : undefined;
   if (response && typeof response.status === 'number') return response.status;
+  if (error.cause && error.cause !== error) return getUpstreamStatus(error.cause, depth + 1);
   return undefined;
 }
 
-function readRetryAfterHeader(error: unknown): string | undefined {
-  if (!isRecord(error)) return undefined;
+function readRetryAfterHeader(error: unknown, depth = 0): string | undefined {
+  if (!isRecord(error) || depth > 6) return undefined;
   const response = isRecord(error.response) ? error.response : undefined;
-  if (!response) return undefined;
-
-  const headers = response.headers;
+  const headers = response?.headers ?? error.headers;
   if (isRecord(headers) && typeof headers.get === 'function') {
     const value = headers.get('retry-after');
     return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -33,10 +33,12 @@ function readRetryAfterHeader(error: unknown): string | undefined {
     }
   }
 
+  if (error.cause && error.cause !== error) return readRetryAfterHeader(error.cause, depth + 1);
   return undefined;
 }
 
 export function getUpstreamRetryAfterSeconds(error: unknown): number | undefined {
+  if (isRecord(error) && isRecord(error.failure) && typeof error.failure.retryAfterMs === 'number' && Number.isFinite(error.failure.retryAfterMs) && error.failure.retryAfterMs > 0) return Math.ceil(error.failure.retryAfterMs / 1000);
   const retryAfterHeader = readRetryAfterHeader(error);
   if (!retryAfterHeader) return undefined;
 

@@ -75,3 +75,16 @@ export function categorizeErrors(errors: string[], jobError?: string | null, has
     ],
   };
 }
+
+/** Structured classification takes precedence over historical English heuristics. */
+export function describeAudiobookFailure(failure: { failureCategory?: string; state?: string; retryScheduled?: boolean }, fallback: CategorizedError): CategorizedError {
+  if (failure.state === 'recovered_history') return { category: 'general', categoryLabel: 'Recovered historical failure', categoryIcon: '✓', explanation: 'This diagnostic belongs to an earlier attempt. A successful chapter recording is now available.', tips: [] };
+  if (failure.failureCategory === 'provider_transient') return { category: 'rate_limit', categoryLabel: 'Provider Temporarily Unavailable', categoryIcon: '⏱️',
+    explanation: failure.retryScheduled ? 'The job is waiting for its persisted provider cooldown. Completed recordings and validated text are preserved.' : 'The provider could not complete this request. Check its health and retry missing chapters.',
+    tips: failure.retryScheduled ? ['Automatic retry is scheduled; no pronunciation edit is required for this provider failure.'] : ['Check provider health, then use Retry Missing Chapters.'] };
+  if (failure.failureCategory === 'provider_configuration') return { category: 'general', categoryLabel: 'Provider Configuration Requires Attention', categoryIcon: '⚙️',
+    explanation: 'Provider credentials, access, billing or model configuration prevented this request. Automatic retries have stopped.', tips: ['Correct the provider configuration, then retry missing chapters.'] };
+  if (failure.failureCategory === 'technical_unknown') return { category: 'general', categoryLabel: 'Technical Processing Failure', categoryIcon: '⚠️',
+    explanation: 'An unexpected technical failure stopped processing. The retained evidence does not establish a pronunciation problem.', tips: ['Inspect the retained diagnostics and server logs before retrying missing chapters.'] };
+  return fallback;
+}

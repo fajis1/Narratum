@@ -47,6 +47,8 @@ export interface GeminiFallbackOptions {
   initialDelayMs?: number;
   signal?: AbortSignal;
   maxAttempts?: number;
+  /** Let a durable job scheduler handle outages instead of occupying this request. */
+  deferTransientFailures?: boolean;
   /**
    * Maximum retry attempts on HTTP 503 before failing over to the backup key, next model,
    * or alternative provider. Defaults to 2 when fallbacks (models or providers) exist.
@@ -91,8 +93,9 @@ async function fetchWithExponentialBackoff(
         return response;
       }
       // Opt-in callers pace every request, including key/model transitions.
-      if (retryQuotaErrors) continue;
       const details = await geminiErrorDetails(response);
+      if (response.status === 403 && !(details.apiStatus === 'RESOURCE_EXHAUSTED' && details.retryAfterMs)) return response;
+      if (retryQuotaErrors) continue;
       cooldownDetails = details;
       // Long server delays belong in the durable caller, not a sleeping request.
       if ((details.retryAfterMs || 0) > MAX_DELAY_MS) return response;
@@ -305,6 +308,32 @@ export async function fetchGeminiWithRateLimitFallback(
       throw error;
     }
   };
+
+  if (input.deferTransientFailures) {
+    const primary = input.primaryApiKey.trim();
+    const backup = (input.backupApiKey || '').trim();
+    const keys = [...new Set([primary, backup].filter(Boolean))];
+    if (!keys.length) keys.push('');
+    let requests = 0;
+    let last: { response: Response; usedBackup: boolean; requestedModel?: string; usedModel?: string; usedModelFallback: boolean } | undefined;
+    // Preserve a quick independent model/key fallback. Provider-wide throttles
+    // and Retry-After yield immediately; the durable scheduler owns the wait.
+    for (const key of keys) {
+      for (const model of models) {
+        input.signal?.throwIfAborted();
+        const response = await input.request(key, model);
+        requests++;
+        last = { response, usedBackup: key !== primary, requestedModel, usedModel: model,
+          usedModelFallback: model !== requestedModel };
+        if (response.ok) return last;
+        const details = await geminiErrorDetails(response);
+        if (response.status === 429 || (details.retryAfterMs ?? 0) > 0 || requests >= 2) return last;
+        if ([401, 403].includes(response.status)) break; // Another credential may have access.
+        if (![404, 500, 502, 503, 504].includes(response.status)) return last;
+      }
+    }
+    return last!;
+  }
 
   const primaryApiKey = input.primaryApiKey.trim();
   const backupApiKey = (input.backupApiKey || '').trim();

@@ -29,6 +29,7 @@ export async function savePronunciationFailure(input: {
   await putAudiobookObject(input.bookId, input.userId, `${prefix}__pronunciation_failure.json`, Buffer.from(JSON.stringify({
     chapterIndex: input.chapterIndex, chapterTitle: input.chapterTitle, sourceText: input.sourceText,
     jobId: input.jobId, profileId: input.profileId, canonicalHash, rejectedHash: batchRefineTextHash(text),
+    failureCategory: 'content_validation',
     errors: input.errors.map(error => error.slice(0, 1500)), createdAt: Date.now(),
   })), 'application/json; charset=utf-8', namespace);
 }
