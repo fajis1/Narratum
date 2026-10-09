@@ -31,3 +31,11 @@ most three attempts with 30/60-second waits; an application failure still fails
 the workflow after that bound. Only complete architecture families publish
 manifests. A sustained registry outage still requires operator attention and
 must not be reported as green CI.
+
+The export browser regressions follow the merged completeness contract: status
+retains pinned missing chapter placeholders, so readiness requires `hasAudio`
+and a complete expected chapter set. Incomplete MP3/M4B full-book GET and
+compilation POST requests must return 409 while individual recorded chapters
+remain downloadable. Resume must restore the missing recording without changing
+the other chapter metadata or creating duplicate indexes. These assertions
+replace the older assumption that a partial book could be exported as complete.

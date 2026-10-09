@@ -243,7 +243,8 @@ async function waitForBackendDownloadReady(
       if (!json?.exists) return false;
       if (!Array.isArray(json?.chapters)) return false;
       if (json.chapters.length < minChapters) return false;
-      return json.chapters.every((chapter: { duration?: number }) => Number(chapter.duration ?? 0) > 0);
+      return json.incomplete === false && json.chapters.every((chapter: { duration?: number; hasAudio?: boolean }) =>
+        chapter.hasAudio === true && Number(chapter.duration ?? 0) > 0);
     }, { timeout: timeoutMs })
     .toBe(true);
 
@@ -423,7 +424,7 @@ test('exports full MP3 audiobook for PDF using mocked 10s TTS sample', async ({ 
   await resetAudiobookIfPresent(page, bookId);
 });
 
-test('exports partial MP3 audiobook for EPUB using mocked 10s TTS sample', async ({ page }, testInfo) => {
+test('preserves partial EPUB chapter downloads but blocks incomplete full-book export', async ({ page }, testInfo) => {
   test.setTimeout(180_000);
 
   page.on('console', msg => console.log('BROWSER CONSOLE:', msg.text())); page.on('pageerror', error => console.log('BROWSER ERROR:', error)); await setupTest(page, testInfo);
@@ -453,6 +454,12 @@ test('exports partial MP3 audiobook for EPUB using mocked 10s TTS sample', async
   await waitForChaptersHeading(page);
   const chapterActionsButtons = page.getByRole('button', { name: 'Chapter actions' });
   await expect(chapterActionsButtons.first()).toBeVisible({ timeout: 60_000 });
+  // Expected chapters now include missing placeholders. Wait for real audio,
+  // not just a row, before cancelling the remaining work.
+  await expect.poll(async () => {
+    const state = await expectChaptersBackendState(page, bookId);
+    return state.chapters.some((chapter: { hasAudio?: boolean }) => chapter.hasAudio === true);
+  }, { timeout: 60_000 }).toBe(true);
 
   // Now cancel the in-flight generation
   await cancelGenerationIfVisible(page);
@@ -469,12 +476,37 @@ test('exports partial MP3 audiobook for EPUB using mocked 10s TTS sample', async
   // Keep assertions frontend-driven: chapter rows should remain visible and usable.
   await expect(chapterActionsButtons.first()).toBeVisible({ timeout: 60_000 });
 
-  // The Full Download button should still be available for the partially generated audiobook
-  await withDownloadedFullAudiobook(page, async ({ filePath }) => {
-    const durationSeconds = await getAudioDurationSeconds(filePath);
+  const partial = await expectChaptersBackendState(page, bookId);
+  expect(partial.incomplete).toBe(true);
+  expect(partial.hasComplete).toBe(false);
+  expect(partial.missingChapterIndexes.length).toBeGreaterThan(0);
+  // Both existing compilation entry points must reject partial full-book
+  // exports, including M4B. Do not relax the merged completeness safeguard.
+  for (const format of ['mp3', 'm4b']) {
+    for (const method of ['get', 'post'] as const) {
+      const response = await page.request[method](`/api/audiobook?bookId=${bookId}&format=${format}`);
+      expect(response.status()).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'AUDIOBOOK_INCOMPLETE', missingChapterIndexes: partial.missingChapterIndexes,
+      });
+    }
+  }
+  await page.getByRole('button', { name: /Full Download/i }).click();
+  await expect(page.getByText('Audiobook is incomplete. Retry missing chapters before full-book export.', { exact: true })).toBeVisible();
+  await page.getByRole('dialog', { name: 'Operation Failed' }).getByRole('button', { name: 'Close', exact: true }).click();
+
+  // Individual recorded chapters remain usable while the book is incomplete.
+  const recordedPosition = partial.chapters.findIndex((chapter: { hasAudio?: boolean }) => chapter.hasAudio === true);
+  expect(recordedPosition).toBeGreaterThanOrEqual(0);
+  await chapterActionsButtons.nth(recordedPosition).click();
+  const chapterDownload = await downloadViaTrigger(page, () => page.getByRole('menuitem', { name: 'Download', exact: true }).click());
+  try {
+    const durationSeconds = await getAudioDurationSeconds(chapterDownload.filePath);
     expect(durationSeconds).toBeGreaterThan(9);
-    expect(durationSeconds).toBeLessThan(1200);
-  });
+    expect(Math.abs(durationSeconds - Number(partial.chapters[recordedPosition].duration))).toBeLessThan(1);
+  } finally {
+    await chapterDownload.cleanup();
+  }
 
   await resetAudiobookIfPresent(page, bookId);
 });
@@ -663,19 +695,25 @@ test('resumes audiobook when a chapter is missing and full download succeeds (EP
   );
   expect(deleteRes.ok()).toBeTruthy();
 
-  // Wait for backend to reflect the missing chapter 0.
+  // The pinned expected index remains visible as a missing placeholder.
+  // Its audio must be absent, and compilation must be blocked.
   await expect
     .poll(async () => {
       const json = await expectChaptersBackendState(page, bookId);
-      return json.chapters?.some((ch: any) => ch.index === 0) ?? false;
+      return json.chapters?.find((ch: { index: number }) => ch.index === 0)?.hasAudio;
     }, { timeout: 30_000 })
     .toBe(false);
 
   const jsonAfterDelete = await expectChaptersBackendState(page, bookId);
   expect(jsonAfterDelete.exists).toBe(true);
   expect(Array.isArray(jsonAfterDelete.chapters)).toBe(true);
-  // Do not assert exact length here because the background worker may have appended a new chapter.
-  expect(jsonAfterDelete.chapters.some((ch: any) => ch.index === 0)).toBe(false);
+  expect(jsonAfterDelete.chapters).toHaveLength(chapterCountBefore);
+  expect(jsonAfterDelete.chapters.find((ch: { index: number }) => ch.index === 0)).toMatchObject({ hasAudio: false, status: 'pending' });
+  expect(jsonAfterDelete.incomplete).toBe(true);
+  expect(jsonAfterDelete.missingChapterIndexes).toEqual([0]);
+  const blocked = await page.request.get(`/api/audiobook?bookId=${bookId}&format=mp3`);
+  expect(blocked.status()).toBe(409);
+  expect(await blocked.json()).toMatchObject({ code: 'AUDIOBOOK_INCOMPLETE', missingChapterIndexes: [0] });
 
   // Close and reopen the modal to ensure "resume" loads the missing placeholder from the backend.
   await page.getByRole('button', { name: 'Close' }).click();
@@ -706,6 +744,11 @@ test('resumes audiobook when a chapter is missing and full download succeeds (EP
   expect(jsonAfterResume.exists).toBe(true);
   expect(Array.isArray(jsonAfterResume.chapters)).toBe(true);
   expect(jsonAfterResume.chapters.length).toBe(chapterCountBefore);
+  expect(jsonAfterResume.incomplete).toBe(false);
+  expect(jsonAfterResume.missingChapterIndexes).toEqual([]);
+  expect(new Set(jsonAfterResume.chapters.map((chapter: { index: number }) => chapter.index)).size).toBe(chapterCountBefore);
+  expect(jsonAfterResume.chapters.filter((chapter: { index: number }) => chapter.index !== 0))
+    .toEqual(beforeDelete.chapters.filter((chapter: { index: number }) => chapter.index !== 0));
   for (const ch of jsonAfterResume.chapters) {
     expect(ch.duration).toBeGreaterThan(0);
   }
