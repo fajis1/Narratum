@@ -35,7 +35,7 @@ import { getResolvedRuntimeConfig } from '@/lib/server/runtime-config';
 import { getAudiobookObjectBuffer, listAudiobookObjects, putAudiobookObject } from '@/lib/server/audiobooks/blobstore';
 import { savePronunciationFailure } from '@/lib/server/audiobooks/pronunciation-failures';
 import { providerDiagnosticFileName, safeProviderDiagnosticValue, sanitizedFailureDetail } from '@/lib/server/audiobooks/provider-diagnostics';
-import { encodeChapterFileName } from '@/lib/server/audiobooks/chapters';
+import { decodeChapterFileName, encodeChapterFileName, listChapterObjects } from '@/lib/server/audiobooks/chapters';
 import { createOrReuseCurrentPdfParseOperation } from '@/lib/server/pdf-parse/operation';
 import { extractPdfToc, computeTocBoundaries } from '@/lib/server/pdf-parse/toc';
 import type { ParsedPdfDocument } from '@/types/parsed-pdf';
@@ -1465,12 +1465,34 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
 
       if (!chapter.text.trim() || omittedChapterIndexes.has(chapter.index)) continue;
 
-      // CRASH RECOVERY: Check if chapter already exists in DB
+      // A chapter is recoverably complete only when its authoritative DB path
+      // points to an existing audio object for this same chapter index.
       const existing = await db.select().from(audiobookChapters).where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, userId), eq(audiobookChapters.chapterIndex, chapter.index)));
-      if (existing.length > 0) {
-        processedLength += chapter.text.length;
-        await updateProgress(Math.floor((processedLength / totalLength) * 100));
-        continue;
+      const retainedObjects = await listAudiobookObjects(bookId, userId, testNamespace);
+      const retainedNames = retainedObjects.map((object) => object.fileName);
+      const matchingChapterAudio = listChapterObjects(retainedNames).filter((audio) => audio.index === chapter.index);
+      if (existing.length > 1) {
+        throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'chapter_record_conflict', chapterIndex: chapter.index });
+      }
+      const existingRecord = existing[0];
+      if (existingRecord) {
+        const referencedAudio = existingRecord.filePath ? decodeChapterFileName(existingRecord.filePath) : null;
+        if (retainedNames.includes(existingRecord.filePath)) {
+          if (!referencedAudio || referencedAudio.index !== chapter.index || referencedAudio.format !== existingRecord.format) {
+            throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'chapter_file_reference_conflict', chapterIndex: chapter.index });
+          }
+          processedLength += chapter.text.length;
+          await updateProgress(Math.floor((processedLength / totalLength) * 100));
+          continue;
+        }
+        // Do not replace an absent authoritative file with an unrelated audio
+        // object that happens to parse as the same chapter number.
+        if (matchingChapterAudio.length) {
+          throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'chapter_file_reference_conflict', chapterIndex: chapter.index });
+        }
+      } else if (matchingChapterAudio.length) {
+        // An audio object without its row is unverified; never overwrite it.
+        throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'chapter_audio_without_record', chapterIndex: chapter.index });
       }
 
       let processedTextForTts = chapter.text;

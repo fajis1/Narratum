@@ -99,6 +99,104 @@ test('Kokoro readiness failure defers, reuses validated cleanup, recovers withou
   expect(mocks.blobs.has('0002__provider_failure.json')).toBe(true);
 });
 
+test('chapter row with its referenced recording is skipped and counted as complete', async () => {
+  mocks.db.insert(schema.audiobookChapters).values({ id: 'missing-audio-row', bookId: 'book', userId: 'owner', chapterIndex: 1, title: 'Missing', filePath: '0002__Missing.mp3', format: 'mp3' }).run();
+  mocks.blobs.set('0002__Missing.mp3', Buffer.from('verified audio'));
+
+  await processAudiobookQueue();
+
+  expect(job().status).toBe('completed');
+  expect(mocks.tts).not.toHaveBeenCalled();
+  expect(mocks.nats).not.toHaveBeenCalled();
+  expect(mocks.blobs.get('0002__Missing.mp3')!.toString()).toBe('verified audio');
+  expect(mocks.db.select().from(schema.audiobookChapters).all()).toHaveLength(2);
+});
+
+test('missing referenced audio is regenerated, updates its existing row, and restores completeness', async () => {
+  mocks.db.insert(schema.audiobookChapters).values({ id: 'chapter-one-row', bookId: 'book', userId: 'owner', chapterIndex: 1, title: 'Old title', filePath: '0002__Missing.mp3', format: 'mp3' }).run();
+
+  await processAudiobookQueue();
+
+  const rows = mocks.db.select().from(schema.audiobookChapters).all();
+  expect(job().status).toBe('completed');
+  expect(mocks.tts).toHaveBeenCalledTimes(1);
+  expect(rows).toHaveLength(2);
+  expect(rows.find(row => row.chapterIndex === 1)).toMatchObject({ id: 'chapter-one-row', filePath: '0002__Missing.mp3', title: 'Missing' });
+  expect(mocks.blobs.has('0002__Missing.mp3')).toBe(true);
+  expect((await readAudiobookCompleteness('book', 'owner', null)).complete).toBe(true);
+  expect(mocks.blobs.get('0001__Done.mp3')!.toString()).toBe('existing audio');
+});
+
+test('repeated retries for a missing referenced file reuse the row and eventually restore completeness', async () => {
+  mocks.db.insert(schema.audiobookChapters).values({ id: 'chapter-one-row', bookId: 'book', userId: 'owner', chapterIndex: 1, title: 'Missing', filePath: '0002__Missing.mp3', format: 'mp3' }).run();
+  mocks.tts.mockRejectedValueOnce(Object.assign(new Error('Kokoro unavailable'), { status: 503 }));
+
+  await processAudiobookQueue();
+  expect(job().status).toBe('queued');
+  expect(mocks.db.select().from(schema.audiobookChapters).all().filter(row => row.chapterIndex === 1)).toHaveLength(1);
+  expireCooldown();
+  await processAudiobookQueue();
+
+  const rows = mocks.db.select().from(schema.audiobookChapters).all().filter(row => row.chapterIndex === 1);
+  expect(job().status).toBe('completed');
+  expect(rows).toHaveLength(1);
+  expect(rows[0].id).toBe('chapter-one-row');
+  expect((await readAudiobookCompleteness('book', 'owner', null)).complete).toBe(true);
+  expect(mocks.nats).toHaveBeenCalledTimes(1);
+});
+
+test('unexpected existing chapter reference is reported without choosing or overwriting another audio object', async () => {
+  mocks.db.insert(schema.audiobookChapters).values({ id: 'chapter-one-row', bookId: 'book', userId: 'owner', chapterIndex: 1, title: 'Missing', filePath: 'unrelated.mp3', format: 'mp3' }).run();
+  mocks.blobs.set('0002__Different.mp3', Buffer.from('unverified audio'));
+
+  await processAudiobookQueue();
+
+  expect(job().status).toBe('error');
+  expect(jobSettings()).toMatchObject({ lastProcessingFailure: { stage: 'chapter_file_reference_conflict', chapterIndex: 1 } });
+  expect(mocks.tts).not.toHaveBeenCalled();
+  expect(mocks.blobs.get('0002__Different.mp3')!.toString()).toBe('unverified audio');
+  expect(mocks.db.select().from(schema.audiobookChapters).all()).toHaveLength(2);
+});
+
+test('a present chapter file with stale format metadata is neither skipped nor treated as complete', async () => {
+  mocks.db.insert(schema.audiobookChapters).values({ id: 'chapter-one-row', bookId: 'book', userId: 'owner', chapterIndex: 1, title: 'Missing', filePath: '0002__Missing.mp3', format: 'm4b' }).run();
+  mocks.blobs.set('0002__Missing.mp3', Buffer.from('unverified recording'));
+
+  await processAudiobookQueue();
+
+  expect(job().status).toBe('error');
+  expect(jobSettings()).toMatchObject({ lastProcessingFailure: { stage: 'chapter_file_reference_conflict', chapterIndex: 1 } });
+  expect((await readAudiobookCompleteness('book', 'owner', null)).missingChapterIndexes).toContain(1);
+  expect(mocks.tts).not.toHaveBeenCalled();
+  expect(mocks.blobs.get('0002__Missing.mp3')!.toString()).toBe('unverified recording');
+});
+
+test('untracked audio for a missing chapter row is not overwritten', async () => {
+  mocks.blobs.set('0002__Missing.mp3', Buffer.from('unverified recording'));
+
+  await processAudiobookQueue();
+
+  expect(job().status).toBe('error');
+  expect(jobSettings()).toMatchObject({ lastProcessingFailure: { stage: 'chapter_audio_without_record', chapterIndex: 1 } });
+  expect(mocks.tts).not.toHaveBeenCalled();
+  expect(mocks.blobs.get('0002__Missing.mp3')!.toString()).toBe('unverified recording');
+  expect(mocks.db.select().from(schema.audiobookChapters).all()).toHaveLength(1);
+});
+
+test('cancellation during missing-audio recovery preserves the row and does not schedule a retry', async () => {
+  mocks.db.insert(schema.audiobookChapters).values({ id: 'chapter-one-row', bookId: 'book', userId: 'owner', chapterIndex: 1, title: 'Missing', filePath: '0002__Missing.mp3', format: 'mp3' }).run();
+  mocks.tts.mockImplementationOnce(async () => {
+    mocks.db.update(schema.audiobookJobs).set({ status: 'paused' }).where(eq(schema.audiobookJobs.id, 'job')).run();
+    throw new Error('recording cancelled');
+  });
+
+  await processAudiobookQueue();
+
+  expect(job().status).toBe('paused');
+  expect(jobSettings().providerRetry).toBeUndefined();
+  expect(mocks.db.select().from(schema.audiobookChapters).all().find(row => row.chapterIndex === 1)?.id).toBe('chapter-one-row');
+});
+
 test('permanent Gemini denial stops with configuration diagnostics and no manual IPA artifact', async () => {
   mocks.nats.mockResolvedValue({ data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: 'The λόγος remains.' })) });
   mocks.gemini.mockResolvedValue({ response: new Response(JSON.stringify({ error: { status: 'PERMISSION_DENIED' } }), { status: 403 }), usedModel: 'gemini-test' });

@@ -2,7 +2,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { audiobookJobs, audiobookChapters } from '@/db/schema';
 import { getAudiobookObjectBuffer, isMissingBlobError, listAudiobookObjects } from './blobstore';
-import { listChapterObjects } from './chapters';
+import { decodeChapterFileName } from './chapters';
 
 export function missingAudiobookChapters(expected: number[], recorded: number[], omitted: number[] = []): number[] {
   const present = new Set([...recorded, ...omitted]);
@@ -30,10 +30,12 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
     const max = Math.max(-1, ...indices);
     expected = Array.from({ length: max + 1 }, (_, i) => i);
   }
-  const records = await db.select({ chapterIndex: audiobookChapters.chapterIndex, filePath: audiobookChapters.filePath }).from(audiobookChapters)
+  const records = await db.select({ chapterIndex: audiobookChapters.chapterIndex, filePath: audiobookChapters.filePath, format: audiobookChapters.format }).from(audiobookChapters)
     .where(and(eq(audiobookChapters.bookId, bookId), eq(audiobookChapters.userId, userId)));
-  const audio = new Set(listChapterObjects(objectNames).map(c => c.index));
-  const recorded = records.filter((c: { chapterIndex: number; filePath: string }) => audio.has(c.chapterIndex) && objectNames.includes(c.filePath)).map((c: { chapterIndex: number }) => c.chapterIndex);
+  const recorded = records.filter((c: { chapterIndex: number; filePath: string; format: string }) => {
+    const referenced = decodeChapterFileName(c.filePath);
+    return objectNames.includes(c.filePath) && referenced?.index === c.chapterIndex && referenced.format === c.format;
+  }).map((c: { chapterIndex: number }) => c.chapterIndex);
   const omitted = Array.isArray(settings.omittedChapterIndexes) ? settings.omittedChapterIndexes : [];
   const missing = missingAudiobookChapters(expected, recorded, omitted);
   const activeReviewChapterIndexes: number[] = [];
