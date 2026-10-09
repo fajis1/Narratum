@@ -37,6 +37,15 @@ describe('document-local source recovery', () => {
     expect(result.blocks[0].text).toBe(text);
     expect(result.unmatched).toEqual(['one']);
   });
+  it('uses a verified per-page occurrence ordinal only when the full repeated set matches', () => {
+    const item = occurrence({ surfaceOccurrenceIndex: 1, surfaceOccurrenceCount: 3 });
+    const text = 'The word xatagyéw means abolish. The word xatagyéw means abolish. The word xatagyéw means abolish.';
+    const result = applySourceRecovery([{ pageNumber: 1, text }], sourceRecoverySnapshot(analysis([item])), 'pdf');
+    expect(result.blocks[0].text).toBe('The word xatagyéw means abolish. The word καταργέω means abolish. The word xatagyéw means abolish.');
+    expect(result.applied).toEqual(['one']);
+    const incomplete = applySourceRecovery([{ pageNumber: 1, text: text.replace(' The word xatagyéw means abolish.', '') }], sourceRecoverySnapshot(analysis([item])), 'pdf');
+    expect(incomplete.unmatched).toEqual(['one']);
+  });
   it('does not use Unicode normalization or substring replacement to find a target', () => {
     for (const text of ['The word axatagyéw means abolish.', 'The word xatagyéw means abolish.']) {
       expect(applySourceRecovery([{ pageNumber: 1, text }], sourceRecoverySnapshot(analysis()), 'pdf').applied).toEqual([]);
@@ -62,9 +71,27 @@ describe('document-local source recovery', () => {
     expect(row.count).toBe(2);
     expect(row.occurrences[0].surfaceTerm).toBe('xatagyéw');
   });
-  it('refuses to rescan legacy truncated occurrence evidence', () => {
-    const row = { word: 'xatagyéw', count: 75, occurrences: [] };
-    expect(recoverScanRows([row], sourceRecoverySnapshot(analysis()))).toEqual([row]);
+  it('applies a uniquely anchored correction even when legacy scan occurrence details are incomplete', () => {
+    const row = { word: 'xatagyéw', count: 75, occurrences: [
+      { surfaceTerm: 'xatagyéw', pdfPage: 1, pageSourceStart: 9, context: 'The word xatagyéw means abolish.', contextTargetStart: 9, contextTargetEnd: 17 },
+      { surfaceTerm: 'xatagyéw', pdfPage: 2, pageSourceStart: 400, context: 'Another xatagyéw example.', contextTargetStart: 8, contextTargetEnd: 16 },
+    ] };
+    const result = recoverScanRows([row], sourceRecoverySnapshot(analysis()));
+    expect(result.map((item) => [item.word, item.count])).toEqual([['καταργέω', 1], ['xatagyéw', 74]]);
+    expect(result[0].occurrences?.[0]).toMatchObject({ rawSurfaceTerm: 'xatagyéw', surfaceTerm: 'καταργέω', sourceRecoveryStatus: 'applied' });
+    expect(result[0].sourceRecoveryCounts).toEqual({ applied: 1, unmatched: 0, unresolved: 0 });
+    expect(result[1].sourceRecoveryCounts).toEqual({ applied: 0, unmatched: 0, unresolved: 74 });
+    expect(row.count).toBe(75);
+    expect(row.occurrences[0].surfaceTerm).toBe('xatagyéw');
+  });
+  it('reports an approved anchor with changed context as unmatched and leaves it unresolved', () => {
+    const row = { word: 'xatagyéw', count: 1, occurrences: [
+      { surfaceTerm: 'xatagyéw', pdfPage: 1, pageSourceStart: 9, context: 'A different phrase xatagyéw here.', contextTargetStart: 17, contextTargetEnd: 25 },
+    ] };
+    const result = recoverScanRows([row], sourceRecoverySnapshot(analysis()));
+    expect(result[0].word).toBe('xatagyéw');
+    expect(result[0].sourceRecoveryCounts).toEqual({ applied: 0, unmatched: 1, unresolved: 0 });
+    expect(result[0].occurrences?.[0]).toMatchObject({ sourceRecoveryStatus: 'anchor_mismatch', surfaceTerm: 'xatagyéw' });
   });
   it('snapshots pronunciation values without creating damaged aliases', () => {
     const values = sourceRecoveryPronunciations(sourceRecoverySnapshot(analysis()));

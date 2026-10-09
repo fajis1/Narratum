@@ -98,6 +98,7 @@ export function ScanForeignWordsModal({
   const [scanJobProgress, setScanJobProgress] = useState({ completed: 0, total: 0 });
   const [scanJobLibrarySkipped, setScanJobLibrarySkipped] = useState(0);
   const [scanJobTransliterationRejected, setScanJobTransliterationRejected] = useState(0);
+  const [sourceRecoveryRefresh, setSourceRecoveryRefresh] = useState(0);
   const [scanJobManualReviewTerms, setScanJobManualReviewTerms] = useState<string[] | null>(null);
   const [scanJobResolved, setScanJobResolved] = useState(0);
   const [scanJobGeneratedChoices, setScanJobGeneratedChoices] = useState(0);
@@ -537,6 +538,7 @@ export function ScanForeignWordsModal({
       if (!res.ok) throw new Error('Failed to scan document');
       const data = await res.json();
       setWords(data.words || []);
+      setSourceRecoveryRefresh((version) => version + 1);
       setHasScanned(true);
       setScanJobStatus(data.scanStatus || 'completed');
       setScanJobStage('extracting');
@@ -1018,7 +1020,11 @@ export function ScanForeignWordsModal({
         panelTestId="scan-foreign-words-modal"
       >
       <div className="relative flex flex-col max-h-[80vh]">
-        {activeDocId && <SourceRecoveryPanel key={activeDocId} documentId={activeDocId} />}
+        {activeDocId && <SourceRecoveryPanel key={activeDocId} documentId={activeDocId} refreshToken={sourceRecoveryRefresh}
+          applicationSummary={{
+            applied: words.reduce((sum, word) => sum + Number(word.sourceRecoveryCounts?.applied || 0), 0),
+            unmatched: words.reduce((sum, word) => sum + Number(word.sourceRecoveryCounts?.unmatched || 0), 0),
+          }} />}
         <div className="p-4 border-b dark:border-gray-800 flex flex-col gap-3">
           <div className="flex justify-between items-center">
             <div>

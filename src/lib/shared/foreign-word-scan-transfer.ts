@@ -30,9 +30,18 @@ export interface ForeignWordScanTransfer {
     count: number | null;
     contexts: string[];
     occurrences: Array<Record<string, unknown>>;
+    occurrencesIncluded: number;
+    occurrenceDetailsTruncated: boolean;
     editorialSpellings: string[];
     ocrEvidence: string[];
     sourceRepairReasons?: string[];
+    rawExtractedSpellings: string[];
+    effectiveVerifiedWord: string | null;
+    rawOccurrenceCount: number | null;
+    approvedAppliedOccurrenceCount: number;
+    unmatchedApprovedOccurrenceCount: number;
+    unresolvedOccurrenceCount: number | null;
+    sourceRecoveryStatus: string | null;
     sourceStatus: string;
     sourceOutcome: string | null;
     qualityFlags: string[];
@@ -91,6 +100,8 @@ export function exportForeignWordScan(
               context: occurrence.context,
               qualityFlags: occurrence.qualityFlags,
               sourceStatus: occurrence.sourceStatus,
+              rawSurfaceTerm: occurrence.rawSurfaceTerm,
+              sourceRecoveryStatus: occurrence.sourceRecoveryStatus,
             };
           }
           return {
@@ -111,12 +122,29 @@ export function exportForeignWordScan(
             qualityFlags: occurrence.qualityFlags,
             qualityEvidence: occurrence.qualityEvidence,
             sourceStatus: occurrence.sourceStatus,
+            rawSurfaceTerm: occurrence.rawSurfaceTerm,
+            sourceRecoveryStatus: occurrence.sourceRecoveryStatus,
           };
         }) : [],
+      occurrencesIncluded: Math.min(2, Array.isArray(row.occurrences) ? row.occurrences.length : 0),
+      occurrenceDetailsTruncated: Array.isArray(row.occurrences) && row.occurrences.length > 2,
       editorialSpellings: Array.isArray(row.editorialSpellings) ? row.editorialSpellings.filter((value): value is string => typeof value === 'string') : [],
       ocrEvidence: Array.isArray(row.ocrEvidence) ? row.ocrEvidence.filter((value): value is string => typeof value === 'string') : [],
       sourceRepairReasons: Array.isArray(row.sourceRepairReasons) ? row.sourceRepairReasons.filter((value): value is string => typeof value === 'string') : [],
       sourceStatus: typeof row.sourceStatus === 'string' ? row.sourceStatus : 'unverified',
+      rawExtractedSpellings: Array.isArray(row.sourceRecoveryRawSpellings)
+        ? row.sourceRecoveryRawSpellings.filter((value): value is string => typeof value === 'string') : [row.word],
+      effectiveVerifiedWord: row.sourceStatus === 'verified_document_reading' ? row.word : null,
+      rawOccurrenceCount: typeof row.sourceRecoveryRawOccurrenceCount === 'number' ? row.sourceRecoveryRawOccurrenceCount : typeof row.count === 'number' ? row.count : null,
+      approvedAppliedOccurrenceCount: typeof (row.sourceRecoveryCounts as Record<string, unknown> | undefined)?.applied === 'number'
+        ? (row.sourceRecoveryCounts as { applied: number }).applied : 0,
+      unmatchedApprovedOccurrenceCount: typeof (row.sourceRecoveryCounts as Record<string, unknown> | undefined)?.unmatched === 'number'
+        ? (row.sourceRecoveryCounts as { unmatched: number }).unmatched : 0,
+      unresolvedOccurrenceCount: typeof row.sourceRecoveryCounts === 'object' && row.sourceRecoveryCounts !== null
+        ? Number((row.sourceRecoveryCounts as { unresolved?: unknown }).unresolved || 0) + Number((row.sourceRecoveryCounts as { unmatched?: unknown }).unmatched || 0)
+        : typeof row.count === 'number' ? row.count : null,
+      sourceRecoveryStatus: typeof row.sourceRecoveryStatus === 'string' ? row.sourceRecoveryStatus
+        : row.sourceStatus === 'verified_document_reading' ? 'applied' : null,
       sourceOutcome: typeof row.sourceOutcome === 'string' ? row.sourceOutcome : null,
       qualityFlags: Array.isArray(row.qualityFlags) ? row.qualityFlags.filter((value): value is string => typeof value === 'string') : [],
       pronunciationSource: typeof row.pronunciationSource === 'string' ? row.pronunciationSource : null,

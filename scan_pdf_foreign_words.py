@@ -92,6 +92,23 @@ def is_latin_transliteration_candidate(word):
     return zipf_frequency(word.casefold(), 'en') < STANDARD_ENGLISH_ZIPF_THRESHOLD
 
 
+def is_possible_latinized_greek_ocr(word):
+    """Flag a narrow chi/omega-shaped OCR pattern for visual review only.
+
+    ``x`` and ``w`` are common Latin renderings of Greek chi and omega. The
+    pattern is deliberately narrow and rarity-gated so ordinary English and
+    transliterations are not converted or automatically classified as Greek.
+    """
+    if not isinstance(word, str) or not re.fullmatch(r"[A-Za-z]{6,}", word):
+        return False
+    normalized = word.casefold()
+    if 'x' not in normalized or not normalized.endswith('w'):
+        return False
+    if zipf_frequency is None:
+        return False
+    return zipf_frequency(normalized, 'en') < 1.5
+
+
 def classify_standard_english_words(words):
     """Return English-frequency evidence for dictionary cleanup previews."""
     if zipf_frequency is None:
@@ -411,6 +428,7 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
 
     ocr_suspect_evidence = {}
     latin_transliteration_candidates = set()
+    latinized_ocr_candidates = set()
     occurrences_by_word = {}
     editorial_by_start = {start: (end, printed, expanded) for start, end, printed, expanded in editorial_words}
     editorial_spans = [(start, end) for start, end, _printed, _expanded in editorial_words]
@@ -439,13 +457,19 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
         elif mode == 'greek_hebrew':
             biblical_script = bool(GREEK_OR_HEBREW_REGEX.search(word))
             transliteration = not biblical_script and is_latin_transliteration_candidate(word)
-            accepted = biblical_script or transliteration
+            latinized_ocr = not biblical_script and is_possible_latinized_greek_ocr(word)
+            accepted = biblical_script or transliteration or latinized_ocr
             if transliteration:
                 latin_transliteration_candidates.add(word)
+            if latinized_ocr:
+                latinized_ocr_candidates.add(word)
         elif mode == 'custom':
             accepted = True
         else:
-            accepted = has_foreign_marker(word)
+            latinized_ocr = is_possible_latinized_greek_ocr(word)
+            accepted = has_foreign_marker(word) or latinized_ocr
+            if latinized_ocr:
+                latinized_ocr_candidates.add(word)
         if not accepted:
             continue
         if mode in ('greek_hebrew', 'all_foreign') and (
@@ -655,6 +679,12 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
             result["ocrEvidence"] = sorted(ocr_suspect_evidence[word])[:2]
         if word in latin_transliteration_candidates:
             result["latinTransliterationCandidate"] = True
+        if word in latinized_ocr_candidates:
+            result["latinizedOcrCandidate"] = True
+            result["sourceStatus"] = 'source_review_recommended'
+            result["sourceRepairReasons"] = [
+                'Possible Latinized Greek OCR pattern (chi/omega-shaped); inspect the original PDF before proposing a reading.'
+            ]
         results.append(result)
 
     return results

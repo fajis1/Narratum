@@ -48,6 +48,7 @@ export async function POST(req: NextRequest) {
     if (!current) return NextResponse.json({ error: 'Run a new PDF pre-scan first.' }, { status: 409 });
     if (body.revision !== current.revision) throw new SourceRecoveryConflict('PDF analysis changed. Refresh before reviewing again.');
     let next = structuredClone(current);
+    let commitExpectedRevision = current.revision;
     if (body.action === 'propose') {
       const profiles = await readSmartAudioProfilesDocument(auth.userId);
       const profile = findSmartAudioProfileById(profiles, profiles.selectedProfileId);
@@ -60,7 +61,41 @@ export async function POST(req: NextRequest) {
         const value = typeof first === 'string' ? first : first && typeof first === 'object' && 'phonetic' in first ? String(first.phonetic) : '';
         if (value) globalPronunciations[term] = value;
       }
-      next = await proposeSourceRecovery({ analysis: current, groupId: body.groupId, profile, globalPronunciations, namespace: getOpenReaderTestNamespace(req.headers) });
+      // Claim this exact revision before calling a paid provider. Concurrent
+      // tabs then fail the optimistic update instead of duplicating the batch.
+      const reserved = structuredClone(current);
+      reserved.revision++;
+      reserved.recoveryRun = { status: 'paused', batchesCompleted: current.recoveryRun?.batchesCompleted || 0, updatedAt: Date.now() };
+      await saveSourceRecovery(auth.userId, reserved, current.revision);
+      commitExpectedRevision = reserved.revision;
+      next = await proposeSourceRecovery({ analysis: reserved, groupId: body.groupId, profile, globalPronunciations, namespace: getOpenReaderTestNamespace(req.headers) });
+      const lastDiagnostic = next.diagnostics.at(-1);
+      const providerUnavailable = lastDiagnostic?.outcome === 'provider_error';
+      next.recoveryRun = {
+        status: providerUnavailable ? 'provider_unavailable' : next.occurrences.some((item) => item.status === 'unresolved') ? 'paused' : 'completed',
+        batchesCompleted: (current.recoveryRun?.batchesCompleted || 0) + (lastDiagnostic?.outcome === 'proposed' ? 1 : 0),
+        updatedAt: Date.now(),
+      };
+    } else if (body.action === 'approve_many') {
+      const ids = body.occurrenceIds;
+      const verifiedIds = body.sourceVerifiedOccurrenceIds;
+      if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100
+          || ids.some((id: unknown) => typeof id !== 'string')
+          || new Set(ids).size !== ids.length
+          || !Array.isArray(verifiedIds) || ids.some((id: string) => !verifiedIds.includes(id))) {
+        return NextResponse.json({ error: 'Select up to 100 distinct proposals and confirm each against its PDF page.' }, { status: 400 });
+      }
+      const selected = ids.map((id: string) => next.occurrences.find((entry) => entry.id === id));
+      if (selected.some((item) => !item || item.status !== 'proposed' || !item.proposal)) {
+        return NextResponse.json({ error: 'Every selected occurrence must have a current proposal. Refresh the analysis and try again.' }, { status: 409 });
+      }
+      const now = Date.now();
+      for (const item of selected) {
+        item!.status = 'approved';
+        item!.reviewedAt = now;
+      }
+      next.revision++;
+      sourceRecoveryPronunciations(sourceRecoverySnapshot(next));
     } else if (body.action === 'approve' || body.action === 'reject' || body.action === 'reset') {
       const item = next.occurrences.find((entry) => entry.id === body.occurrenceId);
       if (!item) return NextResponse.json({ error: 'Occurrence not found' }, { status: 404 });
@@ -87,7 +122,7 @@ export async function POST(req: NextRequest) {
       next.revision++;
       sourceRecoveryPronunciations(sourceRecoverySnapshot(next));
     } else return NextResponse.json({ error: 'Unknown recovery action' }, { status: 400 });
-    await saveSourceRecovery(auth.userId, next, current.revision);
+    await saveSourceRecovery(auth.userId, next, commitExpectedRevision);
     return NextResponse.json({ analysis: next });
   } catch (error) {
     return NextResponse.json({ error: error instanceof SourceRecoveryConflict ? error.message : 'Source recovery could not be saved. Check the reading and retry.' },

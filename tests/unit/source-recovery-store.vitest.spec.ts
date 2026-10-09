@@ -51,6 +51,27 @@ test('uses codepoint offsets for contexts containing supplementary Unicode chara
   expect(next.occurrences[0].before).toBe('😀 word ');
 });
 
+test('indexes every repeated occurrence with stable per-surface page ordinals and shared candidate family IDs', async () => {
+  const repeatedRows = [
+    { word: 'xatagyéw', sourceOutcome: 'needs_source_repair', fuzzyGroupVariants: ['xatagyéw', 'xataoyéw'], occurrences: Array.from({ length: 75 }, (_, index) => ({
+      surfaceTerm: 'xatagyéw', pdfPage: 1, pageSourceStart: index * 40, context: 'The word xatagyéw means abolish.', contextTargetStart: 9, contextTargetEnd: 17,
+    })) },
+    { word: 'xataoyéw', sourceOutcome: 'needs_source_repair', fuzzyGroupVariants: ['xatagyéw', 'xataoyéw'], occurrences: Array.from({ length: 8 }, (_, index) => ({
+      surfaceTerm: 'xataoyéw', pdfPage: 2, pageSourceStart: index * 40, context: 'The word xataoyéw means abolish.', contextTargetStart: 9, contextTargetEnd: 17,
+    })) },
+  ];
+  const first = await registerSourceRecovery('owner', 'pdf', repeatedRows);
+  expect(first.occurrences).toHaveLength(83);
+  expect(new Set(first.occurrences.map((item) => item.id)).size).toBe(83);
+  expect(new Set(first.occurrences.map((item) => item.groupId)).size).toBe(1);
+  const primary = first.occurrences.filter((item) => item.surface === 'xatagyéw');
+  expect(primary.map((item) => item.surfaceOccurrenceIndex)).toEqual(Array.from({ length: 75 }, (_, index) => index));
+  expect(primary.every((item) => item.surfaceOccurrenceCount === 75)).toBe(true);
+  const again = await registerSourceRecovery('owner', 'pdf', repeatedRows);
+  expect(again.occurrences.map((item) => item.id)).toEqual(first.occurrences.map((item) => item.id));
+  expect(again.occurrences[74].surfaceOccurrenceIndex).toBe(74);
+});
+
 test('invalidates old extraction-version approvals even when a partial rescan omits their rows', async () => {
   const current = await registerSourceRecovery('owner', 'pdf', rows);
   current.extractionVersion = 12; current.occurrences[0].status = 'approved'; current.revision++;
