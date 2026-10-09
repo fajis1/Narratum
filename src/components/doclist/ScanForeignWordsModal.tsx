@@ -1,3 +1,4 @@
+import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { SourceRecoveryPanel } from './SourceRecoveryPanel';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ModalFrame } from '@/components/ui';
@@ -817,7 +818,24 @@ export function ScanForeignWordsModal({
   };
 
   const handleSaveOverride = async (word: string, newPronunciation: string) => {
+    const row = words.find((item) => item.word === word);
+    if (!row || requiresForeignWordSourceRepair(row)) {
+      toast.error('Verify the printed PDF source before saving a pronunciation.'); return;
+    }
     try {
+      if (row.sourceStatus === 'verified_document_reading' || Number(row.sourceRecoveryCounts?.applied || 0) > 0) {
+        const response = await fetch('/api/documents/scan-foreign-words/import', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documentId: activeDocId, jobId: scanJobId, scan: {
+            format: 'openreader-foreign-word-scan', version: 2, documentId: activeDocId,
+            words: [{ word, proposedPronunciation: newPronunciation }],
+          } }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.imported !== 1) throw new Error(data.error || data.skipped?.[0]?.reason || 'Document pronunciation was not saved.');
+        setWords(data.words); setEditingWord(null);
+        toast.success('Saved this reviewed reading’s pronunciation for this document.'); return;
+      }
       // We need to fetch current profiles, update active, then save back.
       // Wait, there is no endpoint to just update a single word in the active profile.
       // We have POST /api/tts-settings to save all profiles.
@@ -842,6 +860,7 @@ export function ScanForeignWordsModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           selectedSmartAudioProfileId: profilesData.selectedSmartAudioProfileId,
+          scanContext: { documentId: activeDocId, jobId: scanJobId },
           smartAudioProfiles: updatedProfiles
         })
       });
@@ -854,6 +873,7 @@ export function ScanForeignWordsModal({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: 'promote-personal-default',
+            scanContext: { documentId: activeDocId, jobId: scanJobId },
             word,
             phonetic: newPronunciation,
           })
@@ -900,6 +920,10 @@ export function ScanForeignWordsModal({
   };
 
   const handleRefine = async (word: string, customPrompt?: string, useBackupKey = false) => {
+    const row = words.find((item) => item.word === word);
+    if (!row || requiresForeignWordSourceRepair(row)) {
+      toast.error('Verify the printed PDF source before refining a pronunciation.'); return;
+    }
     clearRetryTimer(word);
     setRefineRecovery(prev => {
       const next = { ...prev };
@@ -920,7 +944,7 @@ export function ScanForeignWordsModal({
       const res = await fetch('/api/tts/refine-pronunciations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ word, feedback, currentChoices, useBackupKey }),
+        body: JSON.stringify({ word, feedback, currentChoices, useBackupKey, scanContext: { documentId: activeDocId, jobId: scanJobId } }),
       });
       
       setRefineStatus(prev => ({ ...prev, [word]: 'Step 2/2: Pre-rendering Kokoro audio buffers for instant playback...' }));

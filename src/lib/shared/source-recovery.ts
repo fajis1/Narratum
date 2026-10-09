@@ -1,8 +1,9 @@
+import { requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
 import type { SourceRecoveryAnalysis, SourceRecoverySnapshot } from '@/types/source-recovery';
 
 export function sourceRecoverySnapshot(analysis: SourceRecoveryAnalysis): SourceRecoverySnapshot {
   return { schemaVersion: 1, documentId: analysis.documentId, revision: analysis.revision,
-    occurrences: structuredClone(analysis.occurrences.filter((item) => item.status === 'approved' && item.proposal)) };
+    occurrences: structuredClone(analysis.occurrences.filter((item) => item.status === 'approved' && !item.anchorInvalidated && item.proposal)) };
 }
 
 /** Exact characters, whitespace layout tolerance only; no Unicode folding. */
@@ -40,7 +41,7 @@ export function applySourceRecovery<T extends { text: string; pageNumber: number
     const normalized = compact(pageText);
     const edits: { block: number; start: number; end: number; replacement: string; id: string }[] = [];
     for (const item of snapshot.occurrences.filter((entry) => entry.pdfPage === page)) {
-      if (item.status !== 'approved' || !item.proposal) continue;
+      if (item.status !== 'approved' || item.anchorInvalidated || !item.proposal) continue;
       const before = compact(item.before).value;
       const surface = compact(item.surface).value;
       const after = compact(item.after).value;
@@ -88,6 +89,9 @@ export function applySourceRecovery<T extends { text: string; pageNumber: number
         candidates.sort((a, b) => a.target - b.target);
         if (candidates.length === expectedCount) {
           const selected = candidates[ordinal!];
+          if (selected.alreadyCorrected && selected.surface !== item.proposal.correctedSurface) {
+            unmatched.push(item.id); continue;
+          }
           const selectedSurface = compact(selected.surface).value;
           const leftContext = normalized.value.slice(Math.max(0, selected.target - before.length), selected.target);
           const rightContext = normalized.value.slice(selected.target + selectedSurface.length,
@@ -131,7 +135,7 @@ export function applySourceRecovery<T extends { text: string; pageNumber: number
 export function sourceRecoveryPronunciations(snapshot: SourceRecoverySnapshot | null | undefined): Record<string, string> {
   const result: Record<string, string> = {};
   for (const item of snapshot?.occurrences || []) {
-    if (item.status !== 'approved' || !item.proposal?.pronunciation) continue;
+    if (item.status !== 'approved' || item.anchorInvalidated || !item.proposal?.pronunciation) continue;
     const term = item.proposal.correctedSurface;
     if (result[term] && result[term] !== item.proposal.pronunciation) {
       throw new Error('Approved document pronunciations conflict for the same corrected spelling.');
@@ -149,7 +153,7 @@ export function recoverScanRows<T extends { word: string; count: number; occurre
 }[] }>(rows: T[], snapshot: SourceRecoverySnapshot): Array<T & {
   sourceRecoveryCounts: { applied: number; unmatched: number; unresolved: number };
 }> {
-  const approved = new Map(snapshot.occurrences.filter((item) => item.status === 'approved' && item.proposal)
+  const approved = new Map(snapshot.occurrences.filter((item) => item.status === 'approved' && !item.anchorInvalidated && item.proposal)
     .map((item) => [JSON.stringify([item.pdfPage, item.pageSourceStart, item.surface]), item]));
   const grouped = new Map<string, Record<string, unknown>>();
   const add = (row: T, word: string, occurrence?: NonNullable<T['occurrences']>[number], status: 'applied' | 'unmatched' | 'unresolved' = 'unresolved') => {
@@ -165,6 +169,7 @@ export function recoverScanRows<T extends { word: string; count: number; occurre
     if (!rawSpellings.includes(row.word)) rawSpellings.push(row.word);
     const counts = output.sourceRecoveryCounts as { applied: number; unmatched: number; unresolved: number };
     counts[status]++;
+    if (status !== 'applied' && requiresForeignWordSourceRepair(row)) output.sourceRecoveryRequiresRepair = true;
     if (occurrence) {
       const occurrences = output.occurrences as Record<string, unknown>[];
       occurrences.push(occurrence as unknown as Record<string, unknown>);
@@ -178,6 +183,7 @@ export function recoverScanRows<T extends { word: string; count: number; occurre
       output.qualityFlags = [];
       output.ocrSuspect = false;
       output.ocrFragment = false;
+      output.latinizedOcrCandidate = false;
       output.ocrEvidence = [];
       output.automaticIgnoreReason = null;
       const occurrenceRecord = occurrence as unknown as { sourceRecoveryPronunciation?: string } | undefined;
@@ -211,9 +217,13 @@ export function recoverScanRows<T extends { word: string; count: number; occurre
     for (let remaining = Math.max(0, row.count - occurrences.length); remaining > 0; remaining--) add(row, row.word);
   }
   for (const output of grouped.values()) {
+    if (output.sourceRecoveryRequiresRepair) {
+      output.sourceStatus = 'needs_source_repair';
+      output.sourceOutcome = 'needs_source_repair';
+    }
     const counts = output.sourceRecoveryCounts as { applied: number; unmatched: number; unresolved: number };
     if (counts.applied > 0 && (counts.unmatched > 0 || counts.unresolved > 0)) {
-      output.sourceStatus = 'source_review_recommended';
+      if (!output.sourceRecoveryRequiresRepair) output.sourceStatus = 'source_review_recommended';
       output.sourceRecoveryStatus = 'mixed_occurrences';
     }
   }

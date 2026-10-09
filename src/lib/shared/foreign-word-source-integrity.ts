@@ -56,19 +56,30 @@ export function getForeignWordSourceRepairReasons(word: unknown): string[] {
 
 export function classifyForeignWordSourceIntegrity<T extends { word: string; [key: string]: unknown }>(row: T) {
   const reasons = getForeignWordSourceRepairReasons(row.word);
+  if (row.latinizedOcrCandidate === true) reasons.push('Possible Latinized Greek OCR requires PDF source verification.');
   if (row.ocrFragment === true) reasons.push('Confirmed OCR fragment requires source repair.');
   if (reasons.length === 0) return row;
   return {
     ...row,
     sourceStatus: 'needs_source_repair',
     sourceOutcome: 'needs_source_repair',
-    sourceRepairReasons: reasons,
+    sourceRepairReasons: [...new Set([...(Array.isArray(row.sourceRepairReasons) ? row.sourceRepairReasons : []), ...reasons])],
     qualityFlags: [...new Set([
       ...(Array.isArray(row.qualityFlags) ? row.qualityFlags : []), 'deterministic_source_repair',
     ])],
   };
 }
 
-export function requiresForeignWordSourceRepair(row: { word?: string; sourceStatus?: unknown; sourceOutcome?: unknown }): boolean {
-  return row.sourceStatus === 'needs_source_repair' || row.sourceOutcome === 'needs_source_repair';
+export function requiresForeignWordSourceRepair(row: { word?: unknown; sourceStatus?: unknown; sourceOutcome?: unknown; latinizedOcrCandidate?: unknown }): boolean {
+  return row.latinizedOcrCandidate === true || row.sourceStatus === 'needs_source_repair' || row.sourceOutcome === 'needs_source_repair';
+}
+
+/** Source approvals are local evidence, never automatic library-promotion permission. */
+export function canPromoteForeignWordScanRow(row: { sourceStatus?: unknown; sourceOutcome?: unknown;
+  latinizedOcrCandidate?: unknown; sourceRecoveryCounts?: unknown }): boolean {
+  return !requiresForeignWordSourceRepair(row)
+    && row.sourceStatus !== 'verified_document_reading'
+    && row.sourceStatus !== 'source_review_recommended'
+    && row.sourceOutcome !== 'insufficient_context'
+    && !Number((row.sourceRecoveryCounts as { applied?: number } | undefined)?.applied || 0);
 }

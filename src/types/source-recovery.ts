@@ -14,6 +14,9 @@ export interface SourceRecoveryOccurrence {
   after: string;
   context: string;
   reasons: string[];
+  requiresSourceRepair?: boolean;
+  /** Retained audit evidence for an anchor disproved by a complete rescan. */
+  anchorInvalidated?: boolean;
   status: 'unresolved' | 'proposed' | 'ambiguous' | 'approved' | 'rejected';
   proposal?: {
     correctedSurface: string;
@@ -33,6 +36,8 @@ export interface SourceRecoveryAnalysis {
   documentId: string;
   revision: number;
   extractionVersion: number;
+  /** Independent of candidate detection/cache changes; legacy v13 anchors are v1. */
+  anchorVersion?: number;
   scannedAt: number;
   occurrences: SourceRecoveryOccurrence[];
   recoveryRun?: { status: 'paused' | 'completed' | 'provider_unavailable'; batchesCompleted: number; updatedAt: number };

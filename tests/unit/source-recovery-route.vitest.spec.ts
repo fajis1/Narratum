@@ -42,6 +42,14 @@ test('rejects stale review decisions and requires explicit page verification', a
   expect((await POST(request({ action: 'approve', sourceVerified: false }))).status).toBe(400);
   expect(mocks.save).not.toHaveBeenCalled();
 });
+test('invalidated anchors cannot be reapproved or reset into another automatic analysis', async () => {
+  const current = analysis(); current.occurrences[0].anchorInvalidated = true;
+  mocks.read.mockResolvedValue(current);
+  expect((await POST(request({ action: 'approve', sourceVerified: true }))).status).toBe(409);
+  expect((await POST(request({ action: 'reset' }))).status).toBe(409);
+  expect((await POST(request({ action: 'approve_many', occurrenceIds: ['one'], sourceVerifiedOccurrenceIds: ['one'] }))).status).toBe(409);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
 test('accepts a reviewed occurrence with a pronunciation value and reference, without library writes', async () => {
   const response = await POST(request({ action: 'approve', sourceVerified: true }));
   expect(response.status).toBe(200);

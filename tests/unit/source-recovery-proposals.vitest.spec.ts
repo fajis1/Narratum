@@ -93,3 +93,26 @@ test('rejects mixed scripts, markup, digits and nonfinal Greek sigma in recovere
   expect(validateRecoveredSurface('καταργούμενον')).toBe('καταργούμενον');
   expect(validateRecoveredSurface('חֶסֶד')).toBe('חֶסֶד');
 });
+
+test('related OCR variants can propose distinct inflections without dictionary evidence authorizing either', async () => {
+  const input = analysis(2);
+  input.occurrences[1].surface = 'xataoyéw';
+  response([
+    { ...generated, correctedSurface: 'καταργέω' },
+    { ...generated, id: 'id-1', correctedSurface: 'καταργούμενον' },
+  ]);
+  const next = await proposeSourceRecovery({ analysis: input, groupId: 'group', profile, globalPronunciations: {} }, { renderPages: renderer, dictionary });
+  expect(next.occurrences.map((item) => item.proposal?.correctedSurface)).toEqual(['καταργέω', 'καταργούμενον']);
+  expect(next.occurrences.every((item) => item.status === 'proposed' && item.proposal?.lemma === 'καταργέω')).toBe(true);
+  expect(dictionary).toHaveBeenCalledWith('καταργέω', 'koine_greek');
+  expect(dictionary).toHaveBeenCalledWith('καταργούμενον', 'koine_greek');
+});
+
+test('a dictionary lemma without a visually established surface cannot resolve an ambiguous short word', async () => {
+  const input = analysis(); input.occurrences[0].surface = 'év';
+  response([{ id: 'id-0', correctedSurface: null, lemma: 'ἐν', language: 'koine_greek', explanation: 'Cannot locate printed word' }]);
+  const next = await proposeSourceRecovery({ analysis: input, groupId: 'group', profile, globalPronunciations: {} }, { renderPages: renderer, dictionary });
+  expect(next.occurrences[0].status).toBe('ambiguous');
+  expect(next.occurrences[0].proposal).toBeUndefined();
+  expect(dictionary).not.toHaveBeenCalled();
+});

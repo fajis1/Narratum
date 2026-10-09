@@ -47,8 +47,8 @@ export async function proposeSourceRecovery(input: {
   globalPronunciations: Record<string, string>; namespace?: string | null;
 }, dependencies: { renderPages?: typeof renderRecoveryPages; dictionary?: typeof recoveryDictionary } = {}): Promise<SourceRecoveryAnalysis> {
   const { analysis, groupId, profile } = input;
-  const group = analysis.occurrences.filter((item) => item.groupId === groupId);
-  const pending = group.filter((item) => item.status === 'unresolved').sort((a, b) => (a.analyzedAt || 0) - (b.analyzedAt || 0)).slice(0, 6);
+  const group = analysis.occurrences.filter((item) => item.groupId === groupId && !item.anchorInvalidated);
+  const pending = group.filter((item) => item.status === 'unresolved' && !item.anchorInvalidated).sort((a, b) => (a.analyzedAt || 0) - (b.analyzedAt || 0)).slice(0, 6);
   if (!pending.length) throw new Error('No unresolved occurrences in this group.');
   const next = structuredClone(analysis);
   next.revision++;

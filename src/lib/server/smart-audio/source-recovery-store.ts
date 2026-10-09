@@ -1,9 +1,12 @@
+import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { adminSettings, documents } from '@/db/schema';
 import type { SourceRecoveryAnalysis, SourceRecoveryOccurrence } from '@/types/source-recovery';
-import { FOREIGN_WORD_CANDIDATE_CACHE_VERSION } from './gemini-foreign-word-scan';
+// Change only when occurrence identity/source-anchor semantics become incompatible.
+export const SOURCE_RECOVERY_ANCHOR_VERSION = 1;
+const LEGACY_COMPATIBLE_EXTRACTION_VERSION = 13;
 
 export class SourceRecoveryConflict extends Error {}
 export async function requireOwnedPdf(userId: string, documentId: string) {
@@ -65,7 +68,7 @@ export function recoveryOccurrences(rows: ScanRow[]): SourceRecoveryOccurrence[]
         coordinateSource: occurrence.coordinateSource || null,
         before: chars.slice(Math.max(0, occurrence.contextTargetStart - 48), occurrence.contextTargetStart).join(''),
         after: chars.slice(occurrence.contextTargetEnd, occurrence.contextTargetEnd + 48).join(''),
-        context: occurrence.context, reasons: [...new Set([...reasons, ...(occurrence.qualityFlags || [])])], status: 'unresolved' });
+        context: occurrence.context, requiresSourceRepair: requiresForeignWordSourceRepair(row), reasons: [...new Set([...reasons, ...(occurrence.qualityFlags || [])])], status: 'unresolved' });
     }
   }
   const occurrences = [...result.values()];
@@ -86,33 +89,49 @@ export function recoveryOccurrences(rows: ScanRow[]): SourceRecoveryOccurrence[]
   }
   return occurrences;
 }
-export async function registerSourceRecovery(userId: string, documentId: string, rows: ScanRow[]) {
+export async function registerSourceRecovery(userId: string, documentId: string, rows: ScanRow[], options: { complete?: boolean } = {}) {
   await requireOwnedPdf(userId, documentId);
   const initial: SourceRecoveryAnalysis = { schemaVersion: 1, documentId, revision: 0,
-    extractionVersion: FOREIGN_WORD_CANDIDATE_CACHE_VERSION, scannedAt: Date.now(), occurrences: [], diagnostics: [] };
+    extractionVersion: LEGACY_COMPATIBLE_EXTRACTION_VERSION, anchorVersion: SOURCE_RECOVERY_ANCHOR_VERSION, scannedAt: Date.now(), occurrences: [], diagnostics: [] };
   await db.insert(adminSettings).values({ key: key(userId, documentId), valueJson: encoded(initial), source: 'runtime' })
     .onConflictDoNothing();
   const current = (await readSourceRecovery(userId, documentId))!;
-  const indexed = recoveryOccurrences(rows);
+  const compatible = current.anchorVersion === undefined
+    ? current.extractionVersion === LEGACY_COMPATIBLE_EXTRACTION_VERSION
+    : current.anchorVersion === SOURCE_RECOVERY_ANCHOR_VERSION;
+  // Scanner caches contain raw detection, not later Gemini source findings.
+  // Re-index previously investigated surfaces too, so unchanged raw evidence
+  // does not erase approved decisions simply because the detector is quieter.
+  const indexed = recoveryOccurrences(rows.map((row) => {
+    const prior = current.occurrences.filter((item) => item.surface === row.word);
+    if (!prior.length) return row;
+    const requiresRepair = prior.some((item) => item.requiresSourceRepair
+      || item.reasons.includes('Source reading is unresolved; verify against the PDF.'));
+    return { ...row, sourceRepairReasons: [...new Set([...(row.sourceRepairReasons || []), ...prior.flatMap((item) => item.reasons)])],
+      ...(requiresRepair ? { sourceOutcome: 'needs_source_repair' } : {}) };
+  }));
   const previous = new Map(current.occurrences.map((item) => [item.id, item]));
   const occurrences = indexed.map((item) => {
     const old = previous.get(item.id);
-    return old && old.before === item.before && old.after === item.after && current.extractionVersion === FOREIGN_WORD_CANDIDATE_CACHE_VERSION
+    return old && old.before === item.before && old.after === item.after && compatible
       ? { ...item, status: old.status, proposal: old.proposal, reviewedAt: old.reviewedAt, analyzedAt: old.analyzedAt } : item;
   });
   // Partial/custom scans must not delete evidence discovered in a full scan.
   const indexedIds = new Set(indexed.map((item) => item.id));
   for (const old of current.occurrences) {
     if (indexedIds.has(old.id)) continue;
-    occurrences.push(current.extractionVersion === FOREIGN_WORD_CANDIDATE_CACHE_VERSION ? old : {
-      ...old, status: 'unresolved', proposal: undefined, reviewedAt: undefined, analyzedAt: undefined,
-      reasons: [...old.reasons, 'Extraction version changed; review this reading again.'],
+    // A complete scan can disprove an old offset. Partial scans cannot.
+    occurrences.push(compatible && !options.complete ? old : {
+      ...old, anchorInvalidated: true, status: 'unresolved', proposal: undefined, reviewedAt: undefined, analyzedAt: undefined,
+      reasons: [...new Set([...old.reasons, compatible
+        ? 'Source anchor no longer matches the complete scan; review this reading again.'
+        : 'Extraction version changed; review this reading again.'])],
     });
   }
   // Partial scans retain prior anchors, so ordinals must describe the merged
   // page index rather than only the newest batch.
   const repeated = new Map<string, SourceRecoveryOccurrence[]>();
-  for (const item of occurrences) {
+  for (const item of occurrences.filter((item) => indexedIds.has(item.id) || (!item.anchorInvalidated && !options.complete && compatible))) {
     const anchorKey = JSON.stringify([item.pdfPage, item.surface]);
     repeated.set(anchorKey, [...(repeated.get(anchorKey) || []), item]);
   }
@@ -123,8 +142,8 @@ export async function registerSourceRecovery(userId: string, documentId: string,
       item.surfaceOccurrenceCount = items.length;
     });
   }
-  const analysis = { ...current, revision: current.revision + 1, scannedAt: Date.now(),
-    extractionVersion: FOREIGN_WORD_CANDIDATE_CACHE_VERSION, occurrences };
+  const analysis: SourceRecoveryAnalysis = { ...current, revision: current.revision + 1, scannedAt: Date.now(),
+    anchorVersion: SOURCE_RECOVERY_ANCHOR_VERSION, occurrences };
   await saveSourceRecovery(userId, analysis, current.revision);
   return analysis;
 }

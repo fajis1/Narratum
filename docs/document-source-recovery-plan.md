@@ -87,3 +87,61 @@ Analyze a PDF's suspect spellings as document-local occurrence groups. Preserve 
 - Full-document spelling grouping reuses the scanner's existing fuzzy groups; it does not claim to recognize every possible font-encoding family. Manual reviewed readings remain available when a group cannot be recovered automatically.
 - Generation and pre-scan perform the relevant lexical resolution after source correction; approval does not launch a full paid PDF rescan after each individual click.
 - Real Gemini/dictionary calls, production-sized unusual PDFs, Kokoro output and deployment have **not** been verified. The quoted example has not been verified against its actual PDF.
+
+
+## 2026-10-09 — Final cache, source-integrity and lifecycle hardening
+
+Completed on `feat/automated-pdf-source-recovery`; no merge into main.
+
+- Candidate caches previously used v13 both before and after ASCII detection changed. A matching cache skipped Python entirely. Candidate keys and payload validation now use v14; independent source-anchor compatibility is v1. Legacy analyses with extractionVersion 13 and matching anchors remain compatible; extractionVersion is retained as historical provenance, not a candidate-cache gate.
+- Complete all-foreign rescans re-index prior investigated spellings even when cached raw detection lacks Gemini's later source findings. Stable page/offset/surface/context anchors preserve approvals, proposals and individual analysis timestamps. Partial/custom scans retain other indexed decisions. Changed context resets a decision; vanished/shifted anchors remain as invalidated audit evidence, cannot be approved or automatically analyzed, and do not distort current occurrence ordinals. Existing audiobook snapshots remain pinned and unchanged.
+- The shared source gate now includes latinizedOcrCandidate independently of English source-review recommendations. The scan blocks these terms before library reuse, dictionary prefetch, ordinary Gemini pronunciation requests, result acceptance, book enrichment and every batch/final global pronunciation/definition merge. Stored source outcomes survive enrichment. Exports cannot advertise stale pronunciations/definitions for blocked aliases; import consults server-held evidence, so client status spoofing cannot release them.
+- Scan Refine/Adopt requests carry their scan identity. Refinement, personal profile changes and global promotion check persisted ownership and term evidence. Reviewed corrections use the existing document-local import path, not personal/global adoption. Standalone explicit dictionary-management actions remain supported and do not infer PDF corruption from arbitrary Latin strings. Pre-existing library entries are preserved but cannot establish trust for an OCR candidate.
+- Reconciliation clears OCR flags and old source outcomes only for applied occurrences. A mixed effective row with unresolved damaged occurrences remains source-blocked regardless of aggregation order. Accepted exact-surface IPA is reused locally. Lemmas remain separate from grammatical surfaces; a different inflection at an already-corrected ordinal cannot masquerade as the accepted surface.
+- The panel separately reports invalidated anchors and approved readings not represented in the latest effective scan. Successful application counters still derive from actual reconciliation, not the number of model suggestions.
+
+### Regression evidence
+
+The shared Python extracted-PDF fixture spans five pages and contains 75 xatagyéw, 8 xataoyéw, 19 téAoc, ASCII xatagew, repeated contexts, ambiguous év and ordinary Latin text. It exercises the real Python detector, scan API background callback, SQLite analysis persistence, actual proposal parser with mocked page/model/dictionary evidence, explicit approval API, cache reuse and effective rescan. Both the old cache namespace and an old-version payload at the current key force detection refresh.
+
+One approved xatagyéw occurrence produces exactly 74 unresolved raw spellings plus one verified καταργέω occurrence. Repeating the scan preserves those counts and the approval without another model call. The original extracted source still has 75 instances. The audiobook source application produces one Greek reading and 74 unchanged raw spellings; source-fidelity validation rejects changing that accepted reading to another inflection. No global pronunciation/definition merge occurs. Additional API coverage rejects scan-driven refinement, personal/global adoption and spoofed imports, including when an old library already contains the malformed alias.
+
+Final verification:
+
+- `pnpm exec tsc --noEmit`: passed.
+- `pnpm test:unit`: 212 files, 1,812 tests passed (including all requested source-recovery/transfer suites).
+- `.venv/bin/python -m unittest tests.python.test_scan_pdf_foreign_words tests.python.test_source_recovery_pages`: 27 passed.
+- `pnpm exec playwright test tests/source-recovery.spec.ts --config /tmp/ocr-playwright.config.ts --project chromium`: 2 passed, desktop and mobile. The isolated config runs the actual bundled component with mocked endpoints and avoids starting production services.
+- ESLint checked every changed TypeScript/test file against reviewed HEAD. No new findings. Existing baseline remains: scan route 23 errors/1 warning; refinement route 10 errors/4 warnings; scan modal 141 errors/2 warnings. All other changed files lint clean. These legacy findings were not suppressed or broadened into this patch.
+- `git diff --check`: passed. No live Gemini, dictionaries or TTS calls; production PDF not available as an identifiable local fixture. Mocked visual proposals prove integration and safeguards, not real OCR accuracy. Browser-controlled bounded six-occurrence analysis remains as before.
+
+### Files in this hardening patch
+
+- `docs/document-source-recovery-plan.md`
+- `src/app/api/documents/scan-foreign-words/import/route.ts`
+- `src/app/api/documents/scan-foreign-words/route.ts`
+- `src/app/api/documents/source-recovery/route.ts`
+- `src/app/api/tts-settings/route.ts`
+- `src/app/api/tts/global-pronunciations/route.ts`
+- `src/app/api/tts/refine-pronunciations/route.ts`
+- `src/components/doclist/ScanForeignWordsModal.tsx`
+- `src/components/doclist/SourceRecoveryPanel.tsx`
+- `src/lib/server/smart-audio/gemini-foreign-word-scan.ts`
+- `src/lib/server/smart-audio/scan-pronunciation-guard.ts`
+- `src/lib/server/smart-audio/source-recovery-proposals.ts`
+- `src/lib/server/smart-audio/source-recovery-store.ts`
+- `src/lib/shared/foreign-word-scan-transfer.ts`
+- `src/lib/shared/foreign-word-source-integrity.ts`
+- `src/lib/shared/source-recovery.ts`
+- `src/types/source-recovery.ts`
+- `tests/fixtures/ocr_source_recovery.py`
+- `tests/python/test_scan_pdf_foreign_words.py`
+- `tests/source-recovery.spec.ts`
+- `tests/unit/foreign-word-scan-import-route.vitest.spec.ts`
+- `tests/unit/foreign-word-source-integrity.vitest.spec.ts`
+- `tests/unit/gemini-foreign-word-scan.vitest.spec.ts`
+- `tests/unit/source-recovery-lifecycle.vitest.spec.ts`
+- `tests/unit/source-recovery-proposals.vitest.spec.ts`
+- `tests/unit/source-recovery-route.vitest.spec.ts`
+- `tests/unit/source-recovery-store.vitest.spec.ts`
+- `tests/unit/source-recovery.vitest.spec.ts`

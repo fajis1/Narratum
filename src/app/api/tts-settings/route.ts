@@ -1,3 +1,4 @@
+import { scanPronunciationActionError } from '@/lib/server/smart-audio/scan-pronunciation-guard';
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
@@ -77,6 +78,16 @@ export async function POST(request: NextRequest) {
     }
 
     const currentDoc = await readSmartAudioProfilesDocument(userId);
+    if (body.scanContext !== undefined && Array.isArray(body.smartAudioProfiles)) {
+      for (const incoming of body.smartAudioProfiles as SmartAudioProfile[]) {
+        const previous = currentDoc.profiles.find((profile) => profile.id === incoming.id);
+        for (const [term, value] of Object.entries(incoming.pronunciations || {})) {
+          if (previous?.pronunciations?.[term] === value) continue;
+          const error = await scanPronunciationActionError(userId, body.scanContext, term, true);
+          if (error) return NextResponse.json({ error }, { status: 409 });
+        }
+      }
+    }
     let savedDoc = currentDoc;
     let restoredProfiles: Array<{ id: string; name: string }> = [];
 

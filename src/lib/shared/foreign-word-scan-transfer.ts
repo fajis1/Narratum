@@ -1,4 +1,4 @@
-import { getForeignWordSourceRepairReasons } from './foreign-word-source-integrity';
+import { getForeignWordSourceRepairReasons, classifyForeignWordSourceIntegrity, requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
 import { selectGeminiManualReviewWords } from './foreign-word-scan-results';
 import {
   isKokoroSafePronunciation,
@@ -85,7 +85,7 @@ export function exportForeignWordScan(
     documentId,
     exportedAt: new Date().toISOString(),
     instructions: `${batchPrefix}Read sourceStatus, qualityFlags, and occurrences before proposing edits. Edit proposedPronunciation and proposedDefinition only for a verified complete word. Leave null to keep the current value; set omitDefinition to true to clear a definition. Source terms, statuses, and occurrence evidence are read-only: correcting damaged PDF extraction requires source recovery and a rescan, not renaming a JSON word key. Import into the same document after the scan finishes. Version 1 imports remain supported.${compactNotice}`,
-    words: words.map((row) => ({
+    words: words.map(classifyForeignWordSourceIntegrity).map((row) => ({
       word: row.word,
       count: typeof row.count === 'number' ? row.count : null,
       contexts: Array.isArray(row.contexts) ? row.contexts.filter((value): value is string => typeof value === 'string') : [],
@@ -148,11 +148,11 @@ export function exportForeignWordScan(
       sourceOutcome: typeof row.sourceOutcome === 'string' ? row.sourceOutcome : null,
       qualityFlags: Array.isArray(row.qualityFlags) ? row.qualityFlags.filter((value): value is string => typeof value === 'string') : [],
       pronunciationSource: typeof row.pronunciationSource === 'string' ? row.pronunciationSource : null,
-      currentPronunciation: [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation,
+      currentPronunciation: requiresForeignWordSourceRepair(row) ? null : [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation,
         ...(Array.isArray(row.pronunciations) ? row.pronunciations.map((choice) =>
           typeof choice === 'string' ? choice : choice && typeof choice === 'object' ? (choice as { phonetic?: unknown }).phonetic : null) : [])]
         .find((value): value is string => typeof value === 'string' && value !== '[OMIT]' && isKokoroSafePronunciation(row.word, value)) || null,
-      currentDefinition: typeof row.definition === 'string' ? row.definition : null,
+      currentDefinition: !requiresForeignWordSourceRepair(row) && typeof row.definition === 'string' ? row.definition : null,
       proposedPronunciation: null,
       proposedDefinition: null,
       omitDefinition: Boolean(

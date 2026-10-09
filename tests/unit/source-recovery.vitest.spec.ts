@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applySourceRecovery, assertRecoveredReadings, recoverScanRows, sourceRecoveryGenerationSettings, sourceRecoveryPronunciations, sourceRecoverySnapshot } from '@/lib/shared/source-recovery';
 import type { SourceRecoveryAnalysis, SourceRecoveryOccurrence } from '@/types/source-recovery';
+import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 
 function occurrence(overrides: Partial<SourceRecoveryOccurrence> = {}): SourceRecoveryOccurrence {
   return { id: 'one', groupId: 'group', surface: 'xatagyéw', pdfPage: 1, pageSourceStart: 9,
@@ -12,6 +13,30 @@ function analysis(occurrences = [occurrence()]): SourceRecoveryAnalysis {
   return { schemaVersion: 1, documentId: 'pdf', revision: 2, extractionVersion: 13, scannedAt: 1, occurrences, diagnostics: [] };
 }
 describe('document-local source recovery', () => {
+  it('clears OCR restrictions only on the exactly applied surface, independent of row order', () => {
+    const item = occurrence({ surface: 'xatagew', after: ' means abolish.' });
+    const source = { word: 'xatagew', count: 2, latinizedOcrCandidate: true, sourceStatus: 'needs_source_repair', sourceOutcome: 'needs_source_repair', occurrences: [9, 100].map((pageSourceStart) => ({
+      surfaceTerm: 'xatagew', pdfPage: 1, pageSourceStart, context: 'The word xatagew means abolish.', contextTargetStart: 9, contextTargetEnd: 16,
+    })) };
+    const rows = recoverScanRows([source], sourceRecoverySnapshot(analysis([item])));
+    expect(rows.find((row) => row.word === 'καταργέω')).toMatchObject({ latinizedOcrCandidate: false, sourceOutcome: 'valid_word' });
+    expect(requiresForeignWordSourceRepair(rows.find((row) => row.word === 'xatagew')!)).toBe(true);
+    // A collision with an unresolved spelling cannot inherit the first approved
+    // occurrence's source status or release the whole word to pronunciation work.
+    const unresolved = { ...source, word: 'καταργέω', count: 1, occurrences: [] };
+    for (const inputs of [[source, unresolved], [unresolved, source]]) {
+      const mixed = recoverScanRows(inputs, sourceRecoverySnapshot(analysis([item]))).find((row) => row.word === 'καταργέω')!;
+      expect(mixed.sourceRecoveryCounts).toEqual({ applied: 1, unmatched: 0, unresolved: 1 });
+      expect(requiresForeignWordSourceRepair(mixed)).toBe(true);
+    }
+  });
+  it('does not mistake a different already-recovered inflection at the target ordinal for this approval', () => {
+    const first = occurrence({ surfaceOccurrenceIndex: 0, surfaceOccurrenceCount: 2 });
+    const second = occurrence({ id: 'two', pageSourceStart: 100, surfaceOccurrenceIndex: 1, surfaceOccurrenceCount: 2,
+      proposal: { ...first.proposal!, correctedSurface: 'καταργούμενον' } });
+    const result = applySourceRecovery([{ pageNumber: 1, text: 'The word καταργούμενον means abolish. The word καταργέω means abolish.' }], sourceRecoverySnapshot(analysis([first, second])), 'pdf');
+    expect(result.applied).toEqual([]); expect(result.unmatched).toEqual(['one', 'two']);
+  });
   it('accepts only approved decisions in a job snapshot', () => {
     expect(sourceRecoverySnapshot(analysis([occurrence(), occurrence({ id: 'pending', status: 'proposed' })])).occurrences.map((item) => item.id)).toEqual(['one']);
   });

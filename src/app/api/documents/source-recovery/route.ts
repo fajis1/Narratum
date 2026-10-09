@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
       const lastDiagnostic = next.diagnostics.at(-1);
       const providerUnavailable = lastDiagnostic?.outcome === 'provider_error';
       next.recoveryRun = {
-        status: providerUnavailable ? 'provider_unavailable' : next.occurrences.some((item) => item.status === 'unresolved') ? 'paused' : 'completed',
+        status: providerUnavailable ? 'provider_unavailable' : next.occurrences.some((item) => item.status === 'unresolved' && !item.anchorInvalidated) ? 'paused' : 'completed',
         batchesCompleted: (current.recoveryRun?.batchesCompleted || 0) + (lastDiagnostic?.outcome === 'proposed' ? 1 : 0),
         updatedAt: Date.now(),
       };
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Select up to 100 distinct proposals and confirm each against its PDF page.' }, { status: 400 });
       }
       const selected = ids.map((id: string) => next.occurrences.find((entry) => entry.id === id));
-      if (selected.some((item) => !item || item.status !== 'proposed' || !item.proposal)) {
+      if (selected.some((item) => !item || item.anchorInvalidated || item.status !== 'proposed' || !item.proposal)) {
         return NextResponse.json({ error: 'Every selected occurrence must have a current proposal. Refresh the analysis and try again.' }, { status: 409 });
       }
       const now = Date.now();
@@ -99,6 +99,7 @@ export async function POST(req: NextRequest) {
     } else if (body.action === 'approve' || body.action === 'reject' || body.action === 'reset') {
       const item = next.occurrences.find((entry) => entry.id === body.occurrenceId);
       if (!item) return NextResponse.json({ error: 'Occurrence not found' }, { status: 404 });
+      if (item.anchorInvalidated) return NextResponse.json({ error: 'This source anchor was invalidated by a rescan. Review the newly indexed occurrence instead.' }, { status: 409 });
       if (body.action === 'approve') {
         if (body.sourceVerified !== true) return NextResponse.json({ error: 'Confirm that you checked the printed PDF word.' }, { status: 400 });
         const surface = validateRecoveredSurface(body.correctedSurface || item.proposal?.correctedSurface);

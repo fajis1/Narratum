@@ -5,6 +5,19 @@ import scan_pdf_foreign_words
 
 
 class ForeignWordContextTests(unittest.TestCase):
+    def test_shared_lifecycle_fixture_indexes_multiple_pages_and_ascii_corruption(self):
+        import runpy
+        from pathlib import Path
+        fixture = runpy.run_path(str(Path(__file__).parents[1] / 'fixtures/ocr_source_recovery.py'))['fixture']()
+        rows = {row['word']: row for row in fixture['rows']}
+        for term, expected in {'xatagyéw': 75, 'xataoyéw': 8, 'téAoc': 19, 'xatagew': 1}.items():
+            self.assertEqual(rows[term]['count'], expected)
+            self.assertEqual(len(rows[term]['occurrences']), expected)
+        self.assertEqual({item['pdfPage'] for item in rows['xatagyéw']['occurrences']}, {1, 2, 3})
+        self.assertTrue(rows['xatagew']['latinizedOcrCandidate'])
+        self.assertNotIn('Ordinary', rows)
+        self.assertNotIn('katargeo', rows)
+
     def test_all_repeated_occurrences_are_retained_even_with_identical_contexts(self):
         text = 'The word xatagyéw means abolish. ' * 75
         with (

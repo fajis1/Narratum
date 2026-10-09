@@ -65,7 +65,7 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
       for (let batch = 0; batch < 12; batch++) {
         if (stopAfterBatch.current) break;
         const ranked = new Map<string, SourceRecoveryOccurrence[]>();
-        for (const entry of current.occurrences) if (entry.status === 'unresolved') {
+        for (const entry of current.occurrences) if (entry.status === 'unresolved' && !entry.anchorInvalidated) {
           ranked.set(entry.groupId, [...(ranked.get(entry.groupId) || []), entry]);
         }
         const nextGroup = [...ranked].sort((a, b) => sourceRecoveryPriority(b[1]) - sourceRecoveryPriority(a[1]) || a[0].localeCompare(b[0]))[0];
@@ -83,19 +83,20 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
   const group = groups.get(groupId) || [];
   const item = group.find((entry) => entry.id === occurrenceId);
   const summary = {
-    total: analysis?.occurrences.length || 0,
+    total: analysis?.occurrences.filter((entry) => !entry.anchorInvalidated).length || 0,
+    invalidated: analysis?.occurrences.filter((entry) => entry.anchorInvalidated).length || 0,
     analyzed: analysis?.occurrences.filter((entry) => entry.analyzedAt).length || 0,
     proposals: analysis?.occurrences.filter((entry) => entry.status === 'proposed').length || 0,
     ambiguous: analysis?.occurrences.filter((entry) => entry.status === 'ambiguous').length || 0,
     approved: analysis?.occurrences.filter((entry) => entry.status === 'approved').length || 0,
-    unresolved: analysis?.occurrences.filter((entry) => entry.status === 'unresolved').length || 0,
+    unresolved: analysis?.occurrences.filter((entry) => entry.status === 'unresolved' && !entry.anchorInvalidated).length || 0,
   };
   const priorityGroups = [...groups].sort((a, b) => sourceRecoveryPriority(b[1]) - sourceRecoveryPriority(a[1]) || a[0].localeCompare(b[0]));
   useEffect(() => {
     if (!groupId && analysis?.occurrences.length) {
       const candidates = new Map<string, SourceRecoveryOccurrence[]>();
       for (const entry of analysis.occurrences) candidates.set(entry.groupId, [...(candidates.get(entry.groupId) || []), entry]);
-      const reviewable = [...candidates].filter(([, entries]) => entries.some((entry) => entry.status === 'proposed' || entry.status === 'unresolved'))
+      const reviewable = [...candidates].filter(([, entries]) => entries.some((entry) => !entry.anchorInvalidated && (entry.status === 'proposed' || entry.status === 'unresolved')))
         .sort((a, b) => sourceRecoveryPriority(b[1]) - sourceRecoveryPriority(a[1]) || a[0].localeCompare(b[0]))[0];
       if (reviewable) setGroupId(reviewable[0]);
     }
@@ -111,7 +112,8 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
     {error && <p role="alert" className="my-2 text-danger">{error}</p>}
     {busy && <p role="status">Analyzing saved batches {summary.analyzed} of {summary.total}. Proposals are saved after each batch.</p>}
     {analysis && <p className="my-1 text-xs">Occurrences {summary.total} · analyzed {summary.analyzed} · proposals awaiting review {summary.proposals} · ambiguous {summary.ambiguous} · approved {summary.approved} · not analyzed {summary.unresolved}</p>}
-    {analysis && refreshToken > 0 && applicationSummary && <p className="my-1 text-xs" role="status">Last pre-scan: {applicationSummary.applied} approved reading(s) applied to effective results; {applicationSummary.unmatched} anchor mismatch(es); {Math.max(0, summary.total - applicationSummary.applied)} occurrence(s) remain unresolved. Raw PDF extraction is preserved.</p>}
+    {!!summary.invalidated && <p role="status">{summary.invalidated} source anchor(s) invalidated by rescanning; review the newly indexed occurrences. Prior evidence is retained.</p>}
+    {analysis && refreshToken > 0 && applicationSummary && <p className="my-1 text-xs" role="status">Last pre-scan: {applicationSummary.applied} approved reading(s) applied to effective results; {applicationSummary.unmatched} anchor mismatch(es); {Math.max(0, summary.approved - applicationSummary.applied - applicationSummary.unmatched)} approved reading(s) not represented in the last effective scan; {Math.max(0, summary.total - applicationSummary.applied)} occurrence(s) remain unresolved. Raw PDF extraction is preserved.</p>}
     {analysis?.recoveryRun?.status === 'provider_unavailable' && <p className="my-1 text-xs text-warning" role="status">Gemini was temporarily unavailable. Saved proposals remain; continue to retry unfinished occurrences.</p>}
     {analysis?.recoveryRun?.status === 'paused' && <p className="my-1 text-xs text-muted" role="status">Analysis is resumable. Each action analyzes at most 72 occurrences in six-item requests.</p>}
     {analysis?.recoveryRun?.status === 'completed' && <p className="my-1 text-xs text-muted" role="status">All indexed occurrences have a proposal or an explicit ambiguous result. Review is still required.</p>}

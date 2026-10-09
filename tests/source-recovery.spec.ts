@@ -9,7 +9,9 @@ for (const viewport of [{ name: 'desktop', width: 1280, height: 900 }, { name: '
     const bundle = await build({
       stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
         import {SourceRecoveryPanel} from './src/components/doclist/SourceRecoveryPanel';
-        createRoot(document.getElementById('root')).render(<SourceRecoveryPanel documentId="fixture-pdf"/>);`,
+        const root = createRoot(document.getElementById('root'));
+        window.refreshRecoverySummary = (applied) => root.render(<SourceRecoveryPanel documentId="fixture-pdf" refreshToken={1} applicationSummary={{applied,unmatched:0}}/>);
+        window.refreshRecoverySummary(0);`,
         loader: 'tsx', resolveDir: process.cwd() },
       bundle: true, write: false, outfile: '/tmp/source-recovery-fixture.js', format: 'iife', platform: 'browser', jsx: 'automatic',
       alias: { '@': path.join(process.cwd(), 'src') }, define: { 'process.env.NODE_ENV': '"production"', 'process.env': '{}' },
@@ -59,6 +61,9 @@ for (const viewport of [{ name: 'desktop', width: 1280, height: 900 }, { name: '
     await page.getByRole('button', { name: 'Approve 1 selected' }).click();
     await expect(page.getByText(/approved 1/)).toBeVisible();
     expect(analysis.occurrences.filter((item) => item.status === 'approved')).toHaveLength(1);
+    await expect(page.getByText(/1 approved reading\(s\) not represented/)).toBeVisible();
+    await page.evaluate(() => (window as unknown as { refreshRecoverySummary: (count: number) => void }).refreshRecoverySummary(1));
+    await expect(page.getByText(/Last pre-scan: 1 approved reading\(s\) applied/)).toBeVisible();
     expect(pageErrors).toEqual([]);
   });
 }

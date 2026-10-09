@@ -1,6 +1,6 @@
 import { recoverScanRows, sourceRecoverySnapshot } from '@/lib/shared/source-recovery';
 import { registerSourceRecovery, requireOwnedPdf } from '@/lib/server/smart-audio/source-recovery-store';
-import { classifyForeignWordSourceIntegrity, getSupportedSourceScripts, requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
+import { classifyForeignWordSourceIntegrity, getSupportedSourceScripts, requiresForeignWordSourceRepair, canPromoteForeignWordScanRow } from '@/lib/shared/foreign-word-source-integrity';
 import { getGeminiManualReviewState } from '@/lib/shared/foreign-word-scan-results';
 import { after, NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
@@ -254,11 +254,19 @@ export async function POST(req: NextRequest) {
         }
 
         words = words.map(classifyForeignWordSourceIntegrity);
-        const registeredAnalysis = await registerSourceRecovery(userId, documentId, words);
+        let rawWords = words;
+        const registeredAnalysis = await registerSourceRecovery(userId, documentId, rawWords, {
+          complete: mode === 'all_foreign' && target === 100 && !query,
+        });
+        const knownDamagedAnchors = new Set(registeredAnalysis.occurrences.filter((item) => item.requiresSourceRepair)
+          .map((item) => JSON.stringify([item.pdfPage, item.pageSourceStart, item.surface])));
+        rawWords = rawWords.map((row) => row.occurrences?.some((item: { pdfPage: number; pageSourceStart: number; surfaceTerm: string }) =>
+          knownDamagedAnchors.has(JSON.stringify([item.pdfPage, item.pageSourceStart, item.surfaceTerm])))
+          ? { ...row, sourceStatus: 'needs_source_repair', sourceOutcome: 'needs_source_repair' } : row);
         const localRecoveryTerms = new Set(registeredAnalysis.occurrences.filter((item) => item.status === 'approved')
           .map((item) => item.proposal?.correctedSurface).filter(Boolean));
-        words = recoverScanRows(words, sourceRecoverySnapshot(registeredAnalysis));
-        const sourceRepairRows = words.filter((row) => Array.isArray(row.sourceRepairReasons));
+        words = recoverScanRows(rawWords, sourceRecoverySnapshot(registeredAnalysis));
+        const sourceRepairRows = words.filter(requiresForeignWordSourceRepair);
         if (sourceRepairRows.length > 0) serverLogger.warn({
           event: 'pdf.scan.source_integrity', jobId, documentId,
           sourceRepairCount: sourceRepairRows.length,
@@ -375,7 +383,11 @@ export async function POST(req: NextRequest) {
           const aliasPronunciation = (transliterationMatch?.pronunciation
             && normalizeKokoroPronunciationCandidate(term, transliterationMatch.pronunciation))
             || null;
-          const libraryPron = userPron || globalPron || aliasPronunciation;
+          const reviewedPronunciation = w.sourceStatus === 'verified_document_reading'
+            ? w.occurrences?.find((item: { sourceRecoveryPronunciation?: string }) => item.sourceRecoveryPronunciation)?.sourceRecoveryPronunciation
+            : null;
+          const libraryPron = (reviewedPronunciation && normalizeKokoroPronunciationCandidate(term, reviewedPronunciation))
+            || userPron || globalPron || aliasPronunciation;
 
           const libraryDefinition = globalDefinitions[term]
             || transliterationMatch?.definition
@@ -407,7 +419,7 @@ export async function POST(req: NextRequest) {
         // Pre-fetch Sefaria (and Perseus for Greek) lexicon data for biblical-language words.
         // Best-effort: failures are non-fatal and return null for that word.
         const biblicalWordLanguages = words
-          .filter((w: any) => typeof w.word === 'string')
+          .filter((w: any) => typeof w.word === 'string' && !requiresForeignWordSourceRepair(w))
           .map((w: any) => ({ word: w.word as string, language: languageForTerm(w.word) }));
         const lexiconEnrichments = await fetchLexiconEntries(biblicalWordLanguages);
 
@@ -420,7 +432,9 @@ export async function POST(req: NextRequest) {
             const compatibleGlobalChoices = (globalDict[w.word] || [])
               .map((choice) => normalizeKokoroPronunciationCandidate(w.word, choice?.phonetic))
               .filter((phonetic): phonetic is string => Boolean(phonetic));
-            const needsPronunciations = !compatibleOverrides[w.word]
+            const localPronunciation = w.sourceStatus === 'verified_document_reading'
+              && normalizeKokoroPronunciationCandidate(w.word, lexiconEntries[w.word]?.pronunciation);
+            const needsPronunciations = !localPronunciation && !compatibleOverrides[w.word]
               && !normalizedTransliteration
               && compatibleGlobalChoices.length === 0;
             const language = languageForTerm(w.word);
@@ -443,9 +457,14 @@ export async function POST(req: NextRequest) {
         const updatedGlobalWords = new Set<string>();
         const confirmedOcrFragments = new Set<string>(automaticOcrFragments);
         const sourceOutcomes = new Map<string, string>(
-          words.filter((word: { word: string; sourceStatus?: string }) => word.sourceStatus === 'needs_source_repair')
+          words.filter((word: { word: string; sourceStatus?: string }) => requiresForeignWordSourceRepair(word))
             .map((word: { word: string }) => [word.word, 'needs_source_repair']),
         );
+        const canPromoteTerm = (term: string) => {
+          const row = words.find((item: { word: string }) => item.word === term);
+          return Boolean(row && !localRecoveryTerms.has(term)
+            && canPromoteForeignWordScanRow({ ...row, sourceOutcome: sourceOutcomes.get(term) || row.sourceOutcome }));
+        };
         const resolvedGeminiWords = new Set<string>();
         const normalizeOcr = (results: Parameters<typeof normalizeGeminiOcrResults>[0], batch: number) =>
           normalizeGeminiOcrResults(results, (result) => serverLogger.warn({
@@ -461,7 +480,7 @@ export async function POST(req: NextRequest) {
         const enrichWords = () => words.map((w: any) => {
           const transliterationMatch = transliterationMatches.get(w.word);
           const userPronunciation = requiresForeignWordSourceRepair(w) ? null : compatibleOverrides[w.word] || null;
-          const sourceBlocked = (w.sourceStatus === 'needs_source_repair'
+          const sourceBlocked = (requiresForeignWordSourceRepair(w)
             || sourceOutcomes.get(w.word) === 'needs_source_repair'
             || sourceOutcomes.get(w.word) === 'insufficient_context');
           const globalPronunciation = !sourceBlocked && preExistingCompatibleGlobalWords.has(w.word)
@@ -472,7 +491,9 @@ export async function POST(req: NextRequest) {
           const transliterationPronunciation = !sourceBlocked && transliterationMatch?.pronunciation
             ? normalizeKokoroPronunciationCandidate(w.word, transliterationMatch.pronunciation)
             : null;
-          const libraryPronunciation = userPronunciation || globalPronunciation || transliterationPronunciation;
+          const documentPronunciation = !sourceBlocked && w.sourceStatus === 'verified_document_reading'
+            ? normalizeKokoroPronunciationCandidate(w.word, lexiconEntries[w.word]?.pronunciation) : null;
+          const libraryPronunciation = documentPronunciation || userPronunciation || globalPronunciation || transliterationPronunciation;
 
           const globalChoices: Array<{ phonetic?: string; isInGlobalLibrary: boolean; isTransliterationMatch?: boolean }> =
             (sourceBlocked ? [] : globalDict[w.word] || []).map((item: { phonetic?: string } | string) => ({
@@ -481,6 +502,9 @@ export async function POST(req: NextRequest) {
               .get(w.word)
               ?.has(typeof item === 'string' ? item : item.phonetic || '') === true,
           }));
+          if (documentPronunciation && !globalChoices.some((choice) => choice.phonetic === documentPronunciation)) {
+            globalChoices.unshift({ phonetic: documentPronunciation, isInGlobalLibrary: false });
+          }
           if (
             transliterationPronunciation
             && !globalChoices.some((choice: any) => choice.phonetic === transliterationPronunciation)
@@ -499,15 +523,15 @@ export async function POST(req: NextRequest) {
               : globalChoices,
             userOverride: userPronunciation,
             libraryPronunciation,
-            pronunciationSource: userPronunciation ? 'personal' : globalPronunciation ? 'global' : transliterationPronunciation ? 'transliteration' : geminiRecommendations[w.word] ? 'gemini' : 'none',
+            pronunciationSource: documentPronunciation ? 'document' : userPronunciation ? 'personal' : globalPronunciation ? 'global' : transliterationPronunciation ? 'transliteration' : geminiRecommendations[w.word] ? 'gemini' : 'none',
             transliterationSourceTerm: transliterationMatch?.sourceTerm || null,
-            geminiRecommendedPronunciation: geminiRecommendations[w.word] || null,
+            geminiRecommendedPronunciation: sourceBlocked ? null : geminiRecommendations[w.word] || null,
             definition: sourceBlocked ? null : lexiconEntries[w.word]?.definition || null,
             definitionOmitted: lexiconEntries[w.word]?.definitionOmitted === true,
             definitionNeedsReview: lexiconEntries[w.word]?.needsReview === true,
             ocrSuspect: w.ocrSuspect === true,
             ocrFragment: confirmedOcrFragments.has(w.word),
-            sourceOutcome: sourceOutcomes.get(w.word) || null,
+            sourceOutcome: sourceOutcomes.get(w.word) || w.sourceOutcome || null,
             automaticIgnore: w.automaticIgnore === true || rejectedLatinTransliterations.has(w.word),
             automaticIgnoreReason: rejectedLatinTransliterations.has(w.word)
               ? 'Gemini did not recognize this rare Latin term as Koine Greek or Biblical Hebrew transliteration'
@@ -792,6 +816,7 @@ ${JSON.stringify(repairRequests)}`;
             const w = requestedTerms.get(result.term);
             if (w) {
               const scanned = words.find((item: any) => item.word === w);
+              if (!scanned || requiresForeignWordSourceRepair(scanned)) continue;
               const requestedTerm = terms.find((term) => term.term === w);
               if (result.ocrFragment === true) {
                 // Gemini, not a brittle local heuristic, made the final call.
@@ -807,6 +832,9 @@ ${JSON.stringify(repairRequests)}`;
                 continue;
               }
               if (isUnresolvedForeignWordOutcome(result)) {
+                if (['needs_source_repair', 'insufficient_context'].includes(String(result.sourceOutcome))) {
+                  delete lexiconEntries[w]; updatedLexicon = true;
+                }
                 sourceOutcomes.set(w, String(result.sourceOutcome));
                 if (requestedTerm && isRejectedLatinTransliteration(requestedTerm, result)
                     && result.sourceOutcome === 'not_applicable') {
@@ -836,7 +864,8 @@ ${JSON.stringify(repairRequests)}`;
               for (const p of prons) {
                 if (
                   !compatibleOverrides[w]
-                  && scanned?.sourceStatus !== 'source_review_recommended'
+                  && canPromoteForeignWordScanRow(scanned)
+                  && !localRecoveryTerms.has(w)
                   && !existingPhonetics.has(p)
                   && current.length < 5
                 ) {
@@ -933,7 +962,7 @@ ${JSON.stringify(repairRequests)}`;
             const persistedWords = await mergeGeneratedGlobalPronunciations({
               generatedLibrary: globalDict,
               libraryAtScanStart: libraryAtBatchStart,
-              updatedWords: new Set([...batchUpdatedWords].filter((term) => !localRecoveryTerms.has(term))),
+              updatedWords: new Set([...batchUpdatedWords].filter((term) => canPromoteTerm(term))),
             });
             serverLogger.info({
               event: 'pdf.scan.global_pronunciations.batch_persisted',
@@ -948,8 +977,7 @@ ${JSON.stringify(repairRequests)}`;
             chunk
               .filter((term: string) => {
                 const scanned = words.find((item: { word: string; sourceStatus?: string }) => item.word === term);
-                return !localRecoveryTerms.has(term) && scanned?.sourceStatus !== 'needs_source_repair'
-                  && scanned?.sourceStatus !== 'source_review_recommended'
+                return canPromoteTerm(term) && !requiresForeignWordSourceRepair(scanned || {})
                   && !['needs_source_repair', 'insufficient_context'].includes(sourceOutcomes.get(term) || '');
               })
               .map((term: string) => [term, lexiconEntries[term]?.definition] as const)
@@ -969,7 +997,7 @@ ${JSON.stringify(repairRequests)}`;
           const sefariaDefinitions: Record<string, string> = {};
           for (const word of chunk) {
             const scanned = words.find((item: { word: string; sourceStatus?: string }) => item.word === word);
-            if (localRecoveryTerms.has(word) || scanned?.sourceStatus === 'needs_source_repair'
+            if (!canPromoteTerm(word) || requiresForeignWordSourceRepair(scanned || {})
                 || scanned?.sourceStatus === 'source_review_recommended'
                 || ['needs_source_repair', 'insufficient_context'].includes(sourceOutcomes.get(word) || '')) continue;
             const lex = lexiconEnrichments.get(word);
@@ -1022,11 +1050,16 @@ ${JSON.stringify(repairRequests)}`;
       }
         }
 
-    await registerSourceRecovery(userId, documentId, enrichWords());
+    // Register new source findings against raw anchors, never corrected scan rows.
+    const enrichedRaw = new Map<string, { sourceOutcome?: string; ocrFragment?: boolean }>(enrichWords().map((row) => [row.word, row]));
+    await registerSourceRecovery(userId, documentId, rawWords.map((row) => ({
+      ...row, sourceOutcome: enrichedRaw.get(row.word)?.sourceOutcome || row.sourceOutcome,
+      ocrFragment: enrichedRaw.get(row.word)?.ocrFragment || row.ocrFragment,
+    })));
     const generated = Object.keys(geminiRecommendations).length;
     const generatedDefinitions = Object.fromEntries(
       Object.entries(lexiconEntries)
-        .filter(([term, entry]) => !localRecoveryTerms.has(term) && Boolean(entry.definition) && entry.definitionOmitted !== true)
+        .filter(([term, entry]) => canPromoteTerm(term) && Boolean(entry.definition) && entry.definitionOmitted !== true)
         .map(([term, entry]) => [term, entry.definition]),
     );
     await saveJob({
@@ -1040,7 +1073,7 @@ ${JSON.stringify(repairRequests)}`;
       const persistedWords = await mergeGeneratedGlobalPronunciations({
         generatedLibrary: globalDict,
         libraryAtScanStart: globalDictAtScanStart,
-        updatedWords: new Set([...updatedGlobalWords].filter((term) => !localRecoveryTerms.has(term))),
+        updatedWords: new Set([...updatedGlobalWords].filter((term) => canPromoteTerm(term))),
       });
       serverLogger.info({
         event: 'pdf.scan.global_pronunciations.persisted',
