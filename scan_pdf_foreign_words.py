@@ -598,9 +598,10 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
             context, target_start, target_end = target_centered_context(
                 full_text, source_start, source_end, page_start, page_end,
             )
-            if not context or context in contexts:
+            if not context:
                 continue
-            contexts.append(context)
+            if context not in contexts and len(contexts) < 2:
+                contexts.append(context)
             alternate_blocks = getattr(full_text, 'alternate_blocks', {}).get(pdf_page, [])
             matching_blocks = [
                 block for block in alternate_blocks
@@ -626,8 +627,6 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
                 'qualityEvidence': page_evidence if quality_flags else {},
                 'sourceStatus': source_status_for_flags(quality_flags),
             })
-            if len(selected_occurrences) >= 2:
-                break
         result = {
             "word": word,
             "count": freq,

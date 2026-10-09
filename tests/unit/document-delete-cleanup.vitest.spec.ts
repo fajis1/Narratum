@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   deleteResults: [] as unknown[][],
+  deleteSourceRecovery: vi.fn(async () => undefined),
   deleteDocumentTtsSegmentCache: vi.fn(async () => undefined),
 }));
 
@@ -23,6 +24,8 @@ vi.mock('@/db', () => {
   return { db: database };
 });
 
+vi.mock('@/lib/server/smart-audio/source-recovery-store', () => ({ deleteSourceRecovery: mocks.deleteSourceRecovery }));
+
 vi.mock('@/lib/server/tts/segments-cache', () => ({
   deleteDocumentTtsSegmentCache: mocks.deleteDocumentTtsSegmentCache,
 }));
@@ -39,6 +42,8 @@ import { deleteOwnedDocument } from '../../src/lib/server/documents/delete-owned
 describe('owned document cleanup', () => {
   beforeEach(() => {
     mocks.deleteResults = [];
+    mocks.deleteSourceRecovery.mockReset();
+    mocks.deleteSourceRecovery.mockResolvedValue(undefined);
     mocks.deleteDocumentTtsSegmentCache.mockReset();
     mocks.deleteDocumentTtsSegmentCache.mockResolvedValue(undefined);
   });
@@ -52,6 +57,7 @@ describe('owned document cleanup', () => {
       namespace: null,
     })).resolves.toBe(true);
 
+    expect(mocks.deleteSourceRecovery).toHaveBeenCalledWith('user-1', 'doc-1');
     expect(mocks.deleteDocumentTtsSegmentCache).toHaveBeenCalledOnce();
   });
 
@@ -64,6 +70,7 @@ describe('owned document cleanup', () => {
       namespace: null,
     })).resolves.toBe(false);
 
+    expect(mocks.deleteSourceRecovery).not.toHaveBeenCalled();
     expect(mocks.deleteDocumentTtsSegmentCache).not.toHaveBeenCalled();
   });
 

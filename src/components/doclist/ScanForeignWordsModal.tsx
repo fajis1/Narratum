@@ -1,3 +1,4 @@
+import { SourceRecoveryPanel } from './SourceRecoveryPanel';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ModalFrame } from '@/components/ui';
 import toast from 'react-hot-toast';
@@ -1017,6 +1018,7 @@ export function ScanForeignWordsModal({
         panelTestId="scan-foreign-words-modal"
       >
       <div className="relative flex flex-col max-h-[80vh]">
+        {activeDocId && <SourceRecoveryPanel key={activeDocId} documentId={activeDocId} />}
         <div className="p-4 border-b dark:border-gray-800 flex flex-col gap-3">
           <div className="flex justify-between items-center">
             <div>

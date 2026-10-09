@@ -1,3 +1,5 @@
+import { recoverScanRows, sourceRecoverySnapshot } from '@/lib/shared/source-recovery';
+import { registerSourceRecovery, requireOwnedPdf } from '@/lib/server/smart-audio/source-recovery-store';
 import { classifyForeignWordSourceIntegrity, getSupportedSourceScripts, requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { getGeminiManualReviewState } from '@/lib/shared/foreign-word-scan-results';
 import { after, NextRequest, NextResponse } from 'next/server';
@@ -95,6 +97,7 @@ export async function POST(req: NextRequest) {
     const documentId = typeof body.documentId === 'string' ? body.documentId : '';
     if (!documentId) return NextResponse.json({ error: 'Missing documentId' }, { status: 400 });
 
+    await requireOwnedPdf(userId, documentId);
     const mode = body.mode || 'all_foreign';
     // A partial scan cannot certify a Scholar audiobook as ready. Keep this
     // server-side as well as in the UI so callers cannot accidentally create
@@ -211,7 +214,7 @@ export async function POST(req: NextRequest) {
 
             const result = await execFileAsync(pythonBin, args, {
               cwd: process.cwd(),
-              maxBuffer: 10 * 1024 * 1024
+              maxBuffer: 64 * 1024 * 1024
             });
             stdout = result.stdout;
             serverLogger.info({ event: 'pdf.scan.completed', documentId }, 'PDF foreign words pre-scan Python process completed');
@@ -251,6 +254,10 @@ export async function POST(req: NextRequest) {
         }
 
         words = words.map(classifyForeignWordSourceIntegrity);
+        const registeredAnalysis = await registerSourceRecovery(userId, documentId, words);
+        const localRecoveryTerms = new Set(registeredAnalysis.occurrences.filter((item) => item.status === 'approved')
+          .map((item) => item.proposal?.correctedSurface).filter(Boolean));
+        words = recoverScanRows(words, sourceRecoverySnapshot(registeredAnalysis));
         const sourceRepairRows = words.filter((row) => Array.isArray(row.sourceRepairReasons));
         if (sourceRepairRows.length > 0) serverLogger.warn({
           event: 'pdf.scan.source_integrity', jobId, documentId,
@@ -926,7 +933,7 @@ ${JSON.stringify(repairRequests)}`;
             const persistedWords = await mergeGeneratedGlobalPronunciations({
               generatedLibrary: globalDict,
               libraryAtScanStart: libraryAtBatchStart,
-              updatedWords: batchUpdatedWords,
+              updatedWords: new Set([...batchUpdatedWords].filter((term) => !localRecoveryTerms.has(term))),
             });
             serverLogger.info({
               event: 'pdf.scan.global_pronunciations.batch_persisted',
@@ -941,7 +948,7 @@ ${JSON.stringify(repairRequests)}`;
             chunk
               .filter((term: string) => {
                 const scanned = words.find((item: { word: string; sourceStatus?: string }) => item.word === term);
-                return scanned?.sourceStatus !== 'needs_source_repair'
+                return !localRecoveryTerms.has(term) && scanned?.sourceStatus !== 'needs_source_repair'
                   && scanned?.sourceStatus !== 'source_review_recommended'
                   && !['needs_source_repair', 'insufficient_context'].includes(sourceOutcomes.get(term) || '');
               })
@@ -962,7 +969,7 @@ ${JSON.stringify(repairRequests)}`;
           const sefariaDefinitions: Record<string, string> = {};
           for (const word of chunk) {
             const scanned = words.find((item: { word: string; sourceStatus?: string }) => item.word === word);
-            if (scanned?.sourceStatus === 'needs_source_repair'
+            if (localRecoveryTerms.has(word) || scanned?.sourceStatus === 'needs_source_repair'
                 || scanned?.sourceStatus === 'source_review_recommended'
                 || ['needs_source_repair', 'insufficient_context'].includes(sourceOutcomes.get(word) || '')) continue;
             const lex = lexiconEnrichments.get(word);
@@ -1015,10 +1022,11 @@ ${JSON.stringify(repairRequests)}`;
       }
         }
 
+    await registerSourceRecovery(userId, documentId, enrichWords());
     const generated = Object.keys(geminiRecommendations).length;
     const generatedDefinitions = Object.fromEntries(
       Object.entries(lexiconEntries)
-        .filter(([, entry]) => Boolean(entry.definition) && entry.definitionOmitted !== true)
+        .filter(([term, entry]) => !localRecoveryTerms.has(term) && Boolean(entry.definition) && entry.definitionOmitted !== true)
         .map(([term, entry]) => [term, entry.definition]),
     );
     await saveJob({
@@ -1032,7 +1040,7 @@ ${JSON.stringify(repairRequests)}`;
       const persistedWords = await mergeGeneratedGlobalPronunciations({
         generatedLibrary: globalDict,
         libraryAtScanStart: globalDictAtScanStart,
-        updatedWords: updatedGlobalWords,
+        updatedWords: new Set([...updatedGlobalWords].filter((term) => !localRecoveryTerms.has(term))),
       });
       serverLogger.info({
         event: 'pdf.scan.global_pronunciations.persisted',

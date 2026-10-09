@@ -1,3 +1,7 @@
+import { resolveSourceRecoveryLexicon } from '@/lib/server/smart-audio/source-recovery-lexicon';
+import { readSourceRecovery } from '@/lib/server/smart-audio/source-recovery-store';
+import { applySourceRecovery, sourceRecoverySnapshot, sourceRecoveryPronunciations, assertRecoveredReadings } from '@/lib/shared/source-recovery';
+import type { SourceRecoverySnapshot } from '@/types/source-recovery';
 import { withGeminiRecoveryContext, setGeminiRecoveryChapter, publishGeminiRecoveryCooldown } from '@/lib/server/smart-audio/gemini-recovery-context';
 import { writeAudiobookGeminiCooldown, type AudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
 import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
@@ -751,6 +755,25 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
 
     // Foreground regeneration reads this metadata to reproduce the exact
     // chapter boundaries used by background queue generation.
+    // Pin even an empty analysis so resumed jobs cannot acquire new decisions.
+    if (doc.type === 'pdf' && jobSettings.sourceRecoverySnapshot === undefined) {
+      const analysis = await readSourceRecovery(userId, doc.id);
+      jobSettings.sourceRecoverySnapshot = analysis ? sourceRecoverySnapshot(analysis) : {
+        schemaVersion: 1, documentId: doc.id, revision: 0, occurrences: [],
+      };
+      const snapshotJson = JSON.stringify(jobSettings.sourceRecoverySnapshot);
+      await db.update(audiobookJobs).set({ settingsJson: (process.env.POSTGRES_URL
+        ? sql`jsonb_set(coalesce(${audiobookJobs.settingsJson}, '{}'::jsonb), '{sourceRecoverySnapshot}', ${snapshotJson}::jsonb, true)`
+        : sql`json_set(coalesce(${audiobookJobs.settingsJson}, '{}'), '$.sourceRecoverySnapshot', json(${snapshotJson}))`) as never,
+      }).where(and(eq(audiobookJobs.id, job.id), eq(audiobookJobs.userId, userId)));
+    }
+    job.settingsJson = JSON.stringify(jobSettings);
+    const recoverySnapshot = jobSettings.sourceRecoverySnapshot as SourceRecoverySnapshot | undefined;
+    const documentPronunciations = { ...sourceRecoveryPronunciations(recoverySnapshot),
+      ...(jobSettings.sourceRecoveryPronunciationSnapshot || {}),
+    };
+    const recoveredTerms = new Set(recoverySnapshot?.occurrences.map((item) => item.proposal?.correctedSurface).filter(Boolean));
+
     await putAudiobookObject(
       bookId,
       userId,
@@ -882,7 +905,19 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         settings: resolvedDocumentSettings,
         cleanupBatchVersion: jobSettings.cleanupBatchVersion,
       });
-      const allBlocks = preparedPdfBlocks.blocks;
+      const recovered = recoverySnapshot ? applySourceRecovery(preparedPdfBlocks.blocks, recoverySnapshot, doc.id) : {
+        blocks: preparedPdfBlocks.blocks, applied: [], unmatched: [],
+      };
+      await putAudiobookObject(bookId, userId, 'source-recovery.audit.json', Buffer.from(JSON.stringify({
+        schemaVersion: 1, revision: recoverySnapshot?.revision || 0, applied: recovered.applied, unmatched: recovered.unmatched,
+        passages: recovered.blocks.flatMap((block, index) => block.text !== preparedPdfBlocks.blocks[index].text ? [{
+          page: block.pageNumber, original: preparedPdfBlocks.blocks[index].text, corrected: block.text,
+        }] : []),
+      }), 'utf8'), 'application/json; charset=utf-8', testNamespace);
+      if (recovered.unmatched.length) throw new Error(`${recovered.unmatched.length} accepted PDF source corrections could not be uniquely located in audiobook text. Review the PDF analysis; no unanchored replacements were applied.`);
+      serverLogger.info({ event: 'audiobook.source_recovery.applied', jobId: job.id,
+        revision: recoverySnapshot?.revision || 0, applied: recovered.applied.length }, 'Applied document-local source corrections before cleanup.');
+      const allBlocks = recovered.blocks;
       if (preparedPdfBlocks.skippedBlockCount > 0) {
         serverLogger.info({
           event: 'audiobook.queue.pdf_blocks.skipped',
@@ -1047,10 +1082,26 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
     let resolvedPronunciations = filterKokoroCompatiblePronunciationRecord({
       ...globalPronunciations,
       ...(selectedProfile?.pronunciations || {}),
+      ...documentPronunciations,
     });
     let bookLexicon = isScholarLikeMode(selectedProfile?.workerMode)
       ? await readBookLexicon(userId, doc.id)
       : null;
+    if (recoverySnapshot && selectedProfile && jobSettings.sourceRecoveryPronunciationSnapshot === undefined) {
+      const localLexicon = await resolveSourceRecoveryLexicon({ snapshot: recoverySnapshot, profile: selectedProfile,
+        texts: chapters.map((chapter) => chapter.text), knownPronunciations: {
+          ...pronunciationsFromBookLexicon(bookLexicon), ...resolvedPronunciations,
+        },
+      });
+      if (localLexicon) {
+        Object.assign(documentPronunciations, pronunciationsFromBookLexicon(localLexicon));
+        Object.assign(resolvedPronunciations, documentPronunciations);
+        if (bookLexicon?.profileId === selectedProfile.id) {
+          bookLexicon.entries = { ...bookLexicon.entries, ...localLexicon.entries };
+          await writeBookLexicon(userId, doc.id, bookLexicon);
+        }
+      }
+    }
     const definitionsBeforeAutoScan = new Map(
       Object.entries(bookLexicon && bookLexicon.profileId === selectedProfile?.id ? bookLexicon.entries : {})
         .map(([term, entry]) => [term, entry.definition]),
@@ -1124,6 +1175,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       const selectedDefaults = Object.fromEntries(
         Object.values(bookLexicon.entries)
           .filter((entry) => !entry.approvedRepair && termsNeedingGeneratedPronunciations.has(entry.term))
+          .filter((entry) => !recoveredTerms.has(entry.term))
           .map((entry) => [entry.term, entry.pronunciation]),
       );
       const mergedProfile = await mergeGeneratedPronunciationsIntoLatestProfile(
@@ -1136,6 +1188,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       resolvedPronunciations = filterKokoroCompatiblePronunciationRecord({
         ...globalPronunciations,
         ...(selectedProfile.pronunciations || {}),
+        ...documentPronunciations,
       });
       const resolvedGlobalDefinitions = await readGlobalDefinitions();
       for (const [term, definition] of Object.entries(resolvedGlobalDefinitions)) {
@@ -1150,6 +1203,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
           .filter(([term, entry]) => (
             Boolean(entry.definition)
             && entry.definitionOmitted !== true
+            && !recoveredTerms.has(term)
             && !definitionsBeforeAutoScan.get(term)
           ))
           .map(([term, entry]) => [term, entry.definition]),
@@ -1299,6 +1353,21 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       throw new Error('Smart Audio was enabled, but the cleanup worker connection could not be established.');
     }
 
+    if (recoverySnapshot && jobSettings.sourceRecoveryPronunciationSnapshot === undefined) {
+      jobSettings.sourceRecoveryPronunciationSnapshot = Object.fromEntries([...recoveredTerms].flatMap((term) => {
+        const pronunciation = term ? documentPronunciations[term] || bookLexicon?.entries[term]?.pronunciation || resolvedPronunciations[term] : null;
+        return term && pronunciation ? [[term, pronunciation]] : [];
+      }));
+      Object.assign(documentPronunciations, jobSettings.sourceRecoveryPronunciationSnapshot);
+      const json = JSON.stringify(jobSettings.sourceRecoveryPronunciationSnapshot);
+      await db.update(audiobookJobs).set({ settingsJson: (process.env.POSTGRES_URL
+        ? sql`jsonb_set(coalesce(${audiobookJobs.settingsJson}, '{}'::jsonb), '{sourceRecoveryPronunciationSnapshot}', ${json}::jsonb, true)`
+        : sql`json_set(coalesce(${audiobookJobs.settingsJson}, '{}'), '$.sourceRecoveryPronunciationSnapshot', json(${json}))`) as never,
+      }).where(and(eq(audiobookJobs.id, job.id), eq(audiobookJobs.userId, userId)));
+      job.settingsJson = JSON.stringify(jobSettings);
+      await putAudiobookObject(bookId, userId, 'audiobook.meta.json', Buffer.from(JSON.stringify(jobSettings), 'utf8'), 'application/json; charset=utf-8', testNamespace);
+    }
+
     let continuityState = "Beginning of book.";
     const failedChapterIndexes: number[] = [];
 
@@ -1347,6 +1416,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
             ...globalPronunciations,
             ...pronunciationsFromBookLexicon(bookLexicon),
             ...(currentSelectedProfile?.pronunciations || {}),
+            ...documentPronunciations,
           });
           const enrichedChapterText = enrichTextFromBookLexicon(
             chapter.cleanupText ?? chapter.text,
@@ -1475,7 +1545,9 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
                     onPronunciationCorrections: async (corrections) => {
                       Object.assign(currentPronunciations, corrections);
                       if (currentSelectedProfile?.id) {
-                        await updateSmartAudioProfilePronunciations(userId, currentSelectedProfile.id, corrections);
+                        await updateSmartAudioProfilePronunciations(userId, currentSelectedProfile.id, Object.fromEntries(
+                          Object.entries(corrections).filter(([term]) => !recoveredTerms.has(term)),
+                        ));
                       }
                       if (bookLexicon) {
                         let lexiconModified = false;
@@ -1525,6 +1597,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
                     sourceText: cleanupSourceText,
                     requirePronunciationTagsForForeignScripts: isScholarLikeSmartAudioMode(currentSelectedProfile?.workerMode),
                   });
+                if (resolvedWorkerResult.outcome === 'cleaned') assertRecoveredReadings(cleanupSourceText, resolvedWorkerResult.text, recoverySnapshot);
                 return { multiVoiceResult, resolvedWorkerResult };
               },
               requestRepair: async (rejectedResult, validationError) => {

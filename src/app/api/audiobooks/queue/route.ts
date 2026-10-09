@@ -1,3 +1,4 @@
+import { sourceRecoveryGenerationSettings } from '@/lib/shared/source-recovery';
 import { NextResponse, NextRequest } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { eq, and, asc, lt, inArray } from 'drizzle-orm';
@@ -240,12 +241,17 @@ export async function POST(req: NextRequest) {
       }, { status: 429 });
     }
 
-    const resolvedSettingsRecord: Record<string, unknown> = {
-      ...settingsRecord,
-      ...(resolvedSmartAudioProfileId
-        ? { smartAudioProfileId: resolvedSmartAudioProfileId }
-        : {}),
-    };
+    const recoverySourceJob = [...existingJobs].sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
+      .find((candidate) => parseJobSettings(candidate.settingsJson).sourceRecoverySnapshot);
+    const resolvedSettingsRecord: Record<string, unknown> = sourceRecoveryGenerationSettings({
+      settings: {
+        ...settingsRecord,
+        ...(resolvedSmartAudioProfileId ? { smartAudioProfileId: resolvedSmartAudioProfileId } : {}),
+      },
+      documentId,
+      hasExistingChapters: existingChapter.length > 0 && !requiresDramaReplacement,
+      previousSettings: parseJobSettings(recoverySourceJob?.settingsJson),
+    });
 
     const jobId = randomUUID();
     const testNamespace = req.headers.get('x-openreader-test-namespace');

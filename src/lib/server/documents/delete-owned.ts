@@ -1,3 +1,4 @@
+import { deleteSourceRecovery } from '@/lib/server/smart-audio/source-recovery-store';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { documents } from '@/db/schema';
@@ -8,7 +9,7 @@ import { logDegraded } from '@/lib/server/errors/logging';
 /**
  * Remove a user's ownership of a document.
  *
- * Only the per-user TTS segment cache is cleaned inline (it is keyed by userId
+ * Per-user source analysis and TTS segment caches are cleaned inline (keyed by userId
  * and not reachable afterwards). The shared, content-addressed document blob and
  * its previews are reclaimed by the `reap-orphaned-blobs` task once no owner
  * remains, so there is no inline blob deletion, last-owner check, or lock.
@@ -26,6 +27,16 @@ export async function deleteOwnedDocument(input: {
     ))
     .returning();
   if (!removed) return false;
+
+  await deleteSourceRecovery(input.userId, input.documentId).catch((error) => {
+    logDegraded(serverLogger, {
+      event: 'documents.delete_owned.source_recovery_cleanup.failed',
+      msg: 'Failed to clean source analysis after document deletion',
+      step: 'delete_source_recovery',
+      context: { documentId: input.documentId, userIdHash: hashForLog(input.userId) },
+      error,
+    });
+  });
 
   await deleteDocumentTtsSegmentCache(input).catch((error) => {
     logDegraded(serverLogger, {

@@ -5,6 +5,21 @@ import scan_pdf_foreign_words
 
 
 class ForeignWordContextTests(unittest.TestCase):
+    def test_all_repeated_occurrences_are_retained_even_with_identical_contexts(self):
+        text = 'The word xatagyéw means abolish. ' * 75
+        with (
+            patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=text),
+            patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+        ):
+            rows = scan_pdf_foreign_words.scan_pdf_foreign_words('unused.pdf', target_percentile=100, mode='all_foreign', quiet=True)
+        row = next(row for row in rows if row['word'] == 'xatagyéw')
+        self.assertEqual(row['count'], 75)
+        self.assertEqual(len(row['occurrences']), 75)
+        self.assertEqual(len({item['sourceStart'] for item in row['occurrences']}), 75)
+        self.assertLessEqual(len(row['contexts']), 2)
+        for item in row['occurrences']:
+            self.assertEqual(item['context'][item['contextTargetStart']:item['contextTargetEnd']], 'xatagyéw')
+
     def test_ethiopic_keys_keep_nearby_scholarly_transliteration_evidence(self):
         text = 'ኵሎ ኅቡኣተ ጥበቦሙ || k w ulo h· ǝ bu ʾ a t a t· ǝ babomu'
         with (

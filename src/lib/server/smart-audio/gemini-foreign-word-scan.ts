@@ -309,7 +309,7 @@ export function findLatestForeignWordScanJob(
   return activeLegacyJobs.length === 1 ? activeLegacyJobs[0] : null;
 }
 
-export const FOREIGN_WORD_CANDIDATE_CACHE_VERSION = 12;
+export const FOREIGN_WORD_CANDIDATE_CACHE_VERSION = 13;
 
 export function foreignWordCandidateCacheKey(input: {
   userId: string;

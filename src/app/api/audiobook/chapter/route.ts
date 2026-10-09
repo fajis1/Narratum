@@ -1,3 +1,5 @@
+import { sourceRecoveryPronunciations, assertRecoveredReadings } from '@/lib/shared/source-recovery';
+import type { SourceRecoverySnapshot } from '@/types/source-recovery';
 import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
 import { createTtsAttemptRecorder } from '@/lib/server/audiobooks/troubleshooting';
 import { saveDramaTtsDiagnostic } from '@/lib/server/audiobooks/drama-tts-diagnostics';
@@ -364,6 +366,8 @@ export async function POST(request: NextRequest) {
     const existingChapters = listChapterObjects(objectNames);
     const hasChapters = existingChapters.length > 0;
 
+    let savedRecoverySnapshot: SourceRecoverySnapshot | undefined;
+    let savedRecoveryPronunciations: Record<string, string> = {};
     let normalizedExistingSettings: AudiobookGenerationSettings | undefined;
     let existingSettingsNeedsMigration = false;
     try {
@@ -388,6 +392,8 @@ export async function POST(request: NextRequest) {
           normalize: { code: 'AUDIOBOOK_CHAPTER_META_SETTINGS_INVALID', errorClass: 'validation', httpStatus: 500 },
         });
       }
+      savedRecoveryPronunciations = (parsedSettings as { sourceRecoveryPronunciationSnapshot?: Record<string, string> }).sourceRecoveryPronunciationSnapshot || {};
+      savedRecoverySnapshot = (parsedSettings as { sourceRecoverySnapshot?: SourceRecoverySnapshot }).sourceRecoverySnapshot;
       normalizedExistingSettings = normalizeNativeSpeedForSettings(existingResult.settings);
       existingSettingsNeedsMigration = existingResult.migrated;
     } catch (error) {
@@ -457,7 +463,7 @@ export async function POST(request: NextRequest) {
           bookId,
           storageUserId,
           'audiobook.meta.json',
-          Buffer.from(JSON.stringify(normalizedExistingSettings, null, 2), 'utf8'),
+          Buffer.from(JSON.stringify({ ...normalizedExistingSettings, ...(savedRecoverySnapshot ? { sourceRecoverySnapshot: savedRecoverySnapshot, sourceRecoveryPronunciationSnapshot: savedRecoveryPronunciations } : {}) }, null, 2), 'utf8'),
           'application/json; charset=utf-8',
           testNamespace,
         );
@@ -853,6 +859,8 @@ export async function POST(request: NextRequest) {
           finalPronunciations = filterKokoroCompatiblePronunciationRecord({
             ...pronunciationsFromBookLexicon(bookLexicon),
             ...finalPronunciations,
+            ...sourceRecoveryPronunciations(savedRecoverySnapshot),
+            ...savedRecoveryPronunciations,
           });
 
           const enrichedText = enrichTextFromBookLexicon(
@@ -949,6 +957,7 @@ export async function POST(request: NextRequest) {
                     sourceText: data.text,
                     requirePronunciationTagsForForeignScripts: isScholarLikeSmartAudioMode(selectedProfile?.workerMode),
                   });
+                if (resolvedWorkerResult.outcome === 'cleaned') assertRecoveredReadings(data.text, resolvedWorkerResult.text, savedRecoverySnapshot);
                 return { multiVoiceResult, resolvedWorkerResult };
               },
               requestRepair: async (rejectedResult, validationError) => {
