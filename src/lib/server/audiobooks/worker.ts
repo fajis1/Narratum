@@ -1,5 +1,6 @@
 import { persistAudiobookChapter } from './chapter-record';
 import { mergeJobSettings } from './retry-settings';
+import { createChapterOmissionEvidence, getChapterOmissionReason, isValidChapterOmissionEvidence, type ChapterOmissionEvidence, type ChapterOmissionReason } from './chapter-omissions';
 import { scanPronunciationIssues } from '@/lib/shared/pronunciation-issues';
 import { readAudiobookCompleteness } from './completeness';
 import { AudiobookProcessingError, classifyAudiobookFailure, failureSummary, planProviderRetry, type AudiobookFailure, type ProviderRetry } from '@/lib/shared/audiobook-processing-failure';
@@ -1446,7 +1447,43 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
 
     let continuityState = "Beginning of book.";
     const failedChapterIndexes: number[] = [];
-    const omittedChapterIndexes = new Set<number>(jobSettings.omittedChapterIndexes ?? []);
+    const omissionEvidenceByIndex = new Map<number, ChapterOmissionEvidence>();
+    let savedOmissionArtifact: { schemaVersion: number; entries: unknown[] } = { schemaVersion: 1, entries: [] };
+    try {
+      const stored = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, 'audiobook.omissions.json', testNamespace)).toString('utf8'));
+      if (stored && stored.schemaVersion === 1 && Array.isArray(stored.entries)) savedOmissionArtifact = stored;
+    } catch (error) { if (!isMissingBlobError(error)) throw error; }
+    const legacyOmittedIndexes = new Set<number>(Array.isArray(jobSettings.omittedChapterIndexes)
+      ? jobSettings.omittedChapterIndexes.filter((index: unknown): index is number => typeof index === 'number' && Number.isInteger(index) && index >= 0)
+      : []);
+    for (const chapter of chapters) {
+      const storedEvidence = savedOmissionArtifact.entries.find((entry) => (entry as { chapterIndex?: number })?.chapterIndex === chapter.index);
+      if (isValidChapterOmissionEvidence(storedEvidence, chapter)) {
+        omissionEvidenceByIndex.set(chapter.index, storedEvidence);
+        continue;
+      }
+      // Legacy settings are only a hint: independently validate their pinned
+      // source and upgrade eligible omissions into versioned evidence.
+      if (legacyOmittedIndexes.has(chapter.index) && !storedEvidence) {
+        const reason = getChapterOmissionReason(chapter);
+        const evidence = reason && createChapterOmissionEvidence(chapter, reason);
+        if (evidence) omissionEvidenceByIndex.set(chapter.index, evidence);
+      }
+      if (!chapter.text.trim() && !omissionEvidenceByIndex.has(chapter.index)) {
+        const evidence = createChapterOmissionEvidence(chapter, 'empty_source');
+        if (evidence) omissionEvidenceByIndex.set(chapter.index, evidence);
+      }
+    }
+    const persistOmissionEvidence = async () => {
+      const entries = [...omissionEvidenceByIndex.values()].sort((a, b) => a.chapterIndex - b.chapterIndex);
+      await putAudiobookObject(bookId, userId, 'audiobook.omissions.json', Buffer.from(JSON.stringify({
+        schemaVersion: 1, entries,
+      })), 'application/json', testNamespace);
+      await updateClaimedAudiobookJob(job.id, 'running', {
+        settingsJson: mergeJobSettings({ omittedChapterIndexes: entries.map((entry) => entry.chapterIndex) }),
+      });
+    };
+    if (omissionEvidenceByIndex.size) await persistOmissionEvidence();
 
     const markChapterForReview = async (chapterIndex: number, chapterLength: number) => {
       if (!failedChapterIndexes.includes(chapterIndex)) failedChapterIndexes.push(chapterIndex);
@@ -1463,7 +1500,11 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         return;
       }
 
-      if (!chapter.text.trim() || omittedChapterIndexes.has(chapter.index)) continue;
+      if (!chapter.text.trim() || omissionEvidenceByIndex.has(chapter.index)) {
+        processedLength += chapter.text.length;
+        await updateProgress(Math.floor((processedLength / totalLength) * 100));
+        continue;
+      }
 
       // A chapter is recoverably complete only when its authoritative DB path
       // points to an existing audio object for this same chapter index.
@@ -1496,6 +1537,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       }
 
       let processedTextForTts = chapter.text;
+      let confirmedSmartAudioOmission = false;
       const cacheFile = `${String(chapter.index + 1).padStart(4, '0')}__validated.json`;
       const canonicalFile = `${String(chapter.index + 1).padStart(4, '0')}__text.txt`;
       const cacheAllowed = useSmartAudio && selectedProfile?.workerMode !== MULTI_VOICE_WORKER_MODE && selectedProfile?.workerMode !== DRAMA_GEMINI_TTS_WORKER_MODE;
@@ -1720,6 +1762,10 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
                     sourceText: cleanupSourceText,
                     requirePronunciationTagsForForeignScripts: isScholarLikeSmartAudioMode(currentSelectedProfile?.workerMode),
                   });
+                if (resolvedWorkerResult.outcome === 'omitted'
+                  && !['confirmed_end_matter', 'confirmed_structural_material'].includes(getChapterOmissionReason({ index: chapter.index, title: chapter.title, text: cleanupSourceText }) || '')) {
+                  throw new SmartAudioOutputValidationError('Smart Audio omitted a chapter without source evidence proving it is confirmed non-narratable end matter. Preserve the source text or request human review.');
+                }
                 if (resolvedWorkerResult.outcome === 'cleaned') assertRecoveredReadings(cleanupSourceText, resolvedWorkerResult.text, recoverySnapshot);
                 return { multiVoiceResult, resolvedWorkerResult };
               },
@@ -1760,6 +1806,7 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
             if (!await workerStillOwnsAudiobookJob(job.id)) throw new AudiobookJobStoppedError();
             workerResult = recovery.workerResult;
             const { multiVoiceResult, resolvedWorkerResult } = recovery.result;
+            confirmedSmartAudioOmission = resolvedWorkerResult.outcome === 'omitted';
             
             if (multiVoiceResult?.unknownSpeakers?.length) {
               serverLogger.warn({ event: 'audiobook.queue.multivoice.unknown_speakers', bookId, speakers: multiVoiceResult.unknownSpeakers }, 'Detected unknown speakers in chapter');
@@ -1953,21 +2000,22 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         }
       }
       
-      // ABORT END-MATTER: If Gemini confirmed this was end-matter and omitted it!
       const cleanedTrimmed = processedTextForTts.trim();
       const cleanupSource = chapter.cleanupText ?? chapter.text;
-      if (!cleanedTrimmed && cleanupSource.includes('end-matter (e.g. bibliography')) {
-          serverLogger.info({ event: 'audiobook.queue.smart_audio.end_matter_confirmed', bookId }, 'Gemini confirmed end-matter and omitted it. Halting generation for the rest of the book!');
-          for (const remaining of chapters.filter(c => c.index >= chapter.index)) omittedChapterIndexes.add(remaining.index);
-          await updateClaimedAudiobookJob(job.id, 'running', { settingsJson: mergeJobSettings({ omittedChapterIndexes: [...omittedChapterIndexes] }) });
-          break; // Validated end-matter omission, not a missing recording.
-      }
-      
-      // If the text is empty but it wasn't end-matter (e.g. just a blank page or copyright), we skip TTS but continue to next chapter
       if (!cleanedTrimmed) {
-          omittedChapterIndexes.add(chapter.index);
-          await updateClaimedAudiobookJob(job.id, 'running', { settingsJson: mergeJobSettings({ omittedChapterIndexes: [...omittedChapterIndexes] }) });
-          continue;
+        const reason: ChapterOmissionReason | null = confirmedSmartAudioOmission
+          ? getChapterOmissionReason({ index: chapter.index, title: chapter.title, text: cleanupSource })
+          : null;
+        const evidence = reason ? createChapterOmissionEvidence({ index: chapter.index, title: chapter.title, text: cleanupSource }, reason) : null;
+        if (!evidence) {
+          throw new AudiobookProcessingError({ failureCategory: 'content_validation', stage: 'unverified_empty_chapter_output', chapterIndex: chapter.index });
+        }
+        omissionEvidenceByIndex.set(chapter.index, evidence);
+        await persistOmissionEvidence();
+        processedLength += chapter.text.length;
+        await updateProgress(Math.floor((processedLength / totalLength) * 100));
+        serverLogger.info({ event: 'audiobook.queue.chapter.omitted', jobId: job.id, bookId, chapterIndex: chapter.index, reason, sourceHash: evidence.sourceHash }, 'Recorded a source-validated chapter omission.');
+        continue;
       }
       processedTextForTts = validateSmartAudioOutput(processedTextForTts, {
         requirePronunciationTagsForForeignScripts: isScholarLikeSmartAudioMode(selectedProfile?.workerMode),

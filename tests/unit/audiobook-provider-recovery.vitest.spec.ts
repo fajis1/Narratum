@@ -37,6 +37,7 @@ import { GET as failureLog } from '@/app/api/audiobook/failure-log/route';
 import { readAudiobookCompleteness, assertAudiobookComplete } from '@/lib/server/audiobooks/completeness';
 import { classifyAudiobookFailure, planProviderRetry, PROVIDER_RETRY_BUDGET } from '@/lib/shared/audiobook-processing-failure';
 import { resolveAudiobookJobDescriptiveState } from '@/lib/shared/audiobook-job-status';
+import { createChapterOmissionEvidence, isValidChapterOmissionEvidence } from '@/lib/server/audiobooks/chapter-omissions';
 
 let sqlite: Database.Database;
 const globalState = globalThis as typeof globalThis & { __worker_booted?: boolean };
@@ -197,6 +198,94 @@ test('cancellation during missing-audio recovery preserves the row and does not 
   expect(mocks.db.select().from(schema.audiobookChapters).all().find(row => row.chapterIndex === 1)?.id).toBe('chapter-one-row');
 });
 
+test('truly empty pinned source receives validated omission evidence', async () => {
+  mocks.blobs.set('audiobook.source-chapters.json', Buffer.from(JSON.stringify({ schemaVersion: 1, chapters: [
+    { index: 0, title: 'Done', text: 'Already recorded.' }, { index: 1, title: 'Blank page', text: '' },
+  ] })));
+
+  await processAudiobookQueue();
+
+  const artifact = JSON.parse(mocks.blobs.get('audiobook.omissions.json')!.toString());
+  expect(artifact.entries).toEqual([expect.objectContaining({ chapterIndex: 1, reason: 'empty_source', validationVersion: 1 })]);
+  expect(isValidChapterOmissionEvidence(artifact.entries[0], { index: 1, title: 'Blank page', text: '' })).toBe(true);
+  expect(job().status).toBe('completed');
+  expect(mocks.tts).not.toHaveBeenCalled();
+});
+
+test('confirmed structural end matter is omitted only with an explicit Gemini OMIT result', async () => {
+  const endMatter = '[SYSTEM HINT: The layout engine detected this section in the end-matter (e.g. bibliography).]\n[LAYOUT_ENGINE_TAG: REFERENCE_CONTENT]\nA cited source by an author.';
+  mocks.blobs.set('audiobook.source-chapters.json', Buffer.from(JSON.stringify({ schemaVersion: 1, chapters: [
+    { index: 0, title: 'Done', text: 'Already recorded.' }, { index: 1, title: 'Bibliography', text: 'A cited source by an author.', cleanupText: endMatter },
+  ] })));
+  mocks.nats.mockImplementation(async (_subject: string, payload: Buffer) => {
+    const request = JSON.parse(payload.toString());
+    return { data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: request.raw_text?.includes('SYSTEM HINT') ? '[OMIT]' : request.raw_text })) };
+  });
+
+  await processAudiobookQueue();
+
+  const artifact = JSON.parse(mocks.blobs.get('audiobook.omissions.json')!.toString());
+  expect(artifact.entries).toEqual([expect.objectContaining({ chapterIndex: 1, reason: 'confirmed_end_matter', validationVersion: 1 })]);
+  expect(job().status).toBe('completed');
+  expect(mocks.tts).not.toHaveBeenCalled();
+  expect((await readAudiobookCompleteness('book', 'owner', null)).omittedChapterIndexes).toEqual([1]);
+});
+
+test('short narratable chapter returned as OMIT is repaired or reviewed, never silently excluded', async () => {
+  mocks.blobs.set('audiobook.source-chapters.json', Buffer.from(JSON.stringify({ schemaVersion: 1, chapters: [
+    { index: 0, title: 'Done', text: 'Already recorded.' }, { index: 1, title: 'Short', text: 'A short narratable sentence.', cleanupText: '[SYSTEM HINT: confirmed end-matter location]\n[LAYOUT_ENGINE_TAG: PARAGRAPH]\nA short narratable sentence.' },
+  ] })));
+  mocks.nats.mockResolvedValueOnce({ data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: '[OMIT]' })) });
+  mocks.nats.mockResolvedValueOnce({ data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: '[OMIT]' })) });
+
+  await processAudiobookQueue();
+
+  expect(job().status).toBe('error');
+  expect(mocks.blobs.has('audiobook.omissions.json')).toBe(false);
+  expect(mocks.blobs.has('0002__pronunciation_failure.json')).toBe(true);
+  expect((await readAudiobookCompleteness('book', 'owner', null)).missingChapterIndexes).toContain(1);
+});
+
+test('provider failure does not create omission evidence', async () => {
+  mocks.nats.mockRejectedValueOnce(Object.assign(new Error('Gemini unavailable'), { status: 503 }));
+  await processAudiobookQueue();
+  expect(job().status).toBe('queued');
+  expect(mocks.blobs.has('audiobook.omissions.json')).toBe(false);
+});
+
+test('arbitrary omission indexes and mismatched source hashes cannot bypass completeness or M4B export', async () => {
+  const sourceChapters = [ { index: 0, title: 'Done', text: 'Already recorded.' }, { index: 1, title: 'Short', text: 'A narratable passage.' } ];
+  mocks.blobs.set('audiobook.source-chapters.json', Buffer.from(JSON.stringify({ schemaVersion: 1, chapters: sourceChapters })));
+  mocks.db.update(schema.audiobookJobs).set({ settingsJson: { ...jobSettings(), expectedChapterIndexes: [0, 1], omittedChapterIndexes: [1], format: 'm4b' } }).where(eq(schema.audiobookJobs.id, 'job')).run();
+
+  let state = await readAudiobookCompleteness('book', 'owner', null);
+  expect(state.missingChapterIndexes).toContain(1);
+  await expect(assertAudiobookComplete('book', 'owner', null)).rejects.toThrow('Incomplete audiobook');
+  expect(fetch).not.toHaveBeenCalled();
+
+  const stale = createChapterOmissionEvidence({ ...sourceChapters[1], text: '' }, 'empty_source');
+  mocks.blobs.set('audiobook.omissions.json', Buffer.from(JSON.stringify({ schemaVersion: 1, entries: [stale] })));
+  state = await readAudiobookCompleteness('book', 'owner', null);
+  expect(state.missingChapterIndexes).toContain(1);
+  expect(state.invalidOmissionChapterIndexes).toContain(1);
+  await expect(assertAudiobookComplete('book', 'owner', null)).rejects.toThrow('lack valid source evidence');
+});
+
+test('validated omission evidence remains usable after restart when pinned source is unchanged', async () => {
+  const chapter = { index: 1, title: 'Bibliography', text: '[SYSTEM HINT: confirmed end-matter]\n[LAYOUT_ENGINE_TAG: REFERENCE_CONTENT]\nA reference.' };
+  const evidence = createChapterOmissionEvidence(chapter, 'confirmed_end_matter');
+  expect(evidence).not.toBeNull();
+  mocks.blobs.set('audiobook.source-chapters.json', Buffer.from(JSON.stringify({ schemaVersion: 1, chapters: [
+    { index: 0, title: 'Done', text: 'Already recorded.' }, chapter,
+  ] })));
+  mocks.blobs.set('audiobook.omissions.json', Buffer.from(JSON.stringify({ schemaVersion: 1, entries: [evidence] })));
+  mocks.db.update(schema.audiobookJobs).set({ settingsJson: { ...jobSettings(), expectedChapterIndexes: [0, 1] } }).where(eq(schema.audiobookJobs.id, 'job')).run();
+
+  expect((await readAudiobookCompleteness('book', 'owner', null)).complete).toBe(true);
+  globalState.__worker_booted = false;
+  expect((await readAudiobookCompleteness('book', 'owner', null)).complete).toBe(true);
+});
+
 test('permanent Gemini denial stops with configuration diagnostics and no manual IPA artifact', async () => {
   mocks.nats.mockResolvedValue({ data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: 'The λόγος remains.' })) });
   mocks.gemini.mockResolvedValue({ response: new Response(JSON.stringify({ error: { status: 'PERMISSION_DENIED' } }), { status: 403 }), usedModel: 'gemini-test' });
@@ -211,6 +300,7 @@ test('functioning Gemini with unacceptable IPA retains content review and cannot
   mocks.gemini.mockResolvedValue({ response: new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ patches: [{ id: '0', replacement: '[λόγος](/λoɡos/)' }] }) }] } }] })), usedModel: 'gemini-test' });
   await processAudiobookQueue(); expect(job().status).toBe('error'); expect(job().error).toContain('Incomplete audiobook');
   expect(mocks.blobs.has('0002__pronunciation_failure.json')).toBe(true); expect(mocks.tts).not.toHaveBeenCalled();
+  expect(mocks.blobs.has('audiobook.omissions.json')).toBe(false);
   expect(fetch).not.toHaveBeenCalled(); await expect(assertAudiobookComplete('book', 'owner', null)).rejects.toThrow('Chapter content review');
 });
 

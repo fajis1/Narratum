@@ -179,6 +179,7 @@ export async function GET(request: NextRequest) {
       chapters,
       incomplete: !completeness.complete,
       missingChapterIndexes: completeness.missingChapterIndexes,
+      invalidOmissionChapterIndexes: completeness.invalidOmissionChapterIndexes,
       exists: true,
       hasComplete,
       bookId,

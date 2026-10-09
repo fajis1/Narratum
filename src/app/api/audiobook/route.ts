@@ -113,8 +113,11 @@ export async function GET(request: NextRequest) {
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
     const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
-    if (!completeness.complete) return NextResponse.json({ error: 'Audiobook is incomplete. Retry missing chapters before full-book export.',
-      code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE', missingChapterIndexes: completeness.missingChapterIndexes }, { status: 409 });
+    if (!completeness.complete) return NextResponse.json({ error: completeness.invalidOmissionChapterIndexes.length
+      ? 'Some saved chapter omissions no longer match the pinned source. Retry or review those chapters before full-book export.'
+      : 'Audiobook is incomplete. Retry missing chapters before full-book export.',
+    code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE',
+    missingChapterIndexes: completeness.missingChapterIndexes, invalidOmissionChapterIndexes: completeness.invalidOmissionChapterIndexes }, { status: 409 });
     const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name)
       && !completeness.recordedChapterIndexes.includes(Number(name.split('__')[0]) - 1));
     if (failedChapterFiles.length) {
@@ -251,8 +254,11 @@ export async function POST(request: NextRequest) {
     const objects = await listAudiobookObjects(bookId, storageUserId, testNamespace);
     const objectNames = objects.map((item) => item.fileName);
     const completeness = await readAudiobookCompleteness(bookId, storageUserId, testNamespace, objectNames);
-    if (!completeness.complete) return NextResponse.json({ error: 'Audiobook is incomplete. Retry missing chapters before full-book export.',
-      code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE', missingChapterIndexes: completeness.missingChapterIndexes }, { status: 409 });
+    if (!completeness.complete) return NextResponse.json({ error: completeness.invalidOmissionChapterIndexes.length
+      ? 'Some saved chapter omissions no longer match the pinned source. Retry or review those chapters before full-book export.'
+      : 'Audiobook is incomplete. Retry missing chapters before full-book export.',
+    code: completeness.activeReviewChapterIndexes.length ? 'AUDIOBOOK_CHAPTER_REVIEW_REQUIRED' : 'AUDIOBOOK_INCOMPLETE',
+    missingChapterIndexes: completeness.missingChapterIndexes, invalidOmissionChapterIndexes: completeness.invalidOmissionChapterIndexes }, { status: 409 });
     const failedChapterFiles = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name)
       && !completeness.recordedChapterIndexes.includes(Number(name.split('__')[0]) - 1));
     if (failedChapterFiles.length) {

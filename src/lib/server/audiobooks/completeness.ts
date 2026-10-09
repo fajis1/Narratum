@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { audiobookJobs, audiobookChapters } from '@/db/schema';
 import { getAudiobookObjectBuffer, isMissingBlobError, listAudiobookObjects } from './blobstore';
 import { decodeChapterFileName } from './chapters';
+import { createChapterOmissionEvidence, getChapterOmissionReason, isValidChapterOmissionEvidence } from './chapter-omissions';
 
 export function missingAudiobookChapters(expected: number[], recorded: number[], omitted: number[] = []): number[] {
   const present = new Set([...recorded, ...omitted]);
@@ -16,13 +17,22 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
     .where(and(eq(audiobookJobs.documentId, bookId), eq(audiobookJobs.userId, userId))).orderBy(desc(audiobookJobs.createdAt));
   const settings = jobs.map((j: { settingsJson: unknown }) => typeof j.settingsJson === 'string' ? JSON.parse(j.settingsJson) : j.settingsJson ?? {})
     .find((s: Record<string, unknown>) => !s.jobType || s.jobType === 'generate') ?? {};
-  let expected: number[] = Array.isArray(settings.expectedChapterIndexes) ? settings.expectedChapterIndexes : [];
-  if (!expected.length && objectNames.includes('audiobook.source-chapters.json')) {
+  let sourceChapters: Array<{ index: number; title?: string; text: string; cleanupText?: string }> | null = null;
+  if (objectNames.includes('audiobook.source-chapters.json')) {
     try {
       const manifest = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, 'audiobook.source-chapters.json', namespace)).toString('utf8'));
-      expected = manifest.chapters.filter((c: { text: string }) => c.text.trim()).map((c: { index: number }) => c.index);
+      if (manifest?.schemaVersion === 1 && Array.isArray(manifest.chapters)) {
+        sourceChapters = manifest.chapters.filter((chapter: unknown): chapter is { index: number; title?: string; text: string; cleanupText?: string } => (
+          Boolean(chapter) && typeof chapter === 'object'
+          && Number.isInteger((chapter as { index?: unknown }).index)
+          && typeof (chapter as { text?: unknown }).text === 'string'
+          && ((chapter as { cleanupText?: unknown }).cleanupText === undefined || typeof (chapter as { cleanupText?: unknown }).cleanupText === 'string')
+        ));
+      }
     } catch (error) { if (!isMissingBlobError(error)) throw error; }
   }
+  let expected: number[] = Array.isArray(settings.expectedChapterIndexes) ? settings.expectedChapterIndexes : [];
+  if (!expected.length && sourceChapters) expected = sourceChapters.filter(c => c.text.trim()).map(c => c.index);
   // Historical books lack a manifest. Retained originals/failures expose gaps,
   // including the last failed chapter, without re-extracting the PDF.
   if (!expected.length) {
@@ -36,7 +46,34 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
     const referenced = decodeChapterFileName(c.filePath);
     return objectNames.includes(c.filePath) && referenced?.index === c.chapterIndex && referenced.format === c.format;
   }).map((c: { chapterIndex: number }) => c.chapterIndex);
-  const omitted = Array.isArray(settings.omittedChapterIndexes) ? settings.omittedChapterIndexes : [];
+  const legacyOmitted = new Set<number>(Array.isArray(settings.omittedChapterIndexes)
+    ? settings.omittedChapterIndexes.filter((index: unknown): index is number => typeof index === 'number' && Number.isInteger(index) && index >= 0)
+    : []);
+  let omissionEntries: unknown[] = [];
+  try {
+    const artifact = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, 'audiobook.omissions.json', namespace)).toString('utf8'));
+    if (artifact?.schemaVersion === 1 && Array.isArray(artifact.entries)) omissionEntries = artifact.entries;
+  } catch (error) { if (!isMissingBlobError(error)) throw error; }
+  const evidenceByIndex = new Map<number, unknown>();
+  for (const entry of omissionEntries) {
+    const index = (entry as { chapterIndex?: unknown } | null)?.chapterIndex;
+    if (Number.isInteger(index) && !evidenceByIndex.has(index as number)) evidenceByIndex.set(index as number, entry);
+  }
+  const verifiedOmissionIndexes: number[] = [];
+  const invalidOmissionChapterIndexes: number[] = [];
+  for (const index of new Set([...legacyOmitted, ...evidenceByIndex.keys()])) {
+    const chapter = sourceChapters?.find(c => c.index === index);
+    const entry = evidenceByIndex.get(index);
+    const legacyReason = chapter ? getChapterOmissionReason(chapter) : null;
+    const valid = Boolean(chapter && (entry
+      ? isValidChapterOmissionEvidence(entry, chapter)
+      : legacyOmitted.has(index) && legacyReason && createChapterOmissionEvidence(chapter, legacyReason)));
+    // Old jobs stored only indexes. Accept them conservatively only when their
+    // pinned source independently proves empty content or marked structural end matter.
+    if (valid) verifiedOmissionIndexes.push(index);
+    else if (expected.includes(index)) invalidOmissionChapterIndexes.push(index);
+  }
+  const omitted = verifiedOmissionIndexes;
   const missing = missingAudiobookChapters(expected, recorded, omitted);
   const activeReviewChapterIndexes: number[] = [];
   for (const name of objectNames.filter(n => /^\d{4,6}__pronunciation_failure\.json$/.test(n))) {
@@ -52,12 +89,16 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
   }
 
   return { expectedChapterIndexes: expected, missingChapterIndexes: missing, recordedChapterIndexes: recorded,
-    omittedChapterIndexes: omitted as number[], activeReviewChapterIndexes, complete: expected.length > 0 && missing.length === 0 && activeReviewChapterIndexes.length === 0 };
+    omittedChapterIndexes: omitted, invalidOmissionChapterIndexes, activeReviewChapterIndexes,
+    complete: expected.length > 0 && missing.length === 0 && activeReviewChapterIndexes.length === 0 };
 }
 
 export async function assertAudiobookComplete(bookId: string, userId: string, namespace: string | null, names?: string[]) {
   const state = await readAudiobookCompleteness(bookId, userId, namespace, names);
   if (state.activeReviewChapterIndexes.length) throw new Error(`Chapter content review is required before full-book compilation: ${state.activeReviewChapterIndexes.length} chapters.`);
-  if (!state.complete) throw new Error(`Incomplete audiobook: ${state.missingChapterIndexes.length} required chapter recordings are missing. Retry missing chapters before full-book compilation.`);
+  if (!state.complete) {
+    const invalidOmissions = state.invalidOmissionChapterIndexes.length;
+    throw new Error(`Incomplete audiobook: ${state.missingChapterIndexes.length} required chapter recordings are missing.${invalidOmissions ? ` ${invalidOmissions} saved chapter omission(s) lack valid source evidence and must be retried or reviewed.` : ''} Retry missing chapters before full-book compilation.`);
+  }
   return state;
 }
