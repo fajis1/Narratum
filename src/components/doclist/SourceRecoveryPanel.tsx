@@ -30,6 +30,7 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
   const [pronunciation, setPronunciation] = useState('');
   const [verified, setVerified] = useState(false);
   const [verifiedProposalIds, setVerifiedProposalIds] = useState<string[]>([]);
+  const [approveAllRevision, setApproveAllRevision] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const stopAfterBatch = useRef(false);
   const [error, setError] = useState('');
@@ -38,6 +39,7 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
     const activeSession = session.current + 1;
     session.current = activeSession; setAnalysis(null); setConfiguration(null); setGroupId(''); setOccurrenceId(''); setError('');
     setOcrModel(''); setOcrFallbacks(null); setBackupNext(false); backupNextRef.current = false;
+    setApproveAllRevision(null);
     return () => { session.current = activeSession + 1; stopAfterBatch.current = true; activeRequest.current?.abort(); };
   }, [documentId]);
   useEffect(() => {
@@ -142,13 +144,14 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
     setPronunciation(item?.proposal?.pronunciation || ''); setVerified(false);
   }, [item?.id, item?.proposal?.correctedSurface, item?.proposal?.pronunciation]);
   const button = 'rounded border px-3 py-1 text-sm disabled:opacity-50';
+  const approvableSuggestions = analysis?.occurrences.filter((entry) => entry.status === 'proposed' && !entry.anchorInvalidated && entry.proposal) || [];
   const coolingDown = (analysis?.recoveryRun?.nextAttemptAt || 0) > now && !backupNext;
   const effectiveModel = ocrModel || configuration?.model || '';
   const effectiveFallbacks = ocrFallbacks?.filter(Boolean).length ? ocrFallbacks.filter(Boolean)
     : ocrModel ? [...(GEMINI_MODEL_FALLBACKS[ocrModel] || [])] : configuration?.fallbackModels || [];
   return <section aria-label="OCR source recovery" className="min-w-0 p-3 text-sm">
     <h4 className="font-semibold">OCR source recovery</h4>
-    <p className="my-1 text-xs text-muted">Pre-scan detects suspicious spellings but does not analyze them. Analyze proposals against PDF page images, then verify each selected reading before accepting it. Corrections stay local to this PDF; the original extraction and shared dictionaries are unchanged.</p>
+    <p className="my-1 text-xs text-muted">Pre-scan detects suspicious spellings but does not analyze them. Analyze proposals against PDF page images, then review individual readings or accept all saved Gemini suggestions for this PDF. Corrections stay local to this PDF; the original extraction and shared dictionaries are unchanged.</p>
     {error && <p role="alert" className="my-2 text-danger">{error}</p>}
     {configuration && <fieldset className="my-3 min-w-0 space-y-2 rounded border p-3" disabled={busy}>
       <legend className="font-semibold">OCR Gemini configuration</legend>
@@ -195,6 +198,21 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
       {busy && <button type="button" className={button} onClick={() => { stopAfterBatch.current = true; activeRequest.current?.abort(); }}>Cancel OCR analysis</button>}
       <button type="button" className={button} disabled={busy} onClick={() => void load()}>Refresh</button>
     </div>}
+    {analysis && approvableSuggestions.length > 0 && <div className="my-3 space-y-2 rounded border p-3">
+      <button type="button" className={`${button} font-semibold`} disabled={busy}
+        onClick={() => setApproveAllRevision(analysis.revision)}>Approve all Gemini suggestions</button>
+      <p className="text-xs">{approvableSuggestions.length} current suggestion(s) across this PDF. Ambiguous and unanalyzed occurrences are excluded.</p>
+      {approveAllRevision === analysis.revision && <div role="group" aria-label="Confirm all Gemini suggestions" className="space-y-2">
+        <p>Accept all {approvableSuggestions.length} suggested readings as corrections for this PDF? This records your acceptance of Gemini suggestions, without claiming manual PDF verification. Accepted readings will be used in effective scans and new audiobook source text.</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={button} disabled={busy} onClick={() => {
+            setApproveAllRevision(null);
+            void action('approve_all_suggestions', undefined, { acceptGeminiSuggestions: true });
+          }}>Confirm approval of {approvableSuggestions.length} suggestions</button>
+          <button type="button" className={button} disabled={busy} onClick={() => setApproveAllRevision(null)}>Cancel bulk approval</button>
+        </div>
+      </div>}
+    </div>}
     {!!groups.size && <div className="mt-3 space-y-3">
       <label className="block">Suspected spelling group
         <select className="block w-full rounded border bg-background p-1" aria-label="Suspected spelling group" value={groupId} disabled={busy} onChange={(event) => { setGroupId(event.target.value); setOccurrenceId(''); }}>
@@ -227,6 +245,7 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
       {item && <div className="space-y-2 rounded border p-2">
         <p className="break-words">{item.context}</p>
         <p className="text-xs text-muted">{item.reasons.join(' ')}</p>
+        {item.status === 'approved' && item.approvalMethod === 'gemini_suggestions' && <p className="text-xs">Approved by accepting Gemini suggestions; manual PDF verification was not recorded.</p>}
         <a className="underline" href={`/api/documents/source-recovery?documentId=${encodeURIComponent(documentId)}&page=${item.pdfPage}`} target="_blank" rel="noreferrer">View original PDF page {item.pdfPage}</a>
         {item.proposal && <>
           <p>{item.proposal.explanation}</p>

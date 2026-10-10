@@ -99,6 +99,27 @@ export async function POST(req: NextRequest) {
         updatedAt: Date.now(),
         ...(providerUnavailable ? { nextAttemptAt: Date.now() + Math.max(30_000, lastDiagnostic?.retryAfterMs || 0) } : {}),
       };
+    } else if (body.action === 'approve_all_suggestions') {
+      if (body.acceptGeminiSuggestions !== true) {
+        return NextResponse.json({ error: 'Confirm acceptance of all current Gemini suggestions for this PDF.' }, { status: 400 });
+      }
+      // Resolve this exact saved revision on the server. Never extrapolate a
+      // suggested reading to unresolved occurrences or future model results.
+      const selected = next.occurrences.filter((item) => item.status === 'proposed' && !item.anchorInvalidated && item.proposal);
+      if (!selected.length) return NextResponse.json({ error: 'No current Gemini suggestions to approve.' }, { status: 409 });
+      const now = Date.now();
+      for (const item of selected) {
+        const proposal = item.proposal!;
+        validateRecoveredSurface(proposal.correctedSurface);
+        if (proposal.pronunciation && !normalizeKokoroPronunciationCandidate(proposal.correctedSurface, proposal.pronunciation)) {
+          return NextResponse.json({ error: 'A suggestion has an incompatible pronunciation. Review it before approving all.' }, { status: 400 });
+        }
+        item.status = 'approved';
+        item.reviewedAt = now;
+        item.approvalMethod = 'gemini_suggestions';
+      }
+      next.revision++;
+      sourceRecoveryPronunciations(sourceRecoverySnapshot(next));
     } else if (body.action === 'approve_many') {
       const ids = body.occurrenceIds;
       const verifiedIds = body.sourceVerifiedOccurrenceIds;
@@ -116,6 +137,7 @@ export async function POST(req: NextRequest) {
       for (const item of selected) {
         item!.status = 'approved';
         item!.reviewedAt = now;
+        item!.approvalMethod = 'pdf_review';
       }
       next.revision++;
       sourceRecoveryPronunciations(sourceRecoverySnapshot(next));
@@ -138,9 +160,11 @@ export async function POST(req: NextRequest) {
           pronunciationReference: unchanged && pronunciation === item.proposal?.pronunciation ? item.proposal?.pronunciationReference || null : null };
         item.status = 'approved';
         item.reviewedAt = Date.now();
+        item.approvalMethod = 'pdf_review';
       } else {
         item.status = body.action === 'reject' ? 'rejected' : 'unresolved';
         item.reviewedAt = Date.now();
+        delete item.approvalMethod;
         if (body.action === 'reset') delete item.proposal;
       }
       next.revision++;

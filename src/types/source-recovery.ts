@@ -29,6 +29,8 @@ export interface SourceRecoveryOccurrence {
     pronunciationReference: { scope: 'global' | 'personal'; term: string } | null;
   };
   reviewedAt?: number;
+  /** Owner acceptance of model suggestions is distinct from manual PDF review. */
+  approvalMethod?: 'pdf_review' | 'gemini_suggestions';
   analyzedAt?: number;
 }
 export type SourceRecoveryStage = 'pdf_loading' | 'pdf_rendering' | 'renderer_startup' | 'gemini_configuration'

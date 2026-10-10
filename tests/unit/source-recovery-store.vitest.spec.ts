@@ -124,3 +124,18 @@ test('changed offsets in a full scan invalidate prior approval without deleting 
   expect(partial.occurrences.find((item) => item.id === changed.occurrences[0].id)?.surfaceOccurrenceCount).toBe(1);
   expect(partial.occurrences.find((item) => item.id === current.occurrences[0].id)?.anchorInvalidated).toBe(true);
 });
+
+test('Gemini suggestion acceptance provenance survives compatible rescans and clears on invalidation', async () => {
+  const current = await registerSourceRecovery('owner', 'pdf', rows);
+  current.occurrences[0].status = 'approved';
+  current.occurrences[0].approvalMethod = 'gemini_suggestions';
+  current.occurrences[0].proposal = { correctedSurface: 'καταργέω', lemma: 'καταργέω', language: 'koine_greek',
+    explanation: 'Model suggestion accepted by owner', dictionary: null, pronunciation: null, pronunciationReference: null };
+  current.revision++;
+  await saveSourceRecovery('owner', current, current.revision - 1);
+  expect((await readSourceRecovery('owner', 'pdf'))?.occurrences[0].approvalMethod).toBe('gemini_suggestions');
+  const same = await registerSourceRecovery('owner', 'pdf', rows, { complete: true });
+  expect(same.occurrences[0]).toMatchObject({ status: 'approved', approvalMethod: 'gemini_suggestions' });
+  const changed = await registerSourceRecovery('owner', 'pdf', [{ ...rows[0], occurrences: [{ ...rows[0].occurrences[0], pageSourceStart: 20 }] }], { complete: true });
+  expect(changed.occurrences.every(item => item.status === 'unresolved' && !item.approvalMethod)).toBe(true);
+});

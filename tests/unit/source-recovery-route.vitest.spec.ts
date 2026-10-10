@@ -72,6 +72,63 @@ test('bulk approval rejects unverified, duplicate, stale, and non-proposed selec
   expect((await POST(request({ action: 'approve_many', revision: 2, occurrenceIds: ['one'], sourceVerifiedOccurrenceIds: ['one'] }))).status).toBe(409);
   expect(mocks.save).not.toHaveBeenCalled();
 });
+test('approve all accepts only saved eligible suggestions across groups, with distinct acceptance provenance', async () => {
+  const initial = analysis();
+  const original = initial.occurrences[0];
+  initial.occurrences.push(
+    { ...original, id: 'other-group', groupId: 'other', pdfPage: 2 },
+    { ...original, id: 'unresolved', status: 'unresolved', proposal: undefined },
+    { ...original, id: 'ambiguous', status: 'ambiguous' },
+    { ...original, id: 'rejected', status: 'rejected' },
+    { ...original, id: 'invalidated', anchorInvalidated: true },
+    { ...original, id: 'missing-proposal', proposal: undefined },
+    { ...original, id: 'reviewed', status: 'approved', approvalMethod: 'pdf_review', reviewedAt: 123 },
+  );
+  mocks.read.mockResolvedValue(initial);
+  const response = await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: true, correctedSurface: 'wrong', occurrenceIds: ['unresolved'] }));
+  expect(response.status).toBe(200);
+  const saved = mocks.save.mock.calls[0][1] as SourceRecoveryAnalysis;
+  expect(saved.revision).toBe(4);
+  for (const item of saved.occurrences.slice(0, 2)) {
+    expect(item).toMatchObject({ status: 'approved', approvalMethod: 'gemini_suggestions', proposal: original.proposal });
+    expect(item.reviewedAt).toEqual(expect.any(Number));
+  }
+  expect(saved.occurrences.slice(2)).toEqual(initial.occurrences.slice(2));
+  expect(initial.occurrences[0].status).toBe('proposed');
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  expect(mocks.save).toHaveBeenCalledWith('owner', expect.anything(), 3);
+  expect(mocks.propose).not.toHaveBeenCalled();
+  expect(mocks.profiles).not.toHaveBeenCalled();
+  expect(mocks.dictionary).not.toHaveBeenCalled();
+});
+test('approve all supports more than 100 saved suggestions in one atomic revision', async () => {
+  const initial = analysis();
+  initial.occurrences = Array.from({ length: 150 }, (_, index) => ({ ...initial.occurrences[0], id: `item-${index}`, pageSourceStart: index * 40 }));
+  mocks.read.mockResolvedValue(initial);
+  expect((await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: true }))).status).toBe(200);
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  expect(mocks.save.mock.calls[0][1].occurrences.filter((item: { status: string }) => item.status === 'approved')).toHaveLength(150);
+});
+test('approve all requires explicit acceptance, current revision, and available suggestions', async () => {
+  expect((await POST(request({ action: 'approve_all_suggestions' }))).status).toBe(400);
+  expect((await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: 'true' }))).status).toBe(400);
+  expect((await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: true, revision: 2 }))).status).toBe(409);
+  const empty = analysis(); empty.occurrences[0].status = 'approved'; mocks.read.mockResolvedValue(empty);
+  expect((await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: true }))).status).toBe(409);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+test('approve all does not partially commit a malformed or conflicting suggestion', async () => {
+  const initial = analysis();
+  initial.occurrences.push({ ...initial.occurrences[0], id: 'invalid', proposal: { ...initial.occurrences[0].proposal!, correctedSurface: '<script>' } });
+  mocks.read.mockResolvedValue(initial);
+  expect((await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: true }))).status).toBe(400);
+  initial.occurrences[1].proposal = { ...initial.occurrences[0].proposal!, pronunciation: 'garbage' };
+  expect((await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: true }))).status).toBe(400);
+  initial.occurrences[1].proposal.pronunciation = '/katɑrɡeɔ/';
+  expect((await POST(request({ action: 'approve_all_suggestions', acceptGeminiSuggestions: true }))).status).toBe(400);
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(initial.occurrences.every(item => item.status === 'proposed')).toBe(true);
+});
 test('editing a surface discards the old lemma, IPA, and pronunciation reference', async () => {
   const response = await POST(request({ action: 'approve', sourceVerified: true, correctedSurface: 'καταργούμενον' }));
   expect(response.status).toBe(200);
