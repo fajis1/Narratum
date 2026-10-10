@@ -747,9 +747,10 @@ export function ScanForeignWordsModal({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Import failed.');
-      setWords(data.words);
+      applyScanJob(data.job);
+      if (data.imported > 0) setReviewFilter('all');
       if (Array.isArray(data.skipped) && data.skipped.length > 0) {
-        setReviewFilter('flagged');
+        if (!data.imported) setReviewFilter('flagged');
         if (data.imported > 0) {
           toast(
             `Imported ${data.imported} edited word${data.imported === 1 ? '' : 's'}; ${data.skipped.length} word${data.skipped.length === 1 ? '' : 's'} skipped and flagged for review in Review Area.`,
@@ -834,7 +835,7 @@ export function ScanForeignWordsModal({
         });
         const data = await response.json();
         if (!response.ok || data.imported !== 1) throw new Error(data.error || data.skipped?.[0]?.reason || 'Document pronunciation was not saved.');
-        setWords(data.words); setEditingWord(null);
+        applyScanJob(data.job); setEditingWord(null);
         toast.success('Saved this reviewed reading’s pronunciation for this document.'); return;
       }
       // We need to fetch current profiles, update active, then save back.

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ database: undefined as unknown as ReturnType<typeof drizzle>,
   tasks: [] as (() => Promise<void>)[], scanRows: [] as unknown[], scanner: vi.fn(), transport: vi.fn(),
-  dictionary: vi.fn(), enrich: vi.fn(), globalPronunciations: vi.fn(), globalDefinitions: vi.fn(), book: vi.fn(),
+  dictionary: vi.fn(), enrich: vi.fn(), globalPronunciations: vi.fn(), globalDefinitions: vi.fn(), readDefinitions: vi.fn(), book: vi.fn(), readBook: vi.fn(),
   render: vi.fn(), tts: vi.fn(), profile: { id: 'profile', name: 'Fixture', workerMode: 'narrator',
     aiModel: 'gemini-3.8-flash', geminiApiKey: 'fixture', pronunciations: {} } }));
 vi.mock('@/db', () => ({ get db() { return mocks.database; } }));
@@ -22,8 +22,8 @@ vi.mock('@/lib/server/smart-audio-profiles', () => ({ readSmartAudioProfilesDocu
 vi.mock('@/lib/server/smart-audio/gemini-failover', () => ({ fetchGeminiWithRateLimitFallback: mocks.transport }));
 vi.mock('@/lib/server/smart-audio/sefaria-lexicon', () => ({ fetchLexiconEntry: mocks.dictionary, fetchLexiconEntries: mocks.enrich }));
 vi.mock('@/lib/server/smart-audio/global-pronunciation-merge', () => ({ mergeGeneratedGlobalPronunciations: mocks.globalPronunciations }));
-vi.mock('@/lib/server/smart-audio/global-definition-library', () => ({ readGlobalDefinitions: async () => ({}), mergeGlobalDefinitions: mocks.globalDefinitions }));
-vi.mock('@/lib/server/smart-audio/book-lexicon', async (original) => ({ ...await original<typeof import('@/lib/server/smart-audio/book-lexicon')>(), readBookLexicon: async () => null, writeBookLexicon: mocks.book }));
+vi.mock('@/lib/server/smart-audio/global-definition-library', () => ({ readGlobalDefinitions: mocks.readDefinitions, mergeGlobalDefinitions: mocks.globalDefinitions }));
+vi.mock('@/lib/server/smart-audio/book-lexicon', async (original) => ({ ...await original<typeof import('@/lib/server/smart-audio/book-lexicon')>(), readBookLexicon: mocks.readBook, writeBookLexicon: mocks.book }));
 vi.mock('@/lib/server/tts/generate', () => ({ generateTTSBuffer: mocks.tts }));
 vi.mock('@/lib/server/smart-audio/source-recovery-proposals', async (original) => {
   const actual = await original<typeof import('@/lib/server/smart-audio/source-recovery-proposals')>();
@@ -34,6 +34,7 @@ import { POST as saveProfiles } from '@/app/api/tts-settings/route';
 import { POST as promote } from '@/app/api/tts/global-pronunciations/route';
 import { POST as refine } from '@/app/api/tts/refine-pronunciations/route';
 import { POST as scan } from '@/app/api/documents/scan-foreign-words/route';
+import { POST as importScan } from '@/app/api/documents/scan-foreign-words/import/route';
 import { POST as recover } from '@/app/api/documents/source-recovery/route';
 import { readSourceRecovery } from '@/lib/server/smart-audio/source-recovery-store';
 import { applySourceRecovery, assertRecoveredReadings, sourceRecoverySnapshot } from '@/lib/shared/source-recovery';
@@ -41,6 +42,7 @@ import { exportForeignWordScan } from '@/lib/shared/foreign-word-scan-transfer';
 import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { foreignWordCandidateCacheKey } from '@/lib/server/smart-audio/gemini-foreign-word-scan';
 import { scanPronunciationActionError } from '@/lib/server/smart-audio/scan-pronunciation-guard';
+import type { SmartAudioBookLexicon } from '@/types/document-settings';
 
 type Row = { word: string; count: number; occurrences: { pdfPage: number; pageSourceStart: number }[]; [key: string]: unknown };
 let sqlite: Database.Database;
@@ -49,7 +51,7 @@ const request = (body: object) => new NextRequest('http://localhost/api/document
 function modelResponse(results: unknown) {
   mocks.transport.mockResolvedValue({ usedModel: 'fixture', response: new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(results) }] } }] })) });
 }
-async function rescan(): Promise<{ id: string; words: Row[]; errors: string[] }> {
+async function rescan(): Promise<{ id: string; words: Row[]; errors: string[]; total: number; librarySkipped: number; manualReviewTerms: string[] }> {
   const response = await scan(request({ mode: 'all_foreign' }));
   expect(response.status).toBe(202);
   const { scanJobId: jobId } = await response.json();
@@ -62,6 +64,9 @@ async function rescan(): Promise<{ id: string; words: Row[]; errors: string[] }>
 beforeEach(() => {
   vi.clearAllMocks(); mocks.tasks = [];
   mocks.profile.pronunciations = {};
+  mocks.profile.workerMode = 'narrator';
+  mocks.readBook.mockResolvedValue(null); mocks.readDefinitions.mockResolvedValue({});
+  mocks.book.mockReset();
   previousPostgres = process.env.POSTGRES_URL; delete process.env.POSTGRES_URL;
   sqlite = new Database(':memory:');
   sqlite.exec('CREATE TABLE documents (id text, user_id text, type text); CREATE TABLE admin_settings (key text PRIMARY KEY, value_json text NOT NULL, source text DEFAULT \'admin\', updated_at integer DEFAULT 1);');
@@ -170,4 +175,61 @@ test('a stale global or personal pronunciation cannot make an ASCII OCR candidat
   expect(mocks.globalDefinitions).not.toHaveBeenCalled();
   expect(mocks.book).toHaveBeenCalledWith('owner', 'pdf', expect.objectContaining({ entries: {} }));
   expect(sqlite.prepare("SELECT value_json FROM admin_settings WHERE key = 'global_pronunciations'").get()).toEqual({ value_json: storedLibrary });
+});
+
+test('imported book-only pronunciations survive repeated scans without new Gemini work or global promotion', async () => {
+  let lexicon: SmartAudioBookLexicon | null = null;
+  mocks.readBook.mockImplementation(async () => lexicon);
+  mocks.book.mockImplementation(async (_user: string, _document: string, saved: SmartAudioBookLexicon) => { lexicon = structuredClone(saved); });
+  mocks.scanRows = [{ word: 'λόγος', count: 1, occurrences: [] }];
+  sqlite.prepare('INSERT INTO admin_settings (key, value_json) VALUES (?, ?)').run('foreign_word_scan:original', JSON.stringify({
+    id: 'original', userId: 'owner', documentId: 'pdf', status: 'completed', words: mocks.scanRows,
+    manualReviewTerms: ['λόγος'], manualReviewCount: 1, total: 1, completed: 1, resolved: 0,
+  }));
+  const imported = await importScan(request({ jobId: 'original', scan: {
+    format: 'openreader-foreign-word-scan', version: 2, documentId: 'pdf',
+    words: [{ word: 'λόγος', proposedPronunciation: '/loʊɡos/', proposedDefinition: 'word' }],
+  } }));
+  expect(imported.status).toBe(200);
+  expect(await imported.json()).toMatchObject({ imported: 1, job: { manualReviewTerms: [], manualReviewCount: 0 } });
+  for (let pass = 0; pass < 2; pass++) {
+    const job = await rescan();
+    expect(job).toMatchObject({ total: 0, librarySkipped: 1, manualReviewTerms: [] });
+    expect(job.words[0]).toMatchObject({ libraryPronunciation: '/loʊɡos/', pronunciationSource: 'document',
+      pronunciations: [{ phonetic: '/loʊɡos/', isInGlobalLibrary: false }], definition: 'word', definitionNeedsReview: false });
+    expect(lexicon!.entries['λόγος']).toMatchObject({ pronunciation: '/loʊɡos/', definition: 'word', approvedRepair: true });
+  }
+  expect(mocks.transport).not.toHaveBeenCalled(); expect(mocks.tts).not.toHaveBeenCalled();
+  expect(mocks.globalPronunciations).not.toHaveBeenCalled(); expect(mocks.globalDefinitions).not.toHaveBeenCalled();
+});
+
+test('rescans prefer saved book choices over global choices, honor personal overrides and preserve explicit omissions', async () => {
+  mocks.profile.workerMode = 'scholar';
+  mocks.scanRows = [{ word: 'λόγος', count: 1, occurrences: [] }, { word: 'θεός', count: 1, occurrences: [] }];
+  mocks.readBook.mockResolvedValue({ schemaVersion: 1, profileId: 'profile', entries: {
+    'λόγος': { term: 'λόγος', pronunciation: '/loʊɡos/', definition: 'word', language: 'koine_greek', approvedRepair: true },
+    'θεός': { term: 'θεός', pronunciation: '/θeos/', definition: null, definitionOmitted: true, language: 'koine_greek', approvedRepair: true },
+  } });
+  mocks.readDefinitions.mockResolvedValue({ 'θεός': 'God' });
+  sqlite.prepare('INSERT INTO admin_settings (key, value_json) VALUES (?, ?)').run('global_pronunciations', JSON.stringify({ 'λόγος': ['/loɡus/'] }));
+  const book = await rescan();
+  expect(book.total).toBe(0);
+  expect(book.words[0]).toMatchObject({ libraryPronunciation: '/loʊɡos/', pronunciationSource: 'document' });
+  expect(book.words[1]).toMatchObject({ definition: null, definitionOmitted: true });
+  mocks.profile.pronunciations = { 'λόγος': '/loɡus/' };
+  const personal = await rescan();
+  expect(personal.total).toBe(0);
+  expect(personal.words[0]).toMatchObject({ libraryPronunciation: '/loɡus/', userOverride: '/loɡus/', pronunciationSource: 'personal' });
+  expect(mocks.transport).not.toHaveBeenCalled();
+});
+
+test('a saved book pronunciation cannot resolve damaged OCR text', async () => {
+  mocks.scanRows = [{ word: 'xatagew', count: 1, occurrences: [], latinizedOcrCandidate: true }];
+  mocks.readBook.mockResolvedValue({ profileId: 'profile', entries: {
+    xatagew: { term: 'xatagew', pronunciation: '/katɑrɡeo/', definition: 'abolish', approvedRepair: true },
+  } });
+  const job = await rescan();
+  expect(job.words[0]).toMatchObject({ sourceStatus: 'needs_source_repair', pronunciations: [], libraryPronunciation: null, definition: null });
+  expect(mocks.book).toHaveBeenCalledWith('owner', 'pdf', expect.objectContaining({ entries: {} }));
+  expect(mocks.transport).not.toHaveBeenCalled();
 });

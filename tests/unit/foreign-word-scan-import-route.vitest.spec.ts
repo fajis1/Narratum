@@ -9,7 +9,7 @@ vi.mock('@/lib/server/auth/auth', () => ({ requireAuthContext: (...args: unknown
 vi.mock('@/db', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: () => mocks.select() }) }) }),
-    update: () => ({ set: () => ({ where: () => mocks.update() }) }),
+    update: () => ({ set: (values: unknown) => ({ where: () => mocks.update(values) }) }),
   },
 }));
 vi.mock('@/lib/server/smart-audio/book-lexicon', () => ({
@@ -22,6 +22,7 @@ vi.mock('@/lib/server/smart-audio-profiles', () => ({
 }));
 
 import { POST } from '../../src/app/api/documents/scan-foreign-words/import/route';
+import { isFlaggedForReview } from '@/lib/shared/foreign-word-scan-results';
 
 const scan = {
   format: 'openreader-foreign-word-scan', version: 1, documentId: 'book',
@@ -205,5 +206,64 @@ test('cannot spoof source approval to import a Latinized OCR alias into the docu
   } }) as never);
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ imported: 0, skipped: [{ word: 'xatagew', reason: expect.stringContaining('source repair') }] });
+  expect(mocks.writeLexicon).not.toHaveBeenCalled();
+});
+
+test('successful partial imports remove only saved terms from persisted manual review, including after reopening', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    id: 'job', userId: 'owner', documentId: 'book', status: 'completed', total: 3, completed: 3, resolved: 0,
+    manualReviewTerms: ['λόγος', 'θεός', 'ἀνήρ'], manualReviewCount: 3,
+    words: [{ word: 'λόγος' }, { word: 'θεός' }, { word: 'ἀνήρ' }],
+  }) }]);
+  const response = await POST(request({ documentId: 'book', jobId: 'job', continueOnError: true, scan: {
+    ...scan, words: [scan.words[0], { word: 'θεός', proposedPronunciation: 'not IPA' }],
+  } }) as never);
+  const data = await response.json();
+  expect(data).toMatchObject({ imported: 1, skipped: [{ word: 'θεός' }],
+    job: { manualReviewTerms: ['θεός', 'ἀνήρ'], manualReviewCount: 2, resolved: 0 } });
+  const saved = JSON.parse(mocks.update.mock.calls[0][0].valueJson);
+  expect(saved.manualReviewTerms).toEqual(['θεός', 'ἀνήρ']);
+  expect(saved.manualReviewCount).toBe(2);
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify(saved) }]);
+  const again = await POST(request({ documentId: 'book', jobId: 'job', scan }) as never);
+  expect((await again.json()).job.manualReviewTerms).toEqual(['θεός', 'ἀνήρ']);
+});
+
+test('a corrected re-import clears import-only flags and restores the original source status', async () => {
+  const job = { userId: 'owner', documentId: 'book', status: 'completed', manualReviewTerms: ['λόγος'],
+    words: [{ word: 'λόγος', sourceStatus: 'unverified', qualityFlags: ['extraction_note'] }] };
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify(job) }]);
+  const failed = await POST(request({ documentId: 'book', jobId: 'job', continueOnError: true,
+    scan: { ...scan, words: [{ word: 'λόγος', proposedPronunciation: 'not IPA' }] } }) as never);
+  const failedData = await failed.json();
+  expect(isFlaggedForReview(failedData.words[0])).toBe(true);
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify(failedData.job) }]);
+  const corrected = await POST(request({ documentId: 'book', jobId: 'job', scan }) as never);
+  const data = await corrected.json();
+  expect(data.words[0]).toMatchObject({ sourceStatus: 'unverified', qualityFlags: ['extraction_note'], importWarning: null });
+  expect(isFlaggedForReview(data.words[0])).toBe(false);
+  expect(data.job.manualReviewTerms).toEqual([]);
+});
+
+test('successful edits retain independent source-review evidence while clearing stale import flags', async () => {
+  mocks.select.mockResolvedValue([{ valueJson: JSON.stringify({
+    userId: 'owner', documentId: 'book', status: 'completed', manualReviewTerms: ['λόγος'],
+    words: [{ word: 'λόγος', sourceStatus: 'source_review_recommended',
+      importWarning: 'Earlier invalid definition', qualityFlags: ['ocr_suspect', 'import_validation_failed'] }],
+  }) }]);
+  const response = await POST(request({ documentId: 'book', jobId: 'job', scan }) as never);
+  const data = await response.json();
+  expect(data.imported).toBe(1);
+  expect(data.words[0]).toMatchObject({ sourceStatus: 'source_review_recommended', qualityFlags: ['ocr_suspect'], importWarning: null });
+  expect(isFlaggedForReview(data.words[0])).toBe(true);
+});
+
+test('omitting a definition still requires a usable pronunciation', async () => {
+  const response = await POST(request({ documentId: 'book', jobId: 'job', continueOnError: true,
+    scan: { ...scan, words: [{ word: 'λόγος', proposedPronunciation: null, proposedDefinition: null, omitDefinition: true }] },
+  }) as never);
+  const data = await response.json();
+  expect(data.imported).toBe(0);
+  expect(data.skipped[0].reason).toContain('A valid pronunciation is needed');
   expect(mocks.writeLexicon).not.toHaveBeenCalled();
 });

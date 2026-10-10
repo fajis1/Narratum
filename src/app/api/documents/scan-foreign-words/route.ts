@@ -323,6 +323,10 @@ export async function POST(req: NextRequest) {
         const lexiconEntries: Record<string, SmartAudioBookLexiconEntry> = {
           ...(activeProfile && existingLexicon && existingLexicon.profileId === activeProfile.id ? existingLexicon.entries : {}),
         };
+        const bookPronunciations = Object.fromEntries(Object.entries(lexiconEntries).flatMap(([term, entry]) => {
+          const pronunciation = normalizeKokoroPronunciationCandidate(term, entry.pronunciation);
+          return pronunciation ? [[term, pronunciation]] : [];
+        }));
 
         for (const [term, entry] of Object.entries(lexiconEntries)) {
           const normalizedDefinition = normalizeDictionaryDefinition(entry.definition);
@@ -334,7 +338,7 @@ export async function POST(req: NextRequest) {
               needsReview: normalizedDefinition === null ? false : entry.needsReview,
             };
           }
-          if (!entry.definition && globalDefinitions[term]) {
+          if (!entry.definition && entry.definitionOmitted !== true && globalDefinitions[term]) {
             lexiconEntries[term] = {
               ...lexiconEntries[term],
               definition: globalDefinitions[term],
@@ -387,7 +391,7 @@ export async function POST(req: NextRequest) {
             ? w.occurrences?.find((item: { sourceRecoveryPronunciation?: string }) => item.sourceRecoveryPronunciation)?.sourceRecoveryPronunciation
             : null;
           const libraryPron = (reviewedPronunciation && normalizeKokoroPronunciationCandidate(term, reviewedPronunciation))
-            || userPron || globalPron || aliasPronunciation;
+            || userPron || bookPronunciations[term] || globalPron || aliasPronunciation;
 
           const libraryDefinition = globalDefinitions[term]
             || transliterationMatch?.definition
@@ -397,7 +401,8 @@ export async function POST(req: NextRequest) {
               ...lexiconEntries[term],
               term,
               pronunciation: libraryPron,
-              definition: lexiconEntries[term]?.definition || libraryDefinition,
+              definition: lexiconEntries[term]?.definitionOmitted === true
+                ? null : lexiconEntries[term]?.definition || libraryDefinition,
               definitionOmitted: lexiconEntries[term]?.definitionOmitted === true
                 ? true
                 : libraryDefinition ? false : undefined,
@@ -432,8 +437,7 @@ export async function POST(req: NextRequest) {
             const compatibleGlobalChoices = (globalDict[w.word] || [])
               .map((choice) => normalizeKokoroPronunciationCandidate(w.word, choice?.phonetic))
               .filter((phonetic): phonetic is string => Boolean(phonetic));
-            const localPronunciation = w.sourceStatus === 'verified_document_reading'
-              && normalizeKokoroPronunciationCandidate(w.word, lexiconEntries[w.word]?.pronunciation);
+            const localPronunciation = normalizeKokoroPronunciationCandidate(w.word, lexiconEntries[w.word]?.pronunciation);
             const needsPronunciations = !localPronunciation && !compatibleOverrides[w.word]
               && !normalizedTransliteration
               && compatibleGlobalChoices.length === 0;
@@ -491,9 +495,14 @@ export async function POST(req: NextRequest) {
           const transliterationPronunciation = !sourceBlocked && transliterationMatch?.pronunciation
             ? normalizeKokoroPronunciationCandidate(w.word, transliterationMatch.pronunciation)
             : null;
-          const documentPronunciation = !sourceBlocked && w.sourceStatus === 'verified_document_reading'
-            ? normalizeKokoroPronunciationCandidate(w.word, lexiconEntries[w.word]?.pronunciation) : null;
-          const libraryPronunciation = documentPronunciation || userPronunciation || globalPronunciation || transliterationPronunciation;
+          const documentPronunciation = !sourceBlocked
+            ? w.sourceStatus === 'verified_document_reading'
+              ? normalizeKokoroPronunciationCandidate(w.word, lexiconEntries[w.word]?.pronunciation)
+              : bookPronunciations[w.word] || null
+            : null;
+          const libraryPronunciation = w.sourceStatus === 'verified_document_reading'
+            ? documentPronunciation || userPronunciation || globalPronunciation || transliterationPronunciation
+            : userPronunciation || documentPronunciation || globalPronunciation || transliterationPronunciation;
 
           const globalChoices: Array<{ phonetic?: string; isInGlobalLibrary: boolean; isTransliterationMatch?: boolean }> =
             (sourceBlocked ? [] : globalDict[w.word] || []).map((item: { phonetic?: string } | string) => ({
@@ -523,7 +532,7 @@ export async function POST(req: NextRequest) {
               : globalChoices,
             userOverride: userPronunciation,
             libraryPronunciation,
-            pronunciationSource: documentPronunciation ? 'document' : userPronunciation ? 'personal' : globalPronunciation ? 'global' : transliterationPronunciation ? 'transliteration' : geminiRecommendations[w.word] ? 'gemini' : 'none',
+            pronunciationSource: w.sourceStatus === 'verified_document_reading' && documentPronunciation ? 'document' : userPronunciation ? 'personal' : documentPronunciation ? 'document' : globalPronunciation ? 'global' : transliterationPronunciation ? 'transliteration' : geminiRecommendations[w.word] ? 'gemini' : 'none',
             transliterationSourceTerm: transliterationMatch?.sourceTerm || null,
             geminiRecommendedPronunciation: sourceBlocked ? null : geminiRecommendations[w.word] || null,
             definition: sourceBlocked ? null : lexiconEntries[w.word]?.definition || null,
@@ -576,6 +585,7 @@ export async function POST(req: NextRequest) {
           const existingSuggestion = (globalDict[word] || [])
               .map((choice) => normalizeKokoroPronunciationCandidate(word, choice?.phonetic))
               .find((choice): choice is string => Boolean(choice))
+            || bookPronunciations[word]
             || (transliterationPronunciation
               ? normalizeKokoroPronunciationCandidate(word, transliterationPronunciation)
               : null);
@@ -881,6 +891,7 @@ ${JSON.stringify(repairRequests)}`;
               globalDict[w] = current;
 
               const pronunciation = compatibleOverrides[w]
+                || bookPronunciations[w]
                 || current[0]?.phonetic
                 || (transliterationMatches.get(w)?.pronunciation
                   && normalizeKokoroPronunciationCandidate(w, transliterationMatches.get(w)?.pronunciation)
@@ -913,6 +924,7 @@ ${JSON.stringify(repairRequests)}`;
                       ? 'koine_greek'
                       : languageForTerm(w);
                 lexiconEntries[w] = {
+                  ...lexiconEntries[w],
                   term: w,
                   pronunciation,
                   definition,
@@ -1059,7 +1071,8 @@ ${JSON.stringify(repairRequests)}`;
     const generated = Object.keys(geminiRecommendations).length;
     const generatedDefinitions = Object.fromEntries(
       Object.entries(lexiconEntries)
-        .filter(([term, entry]) => canPromoteTerm(term) && Boolean(entry.definition) && entry.definitionOmitted !== true)
+        .filter(([term, entry]) => canPromoteTerm(term) && entry.approvedRepair !== true
+          && Boolean(entry.definition) && entry.definitionOmitted !== true)
         .map(([term, entry]) => [term, entry.definition]),
     );
     await saveJob({

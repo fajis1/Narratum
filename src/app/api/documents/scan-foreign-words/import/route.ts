@@ -9,6 +9,7 @@ import { serverLogger } from '@/lib/server/logger';
 import { readBookLexicon, writeBookLexicon } from '@/lib/server/smart-audio/book-lexicon';
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
 import { parseForeignWordScanImportDetailed, type ForeignWordImportChange, type ForeignWordImportSkipped } from '@/lib/shared/foreign-word-scan-transfer';
+import { getGeminiManualReviewState, readGeminiManualReviewTerms } from '@/lib/shared/foreign-word-scan-results';
 import {
   normalizeKokoroPronunciationCandidate,
 } from '@/lib/shared/kokoro-pronunciation-policy';
@@ -148,6 +149,8 @@ export async function POST(req: NextRequest) {
       if (skippedItem) {
         return {
           ...row,
+          // Keep source evidence separate from the review status added by an import failure.
+          importReviewSourceStatus: row.importReviewSourceStatus ?? row.sourceStatus ?? 'unverified',
           sourceStatus: row.sourceStatus === 'needs_source_repair' ? 'needs_source_repair' : 'source_review_recommended',
           definitionNeedsReview: true,
           importWarning: skippedItem.reason,
@@ -170,11 +173,18 @@ export async function POST(req: NextRequest) {
         definitionOmitted: entry.definitionOmitted === true,
         definitionNeedsReview: false,
         importWarning: null,
+        sourceStatus: row.importReviewSourceStatus ?? row.sourceStatus,
+        importReviewSourceStatus: undefined,
+        qualityFlags: Array.isArray(row.qualityFlags)
+          ? row.qualityFlags.filter((flag) => flag !== 'import_validation_failed') : [],
       };
     });
-    const updatedJob = { ...job, words: updatedWords, updatedAt: Date.now() };
+    const manualReviewTerms = readGeminiManualReviewTerms(job.manualReviewTerms);
+    const updatedJob = { ...job, words: updatedWords, updatedAt: Date.now(),
+      ...(manualReviewTerms === null ? {} : getGeminiManualReviewState(manualReviewTerms, new Set(changeByWord.keys()))),
+    };
     await db.update(adminSettings).set({ valueJson: JSON.stringify(updatedJob) }).where(eq(adminSettings.key, key));
-    return NextResponse.json({ imported: validChanges.length, skipped: skippedList, words: updatedWords });
+    return NextResponse.json({ imported: validChanges.length, skipped: skippedList, words: updatedWords, job: updatedJob });
   } catch (error) {
     return errorResponse(error, {
       logger: serverLogger,
