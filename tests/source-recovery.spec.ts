@@ -31,9 +31,10 @@ for (const viewport of [{ name: 'desktop', width: 1280, height: 900 }, { name: '
       before: 'The word ', after: ' means abolish.', context: 'The word xatagyéw means abolish.', reasons: ['Possible OCR'], status: 'unresolved' });
     const analysis: SourceRecoveryAnalysis = {
       schemaVersion: 1, documentId: 'fixture-pdf', revision: 1, extractionVersion: 1, scannedAt: 1,
-      occurrences: [base('id-1'), base('id-2')] as SourceRecoveryOccurrence[], diagnostics: [],
+      occurrences: [base('id-1'), base('id-2'), { ...base('id-3'), groupId: 'other-group' }] as SourceRecoveryOccurrence[], diagnostics: [],
     };
     let analysisRequests = 0;
+    let approvalRequests = 0;
     let finishAnalysis!: () => void;
     const analysisReady = new Promise<void>(resolve => { finishAnalysis = resolve; });
     const pageErrors: string[] = [];
@@ -66,7 +67,19 @@ for (const viewport of [{ name: 'desktop', width: 1280, height: 900 }, { name: '
           analysis.recoveryRun = { status: 'completed', batchesCompleted: 1, updatedAt: 2 };
         } else if (body.action === 'approve_many') {
           analysis.revision++;
-          for (const item of analysis.occurrences) if (body.occurrenceIds.includes(item.id)) item.status = 'approved';
+          for (const item of analysis.occurrences) if (body.occurrenceIds.includes(item.id)) {
+            item.status = 'approved'; item.approvalMethod = 'pdf_review';
+          }
+        } else if (body.action === 'approve_all_suggestions') {
+          approvalRequests++;
+          expect(body.acceptGeminiSuggestions).toBe(true);
+          expect(body).not.toHaveProperty('sourceVerifiedOccurrenceIds');
+          expect(body.sourceVerified).toBe(false);
+          expect(body.revision).toBe(analysis.revision);
+          analysis.revision++;
+          for (const item of analysis.occurrences) if (item.status === 'proposed' && !item.anchorInvalidated) {
+            item.status = 'approved'; item.approvalMethod = 'gemini_suggestions';
+          }
         }
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ analysis, configuration: { profileId: 'saved', profileName: 'Saved Scholar profile', model: 'gemini-3.8-flash', fallbackModels: ['gemini-3.7-flash'], primaryKeyConfigured: true, backupKeyConfigured: true, automaticBackupFailover: true } }) });
       }
@@ -80,7 +93,7 @@ for (const viewport of [{ name: 'desktop', width: 1280, height: 900 }, { name: '
     await expect(page.getByText('Smart Audio profile: Saved Scholar profile')).toBeVisible();
     await page.getByLabel('OCR Gemini model', { exact: true }).selectOption('gemini-3.7-flash');
     await page.getByLabel('Use backup API key for next OCR analysis').check();
-    await expect(page.getByText(/not analyzed 2/)).toBeVisible();
+    await expect(page.getByText(/not analyzed 3/)).toBeVisible();
     await page.getByRole('button', { name: 'Analyze OCR Problems' }).click();
     await expect.poll(() => analysisRequests).toBe(1);
     await page.getByRole('tab', { name: 'Pre-Scan', exact: true }).click();
@@ -112,6 +125,23 @@ for (const viewport of [{ name: 'desktop', width: 1280, height: 900 }, { name: '
     await page.getByRole('tab', { name: 'OCR Recovery', exact: true }).click();
     await expect(page.getByLabel('Occurrence', { exact: true })).toHaveValue('id-2');
     expect(analysisRequests).toBe(1);
+    await page.getByRole('button', { name: 'Approve all Gemini suggestions', exact: true }).click();
+    await expect(page.getByText(/without claiming manual PDF verification/)).toBeVisible();
+    expect(approvalRequests).toBe(0);
+    await page.getByRole('button', { name: 'Cancel bulk approval' }).click();
+    await expect(page.getByRole('button', { name: 'Confirm approval of 2 suggestions' })).toHaveCount(0);
+    expect(approvalRequests).toBe(0);
+    await page.getByRole('button', { name: 'Approve all Gemini suggestions', exact: true }).click();
+    const confirmAll = page.getByRole('button', { name: 'Confirm approval of 2 suggestions' });
+    await confirmAll.scrollIntoViewIfNeeded();
+    await expect(confirmAll).toBeInViewport();
+    await confirmAll.click();
+    await expect(page.getByText(/approved 3/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Approve all Gemini suggestions', exact: true })).toHaveCount(0);
+    expect(approvalRequests).toBe(1);
+    expect(analysisRequests).toBe(1);
+    expect(analysis.occurrences.map(item => item.approvalMethod)).toEqual(['pdf_review', 'gemini_suggestions', 'gemini_suggestions']);
+    await expect(page.getByText('Approved by accepting Gemini suggestions; manual PDF verification was not recorded.')).toBeVisible();
     expect(pageErrors).toEqual([]);
   });
 }

@@ -114,7 +114,7 @@ export async function registerSourceRecovery(userId: string, documentId: string,
   const occurrences = indexed.map((item) => {
     const old = previous.get(item.id);
     return old && old.before === item.before && old.after === item.after && compatible
-      ? { ...item, status: old.status, proposal: old.proposal, reviewedAt: old.reviewedAt, analyzedAt: old.analyzedAt } : item;
+      ? { ...item, status: old.status, proposal: old.proposal, reviewedAt: old.reviewedAt, approvalMethod: old.approvalMethod, analyzedAt: old.analyzedAt } : item;
   });
   // Partial/custom scans must not delete evidence discovered in a full scan.
   const indexedIds = new Set(indexed.map((item) => item.id));
@@ -122,7 +122,7 @@ export async function registerSourceRecovery(userId: string, documentId: string,
     if (indexedIds.has(old.id)) continue;
     // A complete scan can disprove an old offset. Partial scans cannot.
     occurrences.push(compatible && !options.complete ? old : {
-      ...old, anchorInvalidated: true, status: 'unresolved', proposal: undefined, reviewedAt: undefined, analyzedAt: undefined,
+      ...old, anchorInvalidated: true, status: 'unresolved', proposal: undefined, reviewedAt: undefined, approvalMethod: undefined, analyzedAt: undefined,
       reasons: [...new Set([...old.reasons, compatible
         ? 'Source anchor no longer matches the complete scan; review this reading again.'
         : 'Extraction version changed; review this reading again.'])],
