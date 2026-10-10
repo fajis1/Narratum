@@ -4,7 +4,18 @@ export const SUPPORTED_SOURCE_SCRIPTS = {
   Greek: /\p{Script=Greek}/u,
   Hebrew: /\p{Script=Hebrew}/u,
   Ethiopic: /\p{Script=Ethiopic}/u,
+  Cyrillic: /\p{Script=Cyrillic}/u,
+  Arabic: /\p{Script=Arabic}/u,
+  Han: /\p{Script=Han}/u,
+  Hiragana: /\p{Script=Hiragana}/u,
+  Katakana: /\p{Script=Katakana}/u,
 } as const;
+
+/** Japanese words legitimately combine Han and kana; unrelated script mixes remain suspect. */
+export function hasMixedForeignSourceScripts(value: string): boolean {
+  const scripts = getSupportedSourceScripts(value);
+  return scripts.length > 1 && !scripts.every((script) => ['Han', 'Hiragana', 'Katakana'].includes(script));
+}
 
 export function getSupportedSourceScripts(value: string): string[] {
   return Object.entries(SUPPORTED_SOURCE_SCRIPTS)
@@ -31,7 +42,7 @@ export function getForeignWordSourceRepairReasons(word: unknown): string[] {
   const value = word.trim();
   const reasons: string[] = [];
   const scripts = getSupportedSourceScripts(value);
-  if (scripts.length > 1 || (scripts.length > 0 && hasUnsupportedSourceLetters(value))) {
+  if (hasMixedForeignSourceScripts(value) || (scripts.length > 0 && hasUnsupportedSourceLetters(value))) {
     reasons.push('Dictionary word mixes writing systems and looks extraction-damaged.');
   }
   // Inspect letter runs, keeping punctuation/abbreviation boundaries intact.

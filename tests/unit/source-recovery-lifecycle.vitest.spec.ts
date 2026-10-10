@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({ database: undefined as unknown as ReturnType<t
   tasks: [] as (() => Promise<void>)[], scanRows: [] as unknown[], scanner: vi.fn(), transport: vi.fn(),
   dictionary: vi.fn(), enrich: vi.fn(), globalPronunciations: vi.fn(), globalDefinitions: vi.fn(), readDefinitions: vi.fn(), book: vi.fn(), readBook: vi.fn(),
   render: vi.fn(), tts: vi.fn(), profile: { id: 'profile', name: 'Fixture', workerMode: 'narrator',
-    aiModel: 'gemini-3.8-flash', geminiApiKey: 'fixture', pronunciations: {} } }));
+    aiModel: 'gemini-3.8-flash', geminiApiKey: 'fixture', pronunciations: {},
+    pronunciationPromptMode: 'default' as 'default' | 'custom' } }));
 vi.mock('@/db', () => ({ get db() { return mocks.database; } }));
 vi.mock('@/db/schema', async () => import('../../src/db/schema_sqlite'));
 vi.mock('next/server', async (original) => ({ ...await original<typeof import('next/server')>(), after: (task: () => Promise<void>) => mocks.tasks.push(task) }));
@@ -25,6 +26,8 @@ vi.mock('@/lib/server/smart-audio/global-pronunciation-merge', () => ({ mergeGen
 vi.mock('@/lib/server/smart-audio/global-definition-library', () => ({ readGlobalDefinitions: mocks.readDefinitions, mergeGlobalDefinitions: mocks.globalDefinitions }));
 vi.mock('@/lib/server/smart-audio/book-lexicon', async (original) => ({ ...await original<typeof import('@/lib/server/smart-audio/book-lexicon')>(), readBookLexicon: mocks.readBook, writeBookLexicon: mocks.book }));
 vi.mock('@/lib/server/tts/generate', () => ({ generateTTSBuffer: mocks.tts }));
+vi.mock('@/lib/server/admin/resolve-credentials', () => ({ resolveTtsCredentials: async () => ({ error: 'No preview provider in fixture' }) }));
+vi.mock('@/lib/server/runtime-config', () => ({ getResolvedRuntimeConfig: async () => ({ defaultTtsProvider: 'custom-openai', restrictUserApiKeys: true }) }));
 vi.mock('@/lib/server/smart-audio/source-recovery-proposals', async (original) => {
   const actual = await original<typeof import('@/lib/server/smart-audio/source-recovery-proposals')>();
   return { ...actual, proposeSourceRecovery: (input: Parameters<typeof actual.proposeSourceRecovery>[0]) => actual.proposeSourceRecovery(input, { renderPages: mocks.render }) };
@@ -39,10 +42,14 @@ import { POST as recover } from '@/app/api/documents/source-recovery/route';
 import { readSourceRecovery } from '@/lib/server/smart-audio/source-recovery-store';
 import { applySourceRecovery, assertRecoveredReadings, sourceRecoverySnapshot } from '@/lib/shared/source-recovery';
 import { exportForeignWordScan } from '@/lib/shared/foreign-word-scan-transfer';
+import { mergeDocumentSettings } from '@/lib/shared/document-settings';
+import { DEFAULT_DOCUMENT_SETTINGS } from '@/types/document-settings';
 import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { foreignWordCandidateCacheKey } from '@/lib/server/smart-audio/gemini-foreign-word-scan';
 import { scanPronunciationActionError } from '@/lib/server/smart-audio/scan-pronunciation-guard';
 import type { SmartAudioBookLexicon } from '@/types/document-settings';
+import { findReviewedForeignWordDefault } from '@/lib/shared/reviewed-foreign-word-defaults';
+import { isFlaggedForReview } from '@/lib/shared/foreign-word-scan-results';
 
 type Row = { word: string; count: number; occurrences: { pdfPage: number; pageSourceStart: number }[]; [key: string]: unknown };
 let sqlite: Database.Database;
@@ -51,8 +58,9 @@ const request = (body: object) => new NextRequest('http://localhost/api/document
 function modelResponse(results: unknown) {
   mocks.transport.mockResolvedValue({ usedModel: 'fixture', response: new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(results) }] } }] })) });
 }
-async function rescan(): Promise<{ id: string; words: Row[]; errors: string[]; total: number; librarySkipped: number; manualReviewTerms: string[] }> {
-  const response = await scan(request({ mode: 'all_foreign' }));
+async function rescan(options: Record<string, unknown> = {}): Promise<{ id: string; words: Row[]; errors: string[]; total: number; librarySkipped: number;
+  manualReviewTerms: string[]; reviewedDefaultMatches: number; formattingNormalizedTerms: number }> {
+  const response = await scan(request({ mode: 'all_foreign', ...options }));
   expect(response.status).toBe(202);
   const { scanJobId: jobId } = await response.json();
   await mocks.tasks.shift()!();
@@ -65,8 +73,10 @@ beforeEach(() => {
   vi.clearAllMocks(); mocks.tasks = [];
   mocks.profile.pronunciations = {};
   mocks.profile.workerMode = 'narrator';
+  mocks.profile.pronunciationPromptMode = 'default';
   mocks.readBook.mockResolvedValue(null); mocks.readDefinitions.mockResolvedValue({});
   mocks.book.mockReset();
+  mocks.globalPronunciations.mockResolvedValue([]); mocks.globalDefinitions.mockResolvedValue([]);
   previousPostgres = process.env.POSTGRES_URL; delete process.env.POSTGRES_URL;
   sqlite = new Database(':memory:');
   sqlite.exec('CREATE TABLE documents (id text, user_id text, type text); CREATE TABLE admin_settings (key text PRIMARY KEY, value_json text NOT NULL, source text DEFAULT \'admin\', updated_at integer DEFAULT 1);');
@@ -89,7 +99,7 @@ test('Python detection → real scan/proposal/approval APIs → stable rescan �
   }
   // Old v13 cache cannot suppress a run of the current scanner.
   const cacheKey = foreignWordCandidateCacheKey({ userId: 'owner', documentId: 'pdf', mode: 'all_foreign', target: 100, query: null });
-  for (const key of [cacheKey.replace(':v14:', ':v13:'), cacheKey]) {
+  for (const key of [cacheKey.replace(':v15:', ':v14:'), cacheKey]) {
     sqlite.prepare('INSERT INTO admin_settings (key, value_json) VALUES (?, ?)').run(key, JSON.stringify({ version: 13, words: [] }));
   }
   modelResponse(['xatagyéw', 'xataoyéw', 'téAoc', 'év'].map((term) => ({ term, pronunciations: [], sourceOutcome: 'needs_source_repair', ocrFragment: false,
@@ -180,7 +190,9 @@ test('a stale global or personal pronunciation cannot make an ASCII OCR candidat
 test('imported book-only pronunciations survive repeated scans without new Gemini work or global promotion', async () => {
   let lexicon: SmartAudioBookLexicon | null = null;
   mocks.readBook.mockImplementation(async () => lexicon);
-  mocks.book.mockImplementation(async (_user: string, _document: string, saved: SmartAudioBookLexicon) => { lexicon = structuredClone(saved); });
+  mocks.book.mockImplementation(async (_user: string, _document: string, saved: SmartAudioBookLexicon) => {
+    lexicon = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, { smartAudioLexicon: structuredClone(saved) }).smartAudioLexicon || null;
+  });
   mocks.scanRows = [{ word: 'λόγος', count: 1, occurrences: [] }];
   sqlite.prepare('INSERT INTO admin_settings (key, value_json) VALUES (?, ?)').run('foreign_word_scan:original', JSON.stringify({
     id: 'original', userId: 'owner', documentId: 'pdf', status: 'completed', words: mocks.scanRows,
@@ -232,4 +244,150 @@ test('a saved book pronunciation cannot resolve damaged OCR text', async () => {
   expect(job.words[0]).toMatchObject({ sourceStatus: 'needs_source_repair', pronunciations: [], libraryPronunciation: null, definition: null });
   expect(mocks.book).toHaveBeenCalledWith('owner', 'pdf', expect.objectContaining({ entries: {} }));
   expect(mocks.transport).not.toHaveBeenCalled();
+});
+
+test('reviewed defaults eliminate Gemini work, survive rescans and can be disabled even after saving', async () => {
+  mocks.profile.workerMode = 'scholar';
+  let lexicon: SmartAudioBookLexicon | null = null;
+  mocks.readBook.mockImplementation(async () => lexicon);
+  mocks.book.mockImplementation(async (_user: string, _document: string, saved: SmartAudioBookLexicon) => {
+    lexicon = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, { smartAudioLexicon: structuredClone(saved) }).smartAudioLexicon || null;
+  });
+  mocks.scanRows = ['καί', 'ἐν', 'הוּא', 'מִן'].map(word => ({ word, count: 1, occurrences: [] }));
+  for (let pass = 0; pass < 2; pass++) {
+    const job = await rescan();
+    expect(job).toMatchObject({ total: 0, librarySkipped: 4, reviewedDefaultMatches: 4, manualReviewTerms: [] });
+    for (const row of job.words) expect(row).toMatchObject({ pronunciationSource: 'reviewed_default', definition: null, definitionOmitted: true });
+  }
+  expect(mocks.enrich.mock.calls.every(([rows]) => rows.length === 0)).toBe(true);
+  expect(mocks.transport).not.toHaveBeenCalled(); expect(mocks.globalPronunciations).not.toHaveBeenCalled();
+  expect(mocks.globalDefinitions).not.toHaveBeenCalled();
+  modelResponse(['καί', 'ἐν', 'הוּא', 'מִן'].map(term => ({ term, pronunciations: [findReviewedForeignWordDefault({ word: term })!.pronunciation],
+    language: /\p{Script=Greek}/u.test(term) ? 'koine_greek' : 'biblical_hebrew', sourceOutcome: 'valid_word', definition: null, definitionOmitted: true,
+    ocrFragment: false, confidence: 1, needsReview: false })));
+  const disabled = await rescan({ useReviewedDefaults: false });
+  expect(disabled).toMatchObject({ total: 4, reviewedDefaultMatches: 0 });
+  expect(mocks.transport).toHaveBeenCalledOnce();
+});
+
+test('personal and imported choices retain precedence over a reviewed fallback', async () => {
+  mocks.scanRows = [{ word: 'ἐν', count: 1, occurrences: [] }, { word: 'מִן', count: 1, occurrences: [] }];
+  mocks.profile.pronunciations = { 'ἐν': '/eɪn/' };
+  mocks.readBook.mockResolvedValue({ profileId: 'profile', entries: {
+    'מִן': { term: 'מִן', pronunciation: '/mɪn/', definition: null, definitionOmitted: true, approvedRepair: true, language: 'biblical_hebrew' },
+  } });
+  const job = await rescan();
+  expect(job).toMatchObject({ total: 0, reviewedDefaultMatches: 1 });
+  expect(job.words[0]).toMatchObject({ pronunciationSource: 'personal', libraryPronunciation: '/eɪn/' });
+  expect(job.words[1]).toMatchObject({ pronunciationSource: 'document', libraryPronunciation: '/mɪn/' });
+  expect(mocks.transport).not.toHaveBeenCalled();
+});
+
+test('custom guidance opts out of previously saved automatic defaults', async () => {
+  mocks.profile.pronunciationPromptMode = 'custom';
+  mocks.scanRows = [{ word: 'ἐν', count: 1, occurrences: [] }];
+  mocks.readBook.mockResolvedValue({ profileId: 'profile', entries: {
+    'ἐν': findReviewedForeignWordDefault({ word: 'ἐν' })!,
+  } });
+  modelResponse([{ term: 'ἐν', pronunciations: ['/ɛn/'], language: 'koine_greek', sourceOutcome: 'valid_word', definition: null, definitionOmitted: true,
+    ocrFragment: false, confidence: 1, needsReview: false }]);
+  const job = await rescan();
+  expect(job).toMatchObject({ total: 1, reviewedDefaultMatches: 0 });
+  expect(mocks.transport).toHaveBeenCalledOnce();
+});
+
+test('dotted Gemini IPA is accepted in one call and records formatting normalization', async () => {
+  mocks.scanRows = [{ word: 'ἐναντίος', count: 1, occurrences: [] }];
+  modelResponse([{ term: 'ἐναντίος', pronunciations: ['/ɛ.nɑn.ti.oʊs/'], language: 'koine_greek', sourceOutcome: 'valid_word', definition: 'contrary', definitionOmitted: false,
+    ocrFragment: false, confidence: 1, needsReview: false }]);
+  const job = await rescan();
+  expect(job).toMatchObject({ total: 1, formattingNormalizedTerms: 1, manualReviewTerms: [] });
+  expect(job.words[0]).toMatchObject({ geminiRecommendedPronunciation: '/ɛnɑntioʊs/' });
+  expect(mocks.transport).toHaveBeenCalledOnce();
+  expect(mocks.book).toHaveBeenCalledWith('owner', 'pdf', expect.objectContaining({ entries: {
+    'ἐναντίος': expect.objectContaining({ pronunciation: '/ɛnɑntioʊs/' }),
+  } }));
+});
+
+test('new source warnings invalidate a saved built-in fallback instead of silently resolving it', async () => {
+  mocks.scanRows = [{ word: 'ἐν', count: 1, occurrences: [], sourceStatus: 'source_review_recommended' }];
+  mocks.readBook.mockResolvedValue({ profileId: 'profile', entries: {
+    'ἐν': findReviewedForeignWordDefault({ word: 'ἐν' })!,
+  } });
+  modelResponse([{ term: 'ἐν', pronunciations: [], sourceOutcome: 'insufficient_context', language: 'koine_greek',
+    definition: null, definitionOmitted: true, ocrFragment: false, confidence: 0, needsReview: true }]);
+  const job = await rescan();
+  expect(job).toMatchObject({ total: 1, reviewedDefaultMatches: 0 });
+  expect(job.words[0]).toMatchObject({ libraryPronunciation: null, pronunciations: [], sourceOutcome: 'insufficient_context' });
+  expect(mocks.transport).toHaveBeenCalledOnce();
+});
+
+test('reviewed omission defaults resolve missing Scholar glosses for global choices and can be reversed', async () => {
+  mocks.profile.workerMode = 'scholar';
+  let lexicon: SmartAudioBookLexicon | null = null;
+  mocks.readBook.mockImplementation(async () => lexicon);
+  mocks.book.mockImplementation(async (_user: string, _document: string, saved: SmartAudioBookLexicon) => {
+    lexicon = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, { smartAudioLexicon: structuredClone(saved) }).smartAudioLexicon || null;
+  });
+  mocks.scanRows = [{ word: 'ἐν', count: 1, occurrences: [] }];
+  sqlite.prepare('INSERT INTO admin_settings (key, value_json) VALUES (?, ?)').run('global_pronunciations', JSON.stringify({ 'ἐν': ['/eɪn/'] }));
+  for (let pass = 0; pass < 2; pass++) {
+    const job = await rescan();
+    expect(job).toMatchObject({ total: 0, reviewedDefaultMatches: 1 });
+    expect(job.words[0]).toMatchObject({ libraryPronunciation: '/eɪn/', definitionOmitted: true });
+    expect(lexicon!.entries['ἐν']).toMatchObject({ reviewedDefinitionDefaultVersion: 1 });
+  }
+  expect(mocks.transport).not.toHaveBeenCalled();
+  modelResponse([{ term: 'ἐν', pronunciations: ['/eɪn/'], language: 'koine_greek', sourceOutcome: 'valid_word', definition: null,
+    definitionOmitted: true, ocrFragment: false, confidence: 1, needsReview: false }]);
+  const disabled = await rescan({ useReviewedDefaults: false });
+  expect(disabled).toMatchObject({ total: 1, reviewedDefaultMatches: 0 });
+  expect(mocks.transport).toHaveBeenCalledOnce();
+});
+
+test('contextual non-biblical languages get local pronunciations and Scholar definitions that survive rescans', async () => {
+  mocks.profile.workerMode = 'scholar';
+  let lexicon: SmartAudioBookLexicon | null = null;
+  mocks.readBook.mockImplementation(async () => lexicon);
+  mocks.book.mockImplementation(async (_user: string, _document: string, saved: SmartAudioBookLexicon) => {
+    lexicon = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, { smartAudioLexicon: structuredClone(saved) }).smartAudioLexicon || null;
+  });
+  const cases = [
+    ['pneumatisch', 'german', '/pnoɪmɑtɪʃ/', 'pneumatic'], ['vérité', 'french', '/vɛrɪteɪ/', 'truth'],
+    ['veritas', 'latin', '/vɛrɪtɑs/', 'truth'], ['очи', 'church_slavonic', '/oʊtʃi/', 'eyes'],
+    ['كتاب', 'arabic', '/kitɑb/', 'book'], ['食べる', 'japanese', '/tɑbɛru/', 'eat'],
+  ];
+  mocks.scanRows = cases.map(([word]) => ({ word, count: 1, occurrences: [], foreignLanguageCandidate: true, contexts: ['Language supplied by passage fixture.'] }));
+  modelResponse(cases.map(([term, detectedLanguage, pronunciation, definition]) => ({ term, language: 'other', detectedLanguage, languageConfidence: 0.95,
+    pronunciations: [pronunciation], definition, definitionOmitted: false, sourceOutcome: 'valid_word', ocrFragment: false, confidence: 0.95, needsReview: false })));
+  const first = await rescan();
+  expect(first.total).toBe(6);
+  for (const [word, detectedLanguage, pronunciation, definition] of cases) {
+    expect(first.words.find(row => row.word === word)).toMatchObject({ detectedLanguage, geminiRecommendedPronunciation: pronunciation,
+      definition, definitionNeedsReview: false, reviewReasons: [] });
+  }
+  expect(mocks.transport).toHaveBeenCalledOnce();
+  expect(mocks.globalPronunciations).not.toHaveBeenCalled(); expect(mocks.globalDefinitions).not.toHaveBeenCalled();
+  const second = await rescan();
+  expect(second.total).toBe(0);
+  for (const [word, detectedLanguage, pronunciation] of cases) expect(second.words.find(row => row.word === word))
+    .toMatchObject({ detectedLanguage, libraryPronunciation: pronunciation, pronunciationSource: 'document' });
+  expect(mocks.transport).toHaveBeenCalledOnce();
+  expect(mocks.globalDefinitions).not.toHaveBeenCalled();
+});
+
+test('uncertain languages and abbreviations stay reviewable while unsupported scripts avoid Gemini', async () => {
+  mocks.scanRows = ['очи', 'μτλ', 'բառ', 'оchи'].map(word => ({ word, count: 1, occurrences: [] }));
+  modelResponse(['очи', 'μτλ'].map((term, index) => ({ term, language: 'other', detectedLanguage: 'unknown', languageConfidence: 0.2,
+    ambiguityReason: index ? 'abbreviation' : 'language', sourceOutcome: 'insufficient_context', pronunciations: [],
+    definition: null, definitionOmitted: true, ocrFragment: false, confidence: 0.2, needsReview: true })));
+  const job = await rescan();
+  expect(job.total).toBe(2);
+  expect(job.words.map(row => isFlaggedForReview(row))).toEqual([true, true, true, true]);
+  expect(job.words[0].reviewReasons).toContainEqual(expect.objectContaining({ code: 'ambiguous_language' }));
+  expect(job.words[1].reviewReasons).toContainEqual(expect.objectContaining({ code: 'ambiguous_abbreviation' }));
+  expect(job.words[2].reviewReasons).toContainEqual(expect.objectContaining({ code: 'unsupported_script' }));
+  expect(job.words[3]).toMatchObject({ sourceStatus: 'needs_source_repair' });
+  expect(mocks.transport).toHaveBeenCalledOnce();
+  expect(mocks.globalPronunciations).not.toHaveBeenCalled(); expect(mocks.globalDefinitions).not.toHaveBeenCalled();
 });

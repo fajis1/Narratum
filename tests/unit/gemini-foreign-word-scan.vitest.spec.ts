@@ -20,6 +20,11 @@ import {
 } from '@/lib/server/smart-audio/gemini-foreign-word-scan';
 
 describe('Gemini foreign-word structured output', () => {
+  test('internal syllable periods do not trigger another pronunciation repair request', () => {
+    expect(collectGeminiPronunciationRepairRequests([
+      { term: 'ἐναντίος', contexts: [], currentPronunciation: null },
+    ], [{ term: 'ἐναντίος', pronunciations: ['/ɛ.nɑn.ti.oʊs/'] }])).toEqual([]);
+  });
   test('uses a lowercase JSON Schema array with explicit term fields', () => {
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.type).toBe('array');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.type).toBe('object');
@@ -28,6 +33,8 @@ describe('Gemini foreign-word structured output', () => {
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.properties.ocrFragment.type).toBe('boolean');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.properties.sourceOutcome.enum).toContain('needs_source_repair');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('term');
+    expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('detectedLanguage');
+    expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('languageConfidence');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('definitionOmitted');
     expect(GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA.items.required).toContain('ocrFragment');
   });
@@ -82,7 +89,7 @@ describe('Gemini foreign-word structured output', () => {
       mode: 'greek_hebrew',
     }));
     expect(parseForeignWordCandidateCache(JSON.stringify({
-      version: 14,
+      version: 15,
       words: [{ word: 'λόγος' }],
     }))).toEqual([{ word: 'λόγος' }]);
     expect(parseForeignWordCandidateCache(JSON.stringify({
@@ -98,7 +105,8 @@ describe('Gemini foreign-word structured output', () => {
       words: [{ word: 'stale' }],
     }))).toBeNull();
     expect(parseForeignWordCandidateCache(JSON.stringify({ version: 13, words: [{ word: 'old-detector' }] }))).toBeNull();
-    expect(foreignWordCandidateCacheKey(base)).toContain('v14:');
+    expect(parseForeignWordCandidateCache(JSON.stringify({ version: 14, words: [{ word: 'before-multilingual-detector' }] }))).toBeNull();
+    expect(foreignWordCandidateCacheKey(base)).toContain('v15:');
     expect(parseForeignWordCandidateCache('{invalid')).toBeNull();
   });
 

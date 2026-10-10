@@ -1,6 +1,11 @@
 import type { ParsedPdfBlockKind } from '@/types/parsed-pdf';
+import type { ForeignWordLanguageMetadata } from '@/lib/shared/foreign-word-language';
 
-export interface SmartAudioBookLexiconEntry {
+export interface SmartAudioBookLexiconEntry extends ForeignWordLanguageMetadata {
+  /** Derived built-in fallback; disabling defaults excludes it unless subsequently approved by the user. */
+  reviewedDefaultVersion?: number;
+  /** Only the missing gloss was filled by a built-in omission default. */
+  reviewedDefinitionDefaultVersion?: number;
   term: string;
   pronunciation: string;
   definition: string | null;

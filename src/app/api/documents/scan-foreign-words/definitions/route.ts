@@ -128,6 +128,9 @@ export async function PATCH(req: NextRequest) {
       definition,
       definitionOmitted: definition === null,
       needsReview: false,
+      // A manual edit is authoritative even if the original entry was a default.
+      reviewedDefaultVersion: undefined,
+      reviewedDefinitionDefaultVersion: undefined,
     };
     result.lexicon.scannedAt = Date.now();
     await writeBookLexicon(result.userId, documentId, result.lexicon);

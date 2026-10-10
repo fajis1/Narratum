@@ -20,7 +20,7 @@ except ImportError:
 # CJK: 4E00-9FFF
 # Arabic: 0600-06FF
 # Latin Extended / Accented / Diacritics: 00C0-024F, 1E00-1EFF
-ALL_FOREIGN_REGEX = re.compile(r'[\u0370-\u03FF\u1F00-\u1FFF\u0590-\u05FF\u0400-\u04FF\u4E00-\u9FFF\u0600-\u06FF\u00C0-\u024F\u1E00-\u1EFF]+')
+ALL_FOREIGN_REGEX = re.compile(r'[\u0370-\u03FF\u1F00-\u1FFF\u0590-\u05FF\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\u0600-\u06FF\u1200-\u137F\u00C0-\u024F\u1E00-\u1EFF]+')
 GREEK_HEBREW_REGEX = re.compile(r'[\u0370-\u03FF\u1F00-\u1FFF\u0590-\u05FF]+')
 # Fantasy / LitRPG capitalized terms / uncommon non-dictionary words (e.g. Xylar, Eldoria, Statblock terms, Khar'Thok)
 FANTASY_LITRPG_REGEX = re.compile(
@@ -428,6 +428,7 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
 
     ocr_suspect_evidence = {}
     latin_transliteration_candidates = set()
+    foreign_language_candidates = set()
     latinized_ocr_candidates = set()
     occurrences_by_word = {}
     editorial_by_start = {start: (end, printed, expanded) for start, end, printed, expanded in editorial_words}
@@ -467,7 +468,10 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
             accepted = True
         else:
             latinized_ocr = is_possible_latinized_greek_ocr(word)
-            accepted = has_foreign_marker(word) or latinized_ocr
+            foreign_language = is_latin_transliteration_candidate(word)
+            accepted = has_foreign_marker(word) or latinized_ocr or foreign_language
+            if foreign_language:
+                foreign_language_candidates.add(word)
             if latinized_ocr:
                 latinized_ocr_candidates.add(word)
         if not accepted:
@@ -679,6 +683,8 @@ def scan_pdf_foreign_words(pdf_path, db_path="drizzle/sqlite.db", target_percent
             result["ocrEvidence"] = sorted(ocr_suspect_evidence[word])[:2]
         if word in latin_transliteration_candidates:
             result["latinTransliterationCandidate"] = True
+        if word in foreign_language_candidates:
+            result["foreignLanguageCandidate"] = True
         if word in latinized_ocr_candidates:
             result["latinizedOcrCandidate"] = True
             result["sourceStatus"] = 'source_review_recommended'

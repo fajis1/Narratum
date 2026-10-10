@@ -22,6 +22,7 @@ vi.mock('@/lib/server/smart-audio-profiles', () => ({
 }));
 
 import { POST } from '../../src/app/api/documents/scan-foreign-words/import/route';
+import { PATCH as updateDefinition } from '../../src/app/api/documents/scan-foreign-words/definitions/route';
 import { isFlaggedForReview } from '@/lib/shared/foreign-word-scan-results';
 
 const scan = {
@@ -74,6 +75,31 @@ test('persists valid edits in the book lexicon and updates scan results', async 
     }) },
   }));
   expect(mocks.update).toHaveBeenCalledOnce();
+});
+
+test('imports dotted IPA with the same normalization used for Gemini responses', async () => {
+  const response = await POST(request({ documentId: 'book', jobId: 'job', scan: {
+    ...scan, words: [{ ...scan.words[0], proposedPronunciation: '/loʊ.ɡos/' }],
+  } }) as never);
+  expect(await response.json()).toMatchObject({ imported: 1, skipped: [] });
+  expect(mocks.writeLexicon).toHaveBeenCalledWith('owner', 'book', expect.objectContaining({ entries: {
+    'λόγος': expect.objectContaining({ pronunciation: '/loʊɡos/' }),
+  } }));
+});
+
+test('manual definition edits retain the entry when automatic defaults are disabled later', async () => {
+  for (const definition of ['within', null]) {
+    mocks.readLexicon.mockResolvedValue({ profileId: 'profile', entries: {
+      'ἐν': { term: 'ἐν', pronunciation: '/ɛn/', definition: null, definitionOmitted: true,
+        language: 'koine_greek', reviewedDefaultVersion: 1, reviewedDefinitionDefaultVersion: 1 },
+    } });
+    const response = await updateDefinition(request({ documentId: 'book', term: 'ἐν', definition }) as never);
+    expect(response?.status).toBe(200);
+    expect(mocks.writeLexicon).toHaveBeenLastCalledWith('owner', 'book', expect.objectContaining({ entries: {
+      'ἐν': expect.objectContaining({ pronunciation: '/ɛn/', definition, definitionOmitted: definition === null,
+        reviewedDefaultVersion: undefined, reviewedDefinitionDefaultVersion: undefined }),
+    } }));
+  }
 });
 
 test('refuses an import that a profile override would silently supersede', async () => {

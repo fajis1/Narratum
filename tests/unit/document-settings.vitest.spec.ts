@@ -79,6 +79,20 @@ describe('document settings language', () => {
     ]);
   });
 
+  test('preserves automatic-default provenance across persisted lexicon reads', () => {
+    const entry = { term: 'ἐν', pronunciation: '/ɛn/', definition: null, language: 'koine_greek', definitionOmitted: true };
+    const settings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, { smartAudioLexicon: {
+      schemaVersion: 1, status: 'partial', profileId: 'scholar', pronunciationModel: 'model', scannedAt: 123,
+      entries: {
+        'ἐν': { ...entry, reviewedDefaultVersion: 1, reviewedDefinitionDefaultVersion: 2 },
+        invalid: { ...entry, reviewedDefaultVersion: -1, reviewedDefinitionDefaultVersion: '2' },
+      },
+    } });
+    expect(settings.smartAudioLexicon?.entries['ἐν']).toMatchObject({ reviewedDefaultVersion: 1, reviewedDefinitionDefaultVersion: 2 });
+    expect(settings.smartAudioLexicon?.entries.invalid).not.toHaveProperty('reviewedDefaultVersion');
+    expect(settings.smartAudioLexicon?.entries.invalid).not.toHaveProperty('reviewedDefinitionDefaultVersion');
+  });
+
   test('keeps Cloud Drama failure details for later review', () => {
     const settings = mergeDocumentSettings(DEFAULT_DOCUMENT_SETTINGS, {
       smartAudioReviewFlags: [{

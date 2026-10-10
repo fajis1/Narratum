@@ -30,6 +30,20 @@ const lexicon: SmartAudioBookLexicon = {
 };
 
 describe('Smart Audio book lexicon', () => {
+  test('retains resolved non-biblical pre-scan entries through auto-scan and tags only whole source words', async () => {
+    const { resolveSmartAudioBookLexicon } = await import('../../src/lib/server/smart-audio/book-lexicon');
+    const existing: SmartAudioBookLexicon = { ...lexicon, entries: {
+      veritas: { term: 'veritas', pronunciation: '/vɛrɪtɑs/', definition: 'truth', language: 'other', detectedLanguage: 'latin', languageConfidence: 0.9 },
+      'очи': { term: 'очи', pronunciation: '/oʊtʃi/', definition: 'eyes', language: 'other', detectedLanguage: 'church_slavonic', languageConfidence: 0.9 },
+      '食べる': { term: '食べる', pronunciation: '/tɑbɛru/', definition: null, definitionOmitted: true, language: 'other', detectedLanguage: 'japanese' },
+    } };
+    const result = await resolveSmartAudioBookLexicon({ profile: { id: 'test', name: 'Test', aiModel: 'fixture', customTtsPrompt: '', abbreviations: {}, pronunciations: {}, books: {} },
+      candidates: [], existing });
+    expect(result.entries).toEqual(existing.entries);
+    const text = 'veritas veritasque очи очище 食べる 食べる人';
+    expect(enrichTextFromBookLexicon(text, result, { includeDefinitions: false }))
+      .toBe('[veritas](/vɛrɪtɑs/) veritasque [очи](/oʊtʃi/) очище [食べる](/tɑbɛru/) 食べる人');
+  });
   test('keeps remembered pronunciations through settings reads and rescans with no new candidate', async () => {
     const { resolveSmartAudioBookLexicon } = await import('../../src/lib/server/smart-audio/book-lexicon');
     const remembered = { ...lexicon, entries: { 'λόγος': { term: 'λόγος', pronunciation: '/lɒɡɒs/', definition: null,

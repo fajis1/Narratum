@@ -1,13 +1,14 @@
-import { getSupportedSourceScripts, hasUnsupportedSourceLetters, isForeignSourceWord, getForeignWordSourceRepairReasons } from './foreign-word-source-integrity';
+import { getSupportedSourceScripts, hasMixedForeignSourceScripts, hasUnsupportedSourceLetters, isForeignSourceWord, getForeignWordSourceRepairReasons } from './foreign-word-source-integrity';
 import type { SmartAudioProfile } from '@/types/client';
 import { classifyForeignNarrationToken } from './foreign-narration-token';
+import type { ForeignWordLanguage } from './foreign-word-language';
 
-export const KOKORO_PRONUNCIATION_POLICY_VERSION = 6;
+export const KOKORO_PRONUNCIATION_POLICY_VERSION = 8;
 
 export const KOKORO_COMPATIBILITY_POLICY = `KOKORO PRONUNCIATION COMPATIBILITY POLICY (REQUIRED, VERSION ${KOKORO_PRONUNCIATION_POLICY_VERSION}):
 - Use English-compatible IPA intended for Kokoro.
 - NEVER use the primary stress marker "ˈ"; it can cause ghost syllables. Do not use secondary stress "ˌ" either; normalization removes both.
-- Source keys may use Latin, Greek, Hebrew, or Ethiopic. Pronunciations must use English-compatible phonetic characters, never raw Hebrew/Ethiopic text or another source-script spelling.
+- Source keys may use Latin, Greek, Hebrew, Ethiopic, Cyrillic, Arabic, Han or Japanese kana. Japanese words may combine Han and kana. Pronunciations must use English-compatible phonetic characters, never raw Hebrew/Ethiopic text or another source-script spelling.
 - NEVER use a standalone "/o/"; use an English-compatible vowel such as "/oʊ/" or "/ɒ/" when appropriate.
 - NEVER insert syllable-boundary periods between vowels.
 - Do not use true pharyngeal fricatives such as "ħ" or "ʕ"; approximate them with English-compatible "/k/" or "/x/" sounds.
@@ -15,7 +16,7 @@ export const KOKORO_COMPATIBILITY_POLICY = `KOKORO PRONUNCIATION COMPATIBILITY P
 - For initialisms, use single capital letters separated by commas and spaces, such as "K, T, L"; NEVER group capitals as "TH, N".
 - Return one reusable dictionary term at a time. Never use an IPA string, a phrase containing spaces, a mixed-script OCR token, or a stray consonant fragment as the dictionary word.
 - Never return a stuttered pronunciation with an adjacent repeated token. Spell source letters individually only for a real initialism, never as a fallback for unreadable OCR.
-- Pronounce the complete source word, not only a suffix or other surviving OCR fragment. For a word beginning Greek πν or Latin pn, the initial p is silent and must not appear in the pronunciation.
+- Pronounce the complete source word, not only a suffix or other surviving OCR fragment. For identified Koine Greek πν or its Latin pn transliteration, follow the profile's silent initial p convention. Do not apply this convention to other identified languages.
 - Preserve Kokoro markup exactly as "[Original Text](/IPA/)" when markup is requested.
 - When returning pronunciation choices as JSON, return each pronunciation as a slash-delimited IPA string and no explanatory prose.
 These compatibility requirements cannot be removed by profile-specific guidance.`;
@@ -132,7 +133,7 @@ export function getKokoroPronunciationWordWarnings(word: unknown): string[] {
   if (/^[-–—]|[-–—]$/u.test(trimmed)) warnings.push('Dictionary word is truncated at a dash.');
   if (/[_\\]/u.test(trimmed)) warnings.push('Dictionary word contains a markup or separator character.');
   if (/[ɐ-ʯː]/u.test(trimmed)) warnings.push('Dictionary word looks like bare IPA rather than source text.');
-  if (getSupportedSourceScripts(trimmed).length > 1) warnings.push('Dictionary word mixes Latin, Greek, Hebrew, or Ethiopic scripts.');
+  if (hasMixedForeignSourceScripts(trimmed)) warnings.push('Dictionary word mixes Latin, Greek, Hebrew, or Ethiopic scripts.');
   if (getSupportedSourceScripts(trimmed).length === 0 || hasUnsupportedSourceLetters(trimmed)) {
     warnings.push('Dictionary word contains an unsupported or mixed writing system.');
   }
@@ -169,8 +170,8 @@ function pronunciationTokens(pronunciation: string): string[] {
 }
 
 export type PronunciationValidationContext =
-  | { mode: 'dictionary' }
-  | { mode: 'inline'; text: string; start: number; end: number };
+  | { mode: 'dictionary'; detectedLanguage?: ForeignWordLanguage }
+  | { mode: 'inline'; text: string; start: number; end: number; detectedLanguage?: ForeignWordLanguage };
 
 export function getKokoroPronunciationQualityWarnings(
   word: string,
@@ -194,11 +195,13 @@ export function getKokoroPronunciationQualityWarnings(
   if (typeof pronunciation !== 'string') return warnings;
   const inner = pronunciation.trim().replace(/^\/|\/$/g, '');
   const normalizedWord = word.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-  if ((normalizedWord.startsWith('πν') || normalizedWord.startsWith('pn')) && /^p/iu.test(inner)) {
+  if ((normalizedWord.startsWith('πν') ? context.detectedLanguage !== 'modern_greek'
+      : normalizedWord.startsWith('pn') && (context.detectedLanguage === undefined || context.detectedLanguage === 'koine_greek'))
+      && /^p/iu.test(inner)) {
     warnings.push('Pronounces a silent initial p before n.');
   }
   if (
-    /\p{Script=Greek}/u.test(word)
+    /\p{Script=Greek}/u.test(word) && context.detectedLanguage !== 'modern_greek'
     && greekVowelNuclei(word) - ipaVowelNuclei(pronunciation) >= 1
   ) {
     warnings.push('Pronunciation covers only part of the Greek source word.');
@@ -241,8 +244,9 @@ export function getKokoroPronunciationQualityWarnings(
 export function isKokoroSafePronunciation(
   word: string,
   pronunciation: unknown,
+  detectedLanguage?: ForeignWordLanguage,
 ): pronunciation is string {
-  return getKokoroPronunciationQualityWarnings(word, pronunciation).length === 0;
+  return getKokoroPronunciationQualityWarnings(word, pronunciation, { mode: 'dictionary', detectedLanguage }).length === 0;
 }
 
 export function filterKokoroCompatiblePronunciationRecord(value: unknown): Record<string, string> {
@@ -264,7 +268,7 @@ export function filterKokoroCompatiblePronunciationRecord(value: unknown): Recor
  * - Fixing malformed delimiter endings: `/]` or `/)` -> `/`
  * - Ensuring leading/trailing forward slash delimiters: `ipa` -> `/ipa/`
  * - Stripping unsupported primary/secondary stress markers `[ˈˌ']` (which cause ghost syllables in Kokoro)
- * - Removing vowel syllable boundary periods (e.g. `a.i` -> `ai`)
+ * - Removing internal syllable boundary periods in IPA-only segments (e.g. `ɛ.nɑn.tiː` -> `ɛnɑntiː`)
  * - Compacting inner whitespace between phonemes/syllables for single words (e.g. `/hɑː dɑːm/` -> `/hɑːdɑːm/`)
  * - Stripping leading/trailing digits or stray punctuation from phonemes
  *
@@ -273,6 +277,7 @@ export function filterKokoroCompatiblePronunciationRecord(value: unknown): Recor
 export function normalizeKokoroPronunciationCandidate(
   word: string,
   raw: unknown,
+  detectedLanguage?: ForeignWordLanguage,
 ): string | null {
   if (typeof raw !== 'string') return null;
   let text = raw.trim();
@@ -314,7 +319,19 @@ export function normalizeKokoroPronunciationCandidate(
   inner = inner.replace(/^\d+|\d+$/gu, '');
 
   // 7. Remove syllable-boundary periods between vowels (e.g. a.i -> ai)
-  inner = inner.replace(/([aeiouɑɒɔəɛɪʊ])\.([aeiouɑɒɔəɛɪʊ])/giu, '$1$2');
+  // Extend to consonant boundaries only for lowercase phoneme segments with a
+  // vowel nucleus in each segment. Reject prose, initials, empty segments and
+  // surrounding periods instead of making them look like valid pronunciations.
+  if (inner.includes('.')) {
+    const segments = inner.split('.');
+    const phonemeSegment = /^[a-zɑɒɔəɛɜɞɪʊæʌɨɐøœɯɤɵɚɝθðʃʒŋɡɹʔħʕ][a-zɑɒɔəɛɜɞɪʊæʌɨɐøœɯɤɵɚɝθðʃʒŋɡɹʔħʕ\p{M}ː]*$/u;
+    const vowel = /[aeiouyɑɒɔəɛɜɞɪʊæʌɨɐøœɯɤɵɚɝ]/u;
+    const hasIpaEvidence = /[ɑɒɔəɛɜɞɪʊæʌɨɐøœɯɤɵɚɝθðʃʒŋɡɹʔħʕː]/u.test(inner)
+      || segments.every((segment) => /^[aeiou]+$/u.test(segment));
+    if (!hasIpaEvidence) return null;
+    if (segments.some((segment) => !phonemeSegment.test(segment) || !vowel.test(segment))) return null;
+    inner = segments.join('');
+  }
 
   // 8. Strip trailing non-phoneme punctuation (e.g. stray commas, semicolons)
   inner = inner.replace(/[,;]+$/gu, '').trim();
@@ -343,10 +360,10 @@ export function normalizeKokoroPronunciationCandidate(
 
 
   const strippedWord = trimmedWord.replace(/^\d+|\d+$/gu, '');
-  if (trimmedWord && isKokoroSafePronunciation(trimmedWord, candidate)) {
+  if (trimmedWord && isKokoroSafePronunciation(trimmedWord, candidate, detectedLanguage)) {
     return candidate;
   }
-  if (strippedWord && isKokoroSafePronunciation(strippedWord, candidate)) {
+  if (strippedWord && isKokoroSafePronunciation(strippedWord, candidate, detectedLanguage)) {
     return candidate;
   }
   if (!trimmedWord && isKokoroCompatiblePronunciation(candidate)) {

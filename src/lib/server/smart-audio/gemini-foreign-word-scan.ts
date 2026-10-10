@@ -1,5 +1,6 @@
-import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
+import { getSupportedSourceScripts, hasUnsupportedSourceLetters, requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { createHash } from 'node:crypto';
+import { FOREIGN_WORD_LANGUAGES, readForeignWordLanguageMetadata, type ForeignWordLanguageMetadata } from '@/lib/shared/foreign-word-language';
 import {
   getKokoroPronunciationQualityWarnings,
   normalizeKokoroPronunciationCandidate,
@@ -20,6 +21,9 @@ export const GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA = {
         type: 'string',
         enum: ['koine_greek', 'biblical_hebrew', 'other'],
       },
+      detectedLanguage: { type: 'string', enum: Object.keys(FOREIGN_WORD_LANGUAGES), description: 'Language identified from spelling and passage; script alone is insufficient.' },
+      languageConfidence: { type: 'number', minimum: 0, maximum: 1 },
+      ambiguityReason: { type: 'string', enum: ['language', 'abbreviation'] },
       pronunciations: {
         type: 'array',
         items: { type: 'string' },
@@ -55,6 +59,8 @@ export const GEMINI_FOREIGN_WORD_RESPONSE_JSON_SCHEMA = {
     required: [
       'term',
       'language',
+      'detectedLanguage',
+      'languageConfidence',
       'pronunciations',
       'ocrFragment',
       'sourceOutcome',
@@ -129,6 +135,13 @@ export function validateForeignWordResultBatch(
     if (!['koine_greek', 'biblical_hebrew', 'other'].includes(String(result.language))) {
       throw new Error(`Invalid language for ${result.term}`);
     }
+    // New metadata is optional so persisted/legacy provider fixtures remain readable.
+    if ((result.detectedLanguage !== undefined && (typeof result.detectedLanguage !== 'string' || !Object.hasOwn(FOREIGN_WORD_LANGUAGES, result.detectedLanguage)))
+        || (result.languageConfidence !== undefined && (typeof result.languageConfidence !== 'number' || !Number.isFinite(result.languageConfidence)
+          || result.languageConfidence < 0 || result.languageConfidence > 1))
+        || (result.ambiguityReason !== undefined && !['language', 'abbreviation'].includes(String(result.ambiguityReason)))) {
+      throw new Error(`Invalid language metadata for ${result.term}`);
+    }
     if (typeof result.ocrFragment !== 'boolean' || typeof result.definitionOmitted !== 'boolean'
         || typeof result.needsReview !== 'boolean' || (result.definition !== null && typeof result.definition !== 'string')
         || typeof result.confidence !== 'number' || !Number.isFinite(result.confidence)
@@ -170,10 +183,11 @@ export function isUsableForeignWordCandidate(value: unknown): boolean {
 export function selectGeminiEligibleScanRows<T extends { word: string; sourceStatus?: unknown; sourceOutcome?: unknown;
   ocrFragment?: unknown; automaticIgnore?: unknown }>(rows: readonly T[]): T[] {
   return rows.filter((row) => !requiresForeignWordSourceRepair(row)
+    && getSupportedSourceScripts(row.word).length > 0 && !hasUnsupportedSourceLetters(row.word)
     && row.ocrFragment !== true && row.automaticIgnore !== true);
 }
 
-export type GeminiPronunciationRepairRequest = GeminiForeignWordTerm & {
+export type GeminiPronunciationRepairRequest = GeminiForeignWordTerm & ForeignWordLanguageMetadata & {
   acceptedPronunciations: string[];
   rejectedPronunciations: Array<{
     pronunciation: unknown;
@@ -195,14 +209,14 @@ export function collectGeminiPronunciationRepairRequests(
     const normalizedMap = new Map<string, string>();
     for (const raw of rawPronunciations) {
       if (typeof raw === 'string') {
-        const normalized = normalizeKokoroPronunciationCandidate(term.term, raw);
+        const normalized = normalizeKokoroPronunciationCandidate(term.term, raw, readForeignWordLanguageMetadata(result || {}).detectedLanguage);
         if (normalized) normalizedMap.set(raw, normalized);
       }
     }
     const acceptedPronunciations = [...new Set(normalizedMap.values())];
     const rejectedPronunciations = rawPronunciations.flatMap((pronunciation) => {
       if (typeof pronunciation === 'string' && normalizedMap.has(pronunciation)) return [];
-      const violations = getKokoroPronunciationQualityWarnings(term.term, pronunciation);
+      const violations = getKokoroPronunciationQualityWarnings(term.term, pronunciation, { mode: 'dictionary', detectedLanguage: readForeignWordLanguageMetadata(result || {}).detectedLanguage });
       return violations.length > 0 ? [{ pronunciation, violations }] : [];
     });
     if (!result) {
@@ -221,6 +235,7 @@ export function collectGeminiPronunciationRepairRequests(
     if (choicesNeeded === 0) return [];
     return [{
       ...term,
+      ...readForeignWordLanguageMetadata(result),
       acceptedPronunciations,
       rejectedPronunciations,
       choicesNeeded,
@@ -235,11 +250,12 @@ export function mergeGeminiPronunciationRepairResults(
   const merged = new Map(initialResults.map((result) => [result.term, { ...result }]));
   for (const repair of repairResults) {
     const initial = merged.get(repair.term);
+    const metadata = { ...readForeignWordLanguageMetadata(initial), ...readForeignWordLanguageMetadata(repair) };
     const pronunciations = isUnresolvedForeignWordOutcome(repair) ? [] : [
       ...(Array.isArray(initial?.pronunciations) ? initial.pronunciations : []),
       ...(Array.isArray(repair.pronunciations) ? repair.pronunciations : []),
     ]
-      .map((pronunciation) => normalizeKokoroPronunciationCandidate(repair.term, pronunciation))
+      .map((pronunciation) => normalizeKokoroPronunciationCandidate(repair.term, pronunciation, metadata.detectedLanguage))
       .filter((pronunciation): pronunciation is string => Boolean(pronunciation))
       .filter((pronunciation, index, all) => all.indexOf(pronunciation) === index).slice(0, 5);
     merged.set(repair.term, {
@@ -309,7 +325,7 @@ export function findLatestForeignWordScanJob(
   return activeLegacyJobs.length === 1 ? activeLegacyJobs[0] : null;
 }
 
-export const FOREIGN_WORD_CANDIDATE_CACHE_VERSION = 14;
+export const FOREIGN_WORD_CANDIDATE_CACHE_VERSION = 15;
 
 export function foreignWordCandidateCacheKey(input: {
   userId: string;

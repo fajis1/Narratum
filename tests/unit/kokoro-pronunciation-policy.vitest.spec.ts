@@ -132,7 +132,7 @@ describe('Kokoro pronunciation policy', () => {
       'hāʾādām': '/hɑɑdɑm/',
       'ʾ': '/hɑɑdɑm/',
       'привет': '/privet/',
-    })).toEqual({ 'λόγος': '/loʊɡɒs/', 'hāʾādām': '/hɑɑdɑm/' });
+    })).toEqual({ 'λόγος': '/loʊɡɒs/', 'hāʾādām': '/hɑɑdɑm/', 'привет': '/privet/' });
   });
 
   test('permits Hebrew and Arabic transliteration modifier characters in Latin tokens', () => {
@@ -145,9 +145,7 @@ describe('Kokoro pronunciation policy', () => {
     expect(getKokoroPronunciationWordWarnings('ʾ')).toContain(
       'Dictionary word contains an unsupported or mixed writing system.',
     );
-    expect(getKokoroPronunciationWordWarnings('привет')).toContain(
-      'Dictionary word contains an unsupported or mixed writing system.',
-    );
+    expect(getKokoroPronunciationWordWarnings('привет')).toEqual([]);
     expect(getKokoroPronunciationWordWarnings('שלוםʾ')).toContain(
       'Dictionary word contains an unsupported or mixed writing system.',
     );
@@ -232,6 +230,19 @@ describe('Kokoro pronunciation policy', () => {
     expect(normalizeKokoroPronunciationCandidate('word', '')).toBeNull();
     expect(normalizeKokoroPronunciationCandidate('word', 'unsupported-xyz-!@#$')).toBeNull();
   });
+  test('repairs internal syllable separators without changing phonemes or masking invalid candidates', () => {
+    expect(normalizeKokoroPronunciationCandidate('ἐναντίος', '/ɛ.nɑn.ti.oʊs/')).toBe('/ɛnɑntioʊs/');
+    expect(normalizeKokoroPronunciationCandidate('word', '/hɑː.dɑːm/')).toBe('/hɑːdɑːm/');
+    expect(normalizeKokoroPronunciationCandidate('word', '/a.i.u/')).toBe('/aiu/');
+    for (const raw of ['/ɛ..nɑn/', '/.ɛnɑn/', '/ɛnɑn./', '/K.T.L/', '/hello.world/', '/ɛ.nɑn tiː/', '/ɛ.123/', '/ħɑ.mɑ/', '/ɛ.yjɑ/']) {
+      expect(normalizeKokoroPronunciationCandidate('word', raw), raw).toBeNull();
+    }
+    expect(normalizeKokoroPronunciationCandidate('ἐναντίος', '/ɛ.nɑn/')).toBeNull();
+    // Word-dependent source integrity remains authoritative after formatting cleanup.
+    expect(normalizeKokoroPronunciationCandidate('δόξαfied', '/dɒk.sɑ/')).toBeNull();
+    const normalized = normalizeKokoroPronunciationCandidate('ἐναντίος', '/ɛ.nɑn.ti.oʊs/');
+    expect(normalizeKokoroPronunciationCandidate('ἐναντίος', normalized)).toBe(normalized);
+  });
 });
 
  test('supports Ethiopic source keys while keeping pronunciation and script safety independent', () => {
@@ -243,7 +254,7 @@ describe('Kokoro pronunciation policy', () => {
     expect(isKokoroSafePronunciation(word, `/${word}/`)).toBe(false);
   }
   expect(isKokoroSafePronunciation('ኵሎabc', '/kulo/')).toBe(false);
-  expect(isKokoroSafePronunciation('привет', '/privet/')).toBe(false);
+  expect(isKokoroSafePronunciation('привет', '/privet/')).toBe(true);
   expect(isKokoroSafePronunciation('ኵሎ', '/привет/')).toBe(false);
   expect(isKokoroSafePronunciation('שלום', '/ʃɑloʊm/')).toBe(true);
   expect(isKokoroSafePronunciation('λόγος', '/loʊɡɒs/')).toBe(true);

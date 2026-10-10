@@ -23,7 +23,8 @@ test('does not borrow context from a distant occurrence or infer a Greek name fo
     expect(classification.kind).toBe('contextual_letter_reference');
     expect(classification.pronunciation).toBeUndefined();
   }
-  expect(classifyForeignNarrationToken('кардиа', 'кардиа', 0, 6).kind).toBe('source_damaged');
+  expect(classifyForeignNarrationToken('кардиа', 'кардиа', 0, 6).kind).toBe('unknown');
+  expect(classifyForeignNarrationToken('բառ', 'բառ', 0, 3).kind).toBe('source_damaged');
 });
 
 test.each(['ኵሎ', 'ኅቡኣተ', 'ጥበቦሙ', 'አ'])('classifies Ethiopic %s lexically without Greek letter conventions', word => {

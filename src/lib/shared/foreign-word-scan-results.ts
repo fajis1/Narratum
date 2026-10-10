@@ -1,4 +1,5 @@
-import { requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
+import { getSupportedSourceScripts, hasUnsupportedSourceLetters, requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
+import { needsForeignWordLanguageReview, readForeignWordLanguageMetadata } from './foreign-word-language';
 export type ForeignWordScanResultRow = {
   word: string;
   sourceStatus?: string;
@@ -176,6 +177,8 @@ export function isMissingPronunciation(row: ForeignWordScanResultRow): boolean {
 }
 
 export function isFlaggedForReview(row: ForeignWordScanResultRow): boolean {
+  if (getSupportedSourceScripts(row.word).length === 0 || hasUnsupportedSourceLetters(row.word)) return true;
+  if (needsForeignWordLanguageReview(readForeignWordLanguageMetadata(row))) return true;
   if (Boolean(row.importWarning)) return true;
   if (row.definitionNeedsReview === true) return true;
   if (row.sourceStatus === 'needs_source_repair' || row.sourceOutcome === 'needs_source_repair') return true;
@@ -204,7 +207,7 @@ export function sortForeignWordScanRows<T extends ForeignWordScanResultRow>(
 
 export function isAutomaticallyIgnoredForeignWord(row: ForeignWordScanResultRow): boolean {
   if (requiresForeignWordSourceRepair(row)) return false;
-  return row.ocrFragment === true || row.automaticIgnore === true;
+  return row.sourceOutcome === 'not_applicable' || row.ocrFragment === true || row.automaticIgnore === true;
 }
 
 /** Exact unresolved work, in the original Gemini queue order. */

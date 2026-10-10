@@ -5,6 +5,25 @@ import scan_pdf_foreign_words
 
 
 class ForeignWordContextTests(unittest.TestCase):
+    def test_all_foreign_includes_unaccented_language_candidates_and_japanese_without_biblical_labels(self):
+        text = 'The German veritas and Geist appear beside очи and 食べる.'
+        scan_pdf_foreign_words.is_latin_transliteration_candidate.cache_clear()
+        try:
+            with (
+                patch.object(scan_pdf_foreign_words, 'load_pdf_text', return_value=text),
+                patch.object(scan_pdf_foreign_words, 'fetch_global_pronunciations', return_value={}),
+                patch.object(scan_pdf_foreign_words, 'zipf_frequency', side_effect=lambda word, _language: 0.0 if word in {'veritas', 'geist'} else 6.0),
+            ):
+                rows = scan_pdf_foreign_words.scan_pdf_foreign_words('unused.pdf', target_percentile=100, mode='all_foreign', quiet=True)
+            by_word = {row['word']: row for row in rows}
+            self.assertEqual(set(by_word), {'veritas', 'Geist', 'очи', '食べる'})
+            for word in ('veritas', 'Geist'):
+                self.assertTrue(by_word[word]['foreignLanguageCandidate'])
+                self.assertNotIn('latinTransliterationCandidate', by_word[word])
+                self.assertIn(word, by_word[word]['contexts'][0])
+        finally:
+            scan_pdf_foreign_words.is_latin_transliteration_candidate.cache_clear()
+
     def test_shared_lifecycle_fixture_indexes_multiple_pages_and_ascii_corruption(self):
         import runpy
         from pathlib import Path

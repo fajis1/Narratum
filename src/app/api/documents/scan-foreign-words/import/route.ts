@@ -15,6 +15,7 @@ import {
 } from '@/lib/shared/kokoro-pronunciation-policy';
 
 import type { SmartAudioBookLexiconEntry } from '@/types/document-settings';
+import { readForeignWordLanguageMetadata, type ForeignWordLanguage } from '@/lib/shared/foreign-word-language';
 
 const GREEK = /\p{Script=Greek}/u;
 const HEBREW = /\p{Script=Hebrew}/u;
@@ -55,7 +56,10 @@ export async function POST(req: NextRequest) {
           requiresForeignWordSourceRepair(row)
             || row.sourceOutcome === 'insufficient_context' ? 'needs_source_repair' : row.sourceStatus,
         ]).filter((entry: unknown[]): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')),
-        { allowPartial: true },
+        { allowPartial: true, trustedLanguages: new Map(job.words.flatMap((row: Record<string, unknown>) => {
+          const language = readForeignWordLanguageMetadata(row).detectedLanguage;
+          return language && typeof row.word === 'string' ? [[row.word, language] as [string, ForeignWordLanguage]] : [];
+        })) },
       );
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid scan JSON.' }, { status: 400 });
@@ -89,7 +93,7 @@ export async function POST(req: NextRequest) {
       }
       const pronunciation = change.pronunciation || prior?.pronunciation ||
         [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation]
-          .map((value) => normalizeKokoroPronunciationCandidate(change.word, value))
+          .map((value) => normalizeKokoroPronunciationCandidate(change.word, value, readForeignWordLanguageMetadata(row).detectedLanguage))
           .find((value): value is string => typeof value === 'string');
       if (!pronunciation) {
         skippedList.push({
@@ -117,16 +121,18 @@ export async function POST(req: NextRequest) {
       const prior = lexicon.entries[change.word];
       const pronunciation = change.pronunciation || prior?.pronunciation ||
         [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation]
-          .map((value) => normalizeKokoroPronunciationCandidate(change.word, value))
+          .map((value) => normalizeKokoroPronunciationCandidate(change.word, value, readForeignWordLanguageMetadata(row).detectedLanguage))
           .find((value): value is string => typeof value === 'string')!;
 
       const definition = change.definition !== undefined ? change.definition : prior?.definition || (typeof row.definition === 'string' ? row.definition : null);
       lexicon.entries[change.word] = {
-        ...prior, term: change.word, pronunciation, definition,
+        ...prior, ...readForeignWordLanguageMetadata(row), term: change.word, pronunciation, definition,
         definitionOmitted: definition === null,
         language: prior?.language || languageForWord(change.word),
         context: prior?.context || (Array.isArray(row.contexts) && typeof row.contexts[0] === 'string' ? row.contexts[0] : undefined),
         needsReview: false, approvedRepair: true,
+        reviewedDefaultVersion: undefined,
+        reviewedDefinitionDefaultVersion: undefined,
       };
     }
     for (const skipped of skippedList) {

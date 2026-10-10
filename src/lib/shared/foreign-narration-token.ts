@@ -1,4 +1,4 @@
-import { getSupportedSourceScripts, hasUnsupportedSourceLetters } from './foreign-word-source-integrity';
+import { hasMixedForeignSourceScripts, hasUnsupportedSourceLetters } from './foreign-word-source-integrity';
 
 /** Script membership includes punctuation. Lexical scanning requires a letter. */
 export function containsForeignLexicalLetter(text: string): boolean {
@@ -34,7 +34,7 @@ const CHAPTER_VERSE = /\bchapter\s+\d+\s+verse\s+\d+\s*$/iu;
 /** Inspect bounded, immediate context. The caller supplies real chapter offsets. */
 export function classifyForeignNarrationToken(word: string, text: string, start: number, end: number): ForeignNarrationTokenClassification {
   if (!/\p{Letter}/u.test(word)) return { kind: 'punctuation', reason: 'No lexical letters.' };
-  if (hasUnsupportedSourceLetters(word) || getSupportedSourceScripts(word).length > 1) {
+  if (hasUnsupportedSourceLetters(word) || hasMixedForeignSourceScripts(word)) {
     return { kind: 'source_damaged', reason: 'Unsupported or mixed source writing systems require source review.' };
   }
   const pronunciation = GREEK_LETTER_NAMES[word.toLowerCase()];

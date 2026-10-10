@@ -8,6 +8,8 @@ import { useTtsPreviewSettings } from '@/hooks/audio/useTtsPreviewSettings';
 import { PRESET_MODELS } from '@/components/constants';
 import { BookPronunciationInspectorModal } from './BookPronunciationInspectorModal';
 import { matchesTransliteratedTerm } from '@/lib/shared/transliteration-search';
+import { FOREIGN_WORD_LANGUAGES, readForeignWordLanguageMetadata } from '@/lib/shared/foreign-word-language';
+import { getForeignWordReviewReasons } from '@/lib/shared/foreign-word-review-reasons';
 import {
   isAutomaticallyIgnoredForeignWord,
   isFlaggedForReview,
@@ -88,6 +90,7 @@ export function ScanForeignWordsModal({
   const [refineRecovery, setRefineRecovery] = useState<Record<string, { message: string; feedback: string; canUseBackupKey: boolean; countdown?: number }>>({});
   const [onlyNewPronunciations, setOnlyNewPronunciations] = useState(false);
   const [generateOnlyForNewWords, setGenerateOnlyForNewWords] = useState(true);
+  const [useReviewedDefaults, setUseReviewedDefaults] = useState(true);
   const [forceUseBackupKey, setForceUseBackupKey] = useState(false);
   const [sortMissingFirst, setSortMissingFirst] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -99,6 +102,8 @@ export function ScanForeignWordsModal({
   const [scanJobId, setScanJobId] = useState<string | null>(null);
   const [scanJobProgress, setScanJobProgress] = useState({ completed: 0, total: 0 });
   const [scanJobLibrarySkipped, setScanJobLibrarySkipped] = useState(0);
+  const [scanJobReviewedDefaults, setScanJobReviewedDefaults] = useState(0);
+  const [scanJobFormattingNormalized, setScanJobFormattingNormalized] = useState(0);
   const [scanJobTransliterationRejected, setScanJobTransliterationRejected] = useState(0);
   const [sourceRecoveryRefresh, setSourceRecoveryRefresh] = useState(0);
   const [scanJobManualReviewTerms, setScanJobManualReviewTerms] = useState<string[] | null>(null);
@@ -190,6 +195,7 @@ export function ScanForeignWordsModal({
       setHasScanned(false);
       setOnlyNewPronunciations(false);
       setGenerateOnlyForNewWords(true);
+      setUseReviewedDefaults(true);
       setSearchQuery('');
       setReviewFilter('all');
       setPanelWidth(null);
@@ -198,6 +204,8 @@ export function ScanForeignWordsModal({
       setScanJobId(null);
       setScanJobProgress({ completed: 0, total: 0 });
       setScanJobLibrarySkipped(0);
+      setScanJobReviewedDefaults(0);
+      setScanJobFormattingNormalized(0);
       setScanJobTransliterationRejected(0);
       setScanJobResolved(0);
       setScanJobManualReviewTerms(null);
@@ -231,6 +239,8 @@ export function ScanForeignWordsModal({
       setScanJobId(null);
       setScanJobProgress({ completed: 0, total: 0 });
       setScanJobLibrarySkipped(0);
+      setScanJobReviewedDefaults(0);
+      setScanJobFormattingNormalized(0);
       setScanJobTransliterationRejected(0);
       setScanJobResolved(0);
       setScanJobManualReviewTerms(null);
@@ -440,6 +450,8 @@ export function ScanForeignWordsModal({
     if (typeof job.stage === 'string') setScanJobStage(job.stage);
     setScanJobProgress({ completed: Number(job.completed) || 0, total: Number(job.total) || 0 });
     setScanJobLibrarySkipped(Number(job.librarySkipped) || 0);
+    setScanJobReviewedDefaults(Number(job.reviewedDefaultMatches) || 0);
+    setScanJobFormattingNormalized(Number(job.formattingNormalizedTerms) || 0);
     setScanJobTransliterationRejected(Number(job.transliterationRejected) || 0);
     setScanJobResolved(Number(job.resolved ?? job.generated) || 0);
     setScanJobManualReviewTerms(readGeminiManualReviewTerms(job.manualReviewTerms));
@@ -532,6 +544,7 @@ export function ScanForeignWordsModal({
           target: 100,
           query: queryToUse || undefined,
           generateOnlyForNewWords,
+          useReviewedDefaults,
           forceUseBackupKey,
           pronunciationModel: overrideModel || pronunciationModel || undefined,
           pronunciationModelFallbacks: overrideFallbacks.filter(Boolean),
@@ -546,6 +559,8 @@ export function ScanForeignWordsModal({
       setScanJobStage('extracting');
       setScanJobProgress({ completed: 0, total: Number(data.scanTotal) || 0 });
       setScanJobLibrarySkipped(0);
+      setScanJobReviewedDefaults(0);
+      setScanJobFormattingNormalized(0);
       setScanJobTransliterationRejected(0);
       setScanJobResolved(0);
       setScanJobManualReviewTerms(null);
@@ -1172,6 +1187,12 @@ export function ScanForeignWordsModal({
                       Library matches skipped by Gemini: {scanJobLibrarySkipped}
                     </p>
                   )}
+                  {scanJobReviewedDefaults > 0 && (
+                    <p className="text-[11px] text-accent">Reviewed defaults used: {scanJobReviewedDefaults}</p>
+                  )}
+                  {scanJobFormattingNormalized > 0 && (
+                    <p className="text-[11px] text-accent">Gemini terms with formatting normalized: {scanJobFormattingNormalized}</p>
+                  )}
                   {scanJobStatusMessage && (
                     <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300 animate-pulse">
                       {scanJobStatusMessage}
@@ -1188,6 +1209,12 @@ export function ScanForeignWordsModal({
                 </div>
               ) : scanJobStatus === 'completed' && (scanJobProgress.total > 0 || scanJobLibrarySkipped > 0) ? (
                 <div className="space-y-0.5">
+                  {scanJobReviewedDefaults > 0 && (
+                    <p className="text-[11px] text-accent">Reviewed defaults used: {scanJobReviewedDefaults}</p>
+                  )}
+                  {scanJobFormattingNormalized > 0 && (
+                    <p className="text-[11px] text-accent">Gemini terms with formatting normalized: {scanJobFormattingNormalized}</p>
+                  )}
                   {scanJobLibrarySkipped > 0 && (
                     <p className="text-[11px] text-blue-700 dark:text-blue-300">Library matches skipped by Gemini: {scanJobLibrarySkipped}</p>
                   )}
@@ -1284,6 +1311,10 @@ export function ScanForeignWordsModal({
                     disabled={loading || scanActive}
                   />
                   Show one stored option for known words
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-text" title="Reuse a small set of common Greek and Hebrew defaults. Custom pronunciation guidance and source warnings disable these defaults.">
+                  <input type="checkbox" checked={useReviewedDefaults} onChange={(event) => setUseReviewedDefaults(event.target.checked)} disabled={loading || scanActive} />
+                  Use reviewed pronunciation defaults
                 </label>
                 {backupApiKeyLast4 && (
                   <label className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300 font-semibold whitespace-nowrap" title="Bypasses the primary API key and uses the backup Gemini key immediately for this scan.">
@@ -1637,7 +1668,7 @@ export function ScanForeignWordsModal({
             <>
             {ignoredWordCount > 0 && (
               <div className="mb-3 rounded border border-line bg-surface-sunken px-3 py-2 text-xs text-soft">
-                Automatically hidden: {ignoredWordCount} deterministic extraction artifact{ignoredWordCount === 1 ? '' : 's'}, low-value Greek/Hebrew function term{ignoredWordCount === 1 ? '' : 's'}, or Latin candidate Gemini did not recognize as Greek/Hebrew. Complete recognized words remain reviewable.
+                Automatically hidden: {ignoredWordCount} extraction artifact{ignoredWordCount === 1 ? '' : 's'}, low-value function term{ignoredWordCount === 1 ? '' : 's'}, or candidate classified outside the scan scope. Complete recognized foreign words remain reviewable.
               </div>
             )}
             <table className="w-full table-fixed text-sm text-left">
@@ -1663,11 +1694,25 @@ export function ScanForeignWordsModal({
                   const isFlagged = isFlaggedForReview(w);
                   const needsSourceRepair = w.sourceStatus === 'needs_source_repair' || w.sourceOutcome === 'needs_source_repair';
                   const sourceReviewRecommended = !needsSourceRepair && (w.sourceStatus === 'source_review_recommended' || w.sourceOutcome === 'insufficient_context');
+                  const languageMetadata = readForeignWordLanguageMetadata(w);
+                  const reviewReasons = getForeignWordReviewReasons(w);
                   return (
                   <tr key={i} className={`transition-colors ${w.importWarning ? 'bg-amber-100/50 dark:bg-amber-950/40 hover:bg-amber-100/70 dark:hover:bg-amber-900/40' : isMissing ? 'bg-amber-50/60 dark:bg-amber-950/20 hover:bg-amber-100/60 dark:hover:bg-amber-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'}`}>
                     <td className="px-4 py-3 font-medium text-lg text-gray-900 dark:text-gray-100 align-top [overflow-wrap:anywhere]">
                       <div className="flex flex-col gap-1">
                         <span>{w.word}</span>
+                        {languageMetadata.detectedLanguage && (
+                          <span className="text-xs font-normal text-soft">
+                            {FOREIGN_WORD_LANGUAGES[languageMetadata.detectedLanguage]}
+                            {languageMetadata.languageConfidence !== undefined ? ` · ${Math.round(languageMetadata.languageConfidence * 100)}% model confidence` : ''}
+                          </span>
+                        )}
+                        {reviewReasons.length > 0 && (
+                          <ul aria-label={`Review reasons for ${w.word}`} className="text-xs font-normal text-soft space-y-1">
+                            {reviewReasons.map((reason) => <li key={reason.code}>{reason.message}</li>)}
+                          </ul>
+                        )}
+                        {w.definitionOmitted === true && <span className="text-xs font-normal text-soft">Definition intentionally omitted</span>}
                         {(needsSourceRepair || sourceReviewRecommended) && (
                           <span className="inline-block w-fit rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:text-amber-200">
                             {needsSourceRepair ? 'Source extraction needs repair' : 'Check source context'}
@@ -1727,7 +1772,8 @@ export function ScanForeignWordsModal({
                                 {phoneticStr}
                               </span>
                               {isLibraryPronunciation && isTransliterationMatch && <span className="text-[10px] font-semibold text-green-700 dark:text-green-300">Transliteration: {w.transliterationSourceTerm}</span>}
-                              {isLibraryPronunciation && !isTransliterationMatch && <span className="text-[10px] font-semibold text-green-700 dark:text-green-300">Library</span>}
+                              {isLibraryPronunciation && w.pronunciationSource === 'reviewed_default' && <span className="text-[10px] font-semibold text-accent">Reviewed default</span>}
+                              {isLibraryPronunciation && !isTransliterationMatch && w.pronunciationSource !== 'reviewed_default' && <span className="text-[10px] font-semibold text-green-700 dark:text-green-300">Library</span>}
                               {isGeminiRecommendation && <span className="text-[10px] font-semibold text-red-700 dark:text-red-300">Gemini pick</span>}
                               <button
                                 type="button"

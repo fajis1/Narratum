@@ -1,5 +1,7 @@
-import { getForeignWordSourceRepairReasons, classifyForeignWordSourceIntegrity, requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
+import { getSupportedSourceScripts, getForeignWordSourceRepairReasons, classifyForeignWordSourceIntegrity, requiresForeignWordSourceRepair } from './foreign-word-source-integrity';
 import { selectGeminiManualReviewWords } from './foreign-word-scan-results';
+import { readForeignWordLanguageMetadata, FOREIGN_WORD_LANGUAGE_INSTRUCTIONS, type ForeignWordLanguageMetadata, type ForeignWordLanguage } from './foreign-word-language';
+import { getForeignWordReviewReasons, type ForeignWordReviewReason } from './foreign-word-review-reasons';
 import {
   isKokoroSafePronunciation,
   buildKokoroPronunciationInstructions,
@@ -25,7 +27,7 @@ export interface ForeignWordScanTransfer {
   documentId: string;
   exportedAt: string;
   instructions: string;
-  words: Array<{
+  words: Array<ForeignWordLanguageMetadata & {
     word: string;
     count: number | null;
     contexts: string[];
@@ -44,6 +46,8 @@ export interface ForeignWordScanTransfer {
     sourceRecoveryStatus: string | null;
     sourceStatus: string;
     sourceOutcome: string | null;
+    sourceScripts: string[];
+    reviewReasons: ForeignWordReviewReason[];
     qualityFlags: string[];
     pronunciationSource: string | null;
     currentPronunciation: string | null;
@@ -86,6 +90,9 @@ export function exportForeignWordScan(
     exportedAt: new Date().toISOString(),
     instructions: `${batchPrefix}Read sourceStatus, qualityFlags, and occurrences before proposing edits. Edit proposedPronunciation and proposedDefinition only for a verified complete word. Leave null to keep the current value; set omitDefinition to true to clear a definition. Source terms, statuses, and occurrence evidence are read-only: correcting damaged PDF extraction requires source recovery and a rescan, not renaming a JSON word key. Import into the same document after the scan finishes. Version 1 imports remain supported.${compactNotice}`,
     words: words.map(classifyForeignWordSourceIntegrity).map((row) => ({
+      ...readForeignWordLanguageMetadata(row),
+      sourceScripts: getSupportedSourceScripts(row.word),
+      reviewReasons: getForeignWordReviewReasons(row),
       word: row.word,
       count: typeof row.count === 'number' ? row.count : null,
       contexts: Array.isArray(row.contexts) ? row.contexts.filter((value): value is string => typeof value === 'string') : [],
@@ -151,7 +158,7 @@ export function exportForeignWordScan(
       currentPronunciation: requiresForeignWordSourceRepair(row) ? null : [row.userOverride, row.libraryPronunciation, row.geminiRecommendedPronunciation,
         ...(Array.isArray(row.pronunciations) ? row.pronunciations.map((choice) =>
           typeof choice === 'string' ? choice : choice && typeof choice === 'object' ? (choice as { phonetic?: unknown }).phonetic : null) : [])]
-        .find((value): value is string => typeof value === 'string' && value !== '[OMIT]' && isKokoroSafePronunciation(row.word, value)) || null,
+        .find((value): value is string => typeof value === 'string' && value !== '[OMIT]' && isKokoroSafePronunciation(row.word, value, readForeignWordLanguageMetadata(row).detectedLanguage)) || null,
       currentDefinition: !requiresForeignWordSourceRepair(row) && typeof row.definition === 'string' ? row.definition : null,
       proposedPronunciation: null,
       proposedDefinition: null,
@@ -216,6 +223,8 @@ export interface ForeignWordImportSkipped {
 }
 
 export interface ParseForeignWordScanImportOptions {
+  /** Server-owned scan classification, never the editable upload's language fields. */
+  trustedLanguages?: ReadonlyMap<string, ForeignWordLanguage>;
   allowPartial?: boolean;
 }
 
@@ -266,7 +275,7 @@ export function parseForeignWordScanImportDetailed(
     let wordError: string | null = null;
 
     if (hasProposedPronunciation) {
-      const normalizedPronunciation = normalizeKokoroPronunciationCandidate(word, row.proposedPronunciation);
+      const normalizedPronunciation = normalizeKokoroPronunciationCandidate(word, row.proposedPronunciation, options.trustedLanguages?.get(word));
       if (!normalizedPronunciation) {
         wordError = `Invalid Kokoro pronunciation for ${word}.`;
       } else {
@@ -358,6 +367,8 @@ ${options?.exportMode === 'gemini_manual_review' ? GEMINI_MANUAL_REVIEW_INSTRUCT
 ## 🔊 Kokoro Pronunciation Guidelines
 
 ${buildKokoroPronunciationInstructions()}
+
+${FOREIGN_WORD_LANGUAGE_INSTRUCTIONS}
 
 The validator checks compatibility and word-dependent quality rather than an exhaustive phoneme whitelist. Predictable formatting normalization may remove stress marks or repair delimiters; it never reconstructs or renames damaged source keys.
 

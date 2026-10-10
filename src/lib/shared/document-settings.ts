@@ -10,6 +10,7 @@ import {
 import { PARSED_PDF_BLOCK_KINDS, type ParsedPdfBlockKind } from '@/types/parsed-pdf';
 import { normalizeLanguageTag } from '@/lib/shared/language';
 import { normalizeSmartAudioCharacterMap } from '@/lib/shared/multi-voice';
+import { readForeignWordLanguageMetadata } from './foreign-word-language';
 
 function normalizeSkipKinds(value: unknown): ParsedPdfBlockKind[] {
   if (!Array.isArray(value)) return [...(DEFAULT_DOCUMENT_SETTINGS.pdf?.skipBlockKinds ?? [])];
@@ -43,6 +44,7 @@ function normalizeLexicon(value: unknown): SmartAudioBookLexicon | undefined {
       ? entry.language
       : 'other';
     entries[key.normalize('NFC')] = {
+      ...readForeignWordLanguageMetadata(entry),
       term,
       pronunciation,
       definition: typeof entry.definition === 'string' && entry.definition.trim()
@@ -56,6 +58,10 @@ function normalizeLexicon(value: unknown): SmartAudioBookLexicon | undefined {
       ...(typeof entry.needsReview === 'boolean' ? { needsReview: entry.needsReview } : {}),
       ...(typeof entry.definitionOmitted === 'boolean' ? { definitionOmitted: entry.definitionOmitted } : {}),
       ...(entry.approvedRepair === true ? { approvedRepair: true } : {}),
+      ...(typeof entry.reviewedDefaultVersion === 'number' && Number.isSafeInteger(entry.reviewedDefaultVersion) && entry.reviewedDefaultVersion > 0
+        ? { reviewedDefaultVersion: entry.reviewedDefaultVersion } : {}),
+      ...(typeof entry.reviewedDefinitionDefaultVersion === 'number' && Number.isSafeInteger(entry.reviewedDefinitionDefaultVersion) && entry.reviewedDefinitionDefaultVersion > 0
+        ? { reviewedDefinitionDefaultVersion: entry.reviewedDefinitionDefaultVersion } : {}),
     };
   }
 

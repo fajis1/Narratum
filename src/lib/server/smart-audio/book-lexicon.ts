@@ -23,11 +23,12 @@ import {
   shouldOmitDictionaryDefinition,
 } from '@/lib/shared/dictionary-definition-policy';
 import { serverLogger } from '@/lib/server/logger';
+import { isContextualDefinitionLanguage } from '@/lib/shared/foreign-word-language';
 
 const FOREIGN_WORD = /[\u0370-\u03ff\u1f00-\u1fff\u0590-\u05ff][\u0300-\u036f\u0370-\u03ff\u1f00-\u1fff\u0590-\u05ff]*/gu;
 const FOREIGN_WORD_BEFORE = /[\u0370-\u03ff\u1f00-\u1fff\u0590-\u05ff][\u0300-\u036f\u0370-\u03ff\u1f00-\u1fff\u0590-\u05ff]*[\p{P}\p{S}\p{Z}\s]*$/u;
 const FOREIGN_WORD_AFTER = /^[\p{P}\p{S}\p{Z}\s]*[\u0370-\u03ff\u1f00-\u1fff\u0590-\u05ff]/u;
-const FOREIGN_TERM_CHARACTER_CLASS = String.raw`\u0300-\u036f\u0370-\u03ff\u1f00-\u1fff\u0590-\u05ff`;
+const FOREIGN_TERM_CHARACTER_CLASS = String.raw`\p{L}\p{M}\p{N}`;
 const GREEK = /[\u0370-\u03ff\u1f00-\u1fff]/u;
 const HEBREW = /[\u0590-\u05ff]/u;
 
@@ -179,7 +180,11 @@ export async function resolveSmartAudioBookLexicon(input: {
   const candidateTerms = new Set(input.candidates.map((candidate) => candidate.term));
   const entries: Record<string, SmartAudioBookLexiconEntry> = Object.fromEntries(
     Object.entries(input.existing?.entries || {})
-      .filter(([term, entry]) => candidateTerms.has(term) || entry.approvedRepair === true)
+      .filter(([term, entry]) => candidateTerms.has(term) || entry.approvedRepair === true
+        // The auto-scan collects biblical-script candidates. Keep the broader
+        // language readings already resolved by a document pre-scan.
+        || (isContextualDefinitionLanguage(entry.detectedLanguage) && entry.language === 'other'
+          && isKokoroCompatiblePronunciation(entry.pronunciation) && (Boolean(entry.definition) || entry.definitionOmitted === true)))
       .map(([term, entry]) => {
         const definition = normalizeDictionaryDefinition(entry.definition);
         if (definition === entry.definition) return [term, entry];

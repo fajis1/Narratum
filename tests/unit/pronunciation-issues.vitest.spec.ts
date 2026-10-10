@@ -431,7 +431,8 @@ describe('scholarly references and lexical Unicode scanning', () => {
   });
   test('retains partial-word and unsupported-script safety', () => {
     expect(scanPronunciationIssues('[περι](/pɛr/)')[0].reason).toContain('covers only part');
-    const original = '[кардиа](/kɑrdiɑ/)';
+    expect(scanPronunciationIssues('[кардиа](/kɑrdiɑ/)')).toEqual([]);
+    const original = '[բառ](/kɑrdiɑ/)';
     expect(scanPronunciationIssues(original)[0]).toMatchObject({ kind: 'ocr_source', tokenClassification: { kind: 'source_damaged' } });
     expect(() => assertPronunciationRepair(original, '[καρδια](/kɑrdiɑ/)')).toThrow('source');
     expect(() => applyPronunciationPatches(original, scanPronunciationIssues(original), [{ id: '0', replacement: '[καρδια](/kɑrdiɑ/)' }])).toThrow('source');
