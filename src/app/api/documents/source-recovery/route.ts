@@ -9,6 +9,8 @@ import { proposeSourceRecovery, renderRecoveryPages, validateRecoveredSurface, r
 import { readSmartAudioProfilesDocument, findSmartAudioProfileById } from '@/lib/server/smart-audio-profiles';
 import { normalizeKokoroPronunciationCandidate } from '@/lib/shared/kokoro-pronunciation-policy';
 import { sourceRecoveryPronunciations, sourceRecoverySnapshot } from '@/lib/shared/source-recovery';
+import { recoveryConfiguration, recoveryModelOverrides } from '@/lib/server/smart-audio/source-recovery-configuration';
+import { SourceRecoveryStageError } from '@/lib/server/smart-audio/source-recovery-errors';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -26,8 +28,12 @@ export async function GET(req: NextRequest) {
       const images = await renderRecoveryPages(documentId, [Number(page)], getOpenReaderTestNamespace(req.headers));
       return new Response(Buffer.from(images[0].data, 'base64'), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store' } });
     }
-    return NextResponse.json({ analysis: await readSourceRecovery(auth.userId, documentId) });
-  } catch {
+    const profiles = await readSmartAudioProfilesDocument(auth.userId);
+    const profile = findSmartAudioProfileById(profiles, profiles.selectedProfileId);
+    return NextResponse.json({ analysis: await readSourceRecovery(auth.userId, documentId),
+      configuration: profile ? recoveryConfiguration(profile) : null });
+  } catch (error) {
+    if (error instanceof SourceRecoveryStageError) return NextResponse.json({ error: error.message, stage: error.stage, geminiRequests: 0 }, { status: 503 });
     return NextResponse.json({ error: 'PDF analysis or page could not be loaded.' }, { status: 404 });
   }
 }
@@ -51,8 +57,21 @@ export async function POST(req: NextRequest) {
     let commitExpectedRevision = current.revision;
     if (body.action === 'propose') {
       const profiles = await readSmartAudioProfilesDocument(auth.userId);
-      const profile = findSmartAudioProfileById(profiles, profiles.selectedProfileId);
-      if (!profile?.geminiApiKey) return NextResponse.json({ error: 'Configure a Gemini key in the selected Smart Audio profile.' }, { status: 400 });
+      const selected = findSmartAudioProfileById(profiles, profiles.selectedProfileId);
+      if (!selected) return NextResponse.json({ error: 'Select a Smart Audio profile for OCR analysis.', stage: 'gemini_configuration' }, { status: 400 });
+      let overrides: ReturnType<typeof recoveryModelOverrides>;
+      try { overrides = recoveryModelOverrides(body); }
+      catch (error) { return NextResponse.json({ error: (error as Error).message, stage: 'gemini_configuration' }, { status: 400 }); }
+      if (body.useBackupKey !== undefined && typeof body.useBackupKey !== 'boolean') return NextResponse.json({ error: 'Invalid backup-key selection.' }, { status: 400 });
+      if (body.useBackupKey && !selected.backupGeminiApiKey?.trim()) return NextResponse.json({ error: 'The selected Smart Audio profile has no saved backup key.', stage: 'gemini_configuration' }, { status: 400 });
+      const profile = { ...selected, ...(overrides.model ? { pronunciationAiModel: overrides.model } : {}),
+        ...(overrides.fallbacks ? { pronunciationAiModelFallbacks: overrides.fallbacks } : {}) };
+      const independentBackup = body.useBackupKey && current.diagnostics.at(-1)?.usedBackup !== true
+        && selected.backupGeminiApiKey?.trim() !== selected.geminiApiKey?.trim();
+      if ((current.recoveryRun?.nextAttemptAt || 0) > Date.now() && !independentBackup) {
+        return NextResponse.json({ error: 'Gemini requested a cooldown. Wait until the saved retry time or explicitly use the independent backup key.',
+          nextAttemptAt: current.recoveryRun?.nextAttemptAt }, { status: 429 });
+      }
       const [row] = await db.select({ value: adminSettings.valueJson }).from(adminSettings).where(eq(adminSettings.key, 'global_pronunciations')).limit(1);
       const library = typeof row?.value === 'string' ? JSON.parse(row.value) : row?.value || {};
       const globalPronunciations: Record<string, string> = {};
@@ -68,13 +87,17 @@ export async function POST(req: NextRequest) {
       reserved.recoveryRun = { status: 'paused', batchesCompleted: current.recoveryRun?.batchesCompleted || 0, updatedAt: Date.now() };
       await saveSourceRecovery(auth.userId, reserved, current.revision);
       commitExpectedRevision = reserved.revision;
-      next = await proposeSourceRecovery({ analysis: reserved, groupId: body.groupId, profile, globalPronunciations, namespace: getOpenReaderTestNamespace(req.headers) });
+      next = await proposeSourceRecovery({ analysis: reserved, groupId: body.groupId, profile, globalPronunciations,
+        namespace: getOpenReaderTestNamespace(req.headers), signal: req.signal, useBackupKey: body.useBackupKey === true });
       const lastDiagnostic = next.diagnostics.at(-1);
-      const providerUnavailable = lastDiagnostic?.outcome === 'provider_error';
+      const providerUnavailable = lastDiagnostic?.outcome === 'provider_error' && lastDiagnostic.retryable !== false;
       next.recoveryRun = {
-        status: providerUnavailable ? 'provider_unavailable' : next.occurrences.some((item) => item.status === 'unresolved' && !item.anchorInvalidated) ? 'paused' : 'completed',
+        status: lastDiagnostic?.outcome === 'cancelled' ? 'cancelled' : providerUnavailable ? 'provider_unavailable'
+          : lastDiagnostic?.outcome && lastDiagnostic.outcome !== 'proposed' ? 'failed'
+            : next.occurrences.some((item) => item.status === 'unresolved' && !item.anchorInvalidated) ? 'paused' : 'completed',
         batchesCompleted: (current.recoveryRun?.batchesCompleted || 0) + (lastDiagnostic?.outcome === 'proposed' ? 1 : 0),
         updatedAt: Date.now(),
+        ...(providerUnavailable ? { nextAttemptAt: Date.now() + Math.max(30_000, lastDiagnostic?.retryAfterMs || 0) } : {}),
       };
     } else if (body.action === 'approve_many') {
       const ids = body.occurrenceIds;

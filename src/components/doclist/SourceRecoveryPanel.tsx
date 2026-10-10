@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SourceRecoveryAnalysis, SourceRecoveryOccurrence } from '@/types/source-recovery';
+import type { SourceRecoveryAnalysis, SourceRecoveryOccurrence, SourceRecoveryConfiguration } from '@/types/source-recovery';
+import { GEMINI_MODEL_FALLBACKS } from '@/lib/shared/smart-audio-models';
+import { PRESET_MODELS } from '@/components/constants';
 
 function sourceRecoveryPriority(entries: SourceRecoveryOccurrence[]) {
   return entries.length * 100
@@ -13,6 +15,15 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
   documentId: string; refreshToken?: number; applicationSummary?: { applied: number; unmatched: number };
 }) {
   const [analysis, setAnalysis] = useState<SourceRecoveryAnalysis | null>(null);
+  const [configuration, setConfiguration] = useState<SourceRecoveryConfiguration | null>(null);
+  const [ocrModel, setOcrModel] = useState('');
+  const [ocrFallbacks, setOcrFallbacks] = useState<string[] | null>(null);
+  const [backupNext, setBackupNext] = useState(false);
+  const backupNextRef = useRef(false);
+  const activeRequest = useRef<AbortController | null>(null);
+  const operationInFlight = useRef(false);
+  const pendingRefresh = useRef(false);
+  const [now, setNow] = useState(Date.now());
   const [groupId, setGroupId] = useState('');
   const [occurrenceId, setOccurrenceId] = useState('');
   const [reading, setReading] = useState('');
@@ -23,15 +34,26 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
   const stopAfterBatch = useRef(false);
   const [error, setError] = useState('');
   const session = useRef(0);
-  useEffect(() => { session.current++; setAnalysis(null); setGroupId(''); setOccurrenceId(''); setError(''); }, [documentId]);
+  useEffect(() => {
+    const activeSession = session.current + 1;
+    session.current = activeSession; setAnalysis(null); setConfiguration(null); setGroupId(''); setOccurrenceId(''); setError('');
+    setOcrModel(''); setOcrFallbacks(null); setBackupNext(false); backupNextRef.current = false;
+    return () => { session.current = activeSession + 1; stopAfterBatch.current = true; activeRequest.current?.abort(); };
+  }, [documentId]);
+  useEffect(() => {
+    if (!analysis?.recoveryRun?.nextAttemptAt) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [analysis?.recoveryRun?.nextAttemptAt]);
   const load = useCallback(async () => {
+    if (operationInFlight.current) { pendingRefresh.current = true; return; }
     const currentSession = session.current;
     setBusy(true); setError('');
     try {
       const response = await fetch(`/api/documents/source-recovery?documentId=${encodeURIComponent(documentId)}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
-      if (session.current === currentSession) setAnalysis(data.analysis);
+      if (session.current === currentSession) { setAnalysis(data.analysis); setConfiguration(data.configuration || null); }
     } catch (error) {
       if (session.current === currentSession) setError(error instanceof Error ? error.message : 'Could not load PDF analysis.');
     } finally { if (session.current === currentSession) setBusy(false); }
@@ -40,23 +62,37 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
   async function sendAction(action: string, item: SourceRecoveryOccurrence | undefined, base: SourceRecoveryAnalysis,
     extra: Record<string, unknown> = {}): Promise<SourceRecoveryAnalysis> {
     const currentSession = session.current;
-    const response = await fetch('/api/documents/source-recovery', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const controller = new AbortController();
+    if (action === 'propose') activeRequest.current = controller;
+    const useBackupKey = action === 'propose' && backupNextRef.current;
+    if (action === 'propose') { backupNextRef.current = false; setBackupNext(false); }
+    try {
+      const response = await fetch('/api/documents/source-recovery', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({ documentId, revision: base.revision, action, groupId,
-        occurrenceId: item?.id, correctedSurface: reading, pronunciation, sourceVerified: verified, ...extra }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error);
-    if (session.current === currentSession) { setAnalysis(data.analysis); setVerified(false); }
-    return data.analysis as SourceRecoveryAnalysis;
+        occurrenceId: item?.id, correctedSurface: reading, pronunciation, sourceVerified: verified,
+        ...(action === 'propose' ? { ...(ocrModel ? { ocrModel } : {}), ...(ocrFallbacks !== null ? { ocrFallbackModels: ocrFallbacks.filter(Boolean) } : {}), useBackupKey } : {}), ...extra }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      if (session.current === currentSession) {
+        setAnalysis(data.analysis); setVerified(false);
+        const configuration = data.analysis?.diagnostics?.at(-1)?.configuration;
+        if (configuration) setConfiguration(configuration);
+      }
+      return data.analysis as SourceRecoveryAnalysis;
+    } finally { if (activeRequest.current === controller) activeRequest.current = null; }
   }
   async function action(actionName: string, item?: SourceRecoveryOccurrence, extra: Record<string, unknown> = {}) {
-    if (!analysis) return;
+    if (!analysis || operationInFlight.current) return;
+    operationInFlight.current = true;
     setBusy(true); setError('');
     try { await sendAction(actionName, item, analysis, extra); }
-    catch (error) { setError(error instanceof Error ? error.message : 'Could not save PDF reading.'); }
-    finally { setBusy(false); }
+    catch (error) { setError(error instanceof Error && error.name === 'AbortError' ? 'OCR analysis cancelled. Refresh to see the saved batch state.' : error instanceof Error ? error.message : 'Could not save PDF reading.'); }
+    finally { operationInFlight.current = false; setBusy(false); if (pendingRefresh.current) { pendingRefresh.current = false; void load(); } }
   }
   async function analyzeOcrProblems() {
-    if (!analysis || busy) return;
+    if (!analysis || busy || operationInFlight.current) return;
+    operationInFlight.current = true;
     setBusy(true); stopAfterBatch.current = false; setError('');
     let current = analysis;
     try {
@@ -70,13 +106,13 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
         }
         const nextGroup = [...ranked].sort((a, b) => sourceRecoveryPriority(b[1]) - sourceRecoveryPriority(a[1]) || a[0].localeCompare(b[0]))[0];
         if (!nextGroup) break;
-        const priorDiagnosticCount = current.diagnostics.length;
         current = await sendAction('propose', undefined, current, { groupId: nextGroup[0] });
         const diagnostic = current.diagnostics.at(-1);
-        if (current.diagnostics.length > priorDiagnosticCount && diagnostic?.outcome !== 'proposed') break;
+        // History is capped at 100; its length cannot tell us whether this batch failed.
+        if (diagnostic && diagnostic.outcome !== 'proposed') break;
       }
-    } catch (error) { setError(error instanceof Error ? error.message : 'OCR analysis stopped. Saved proposals remain available.'); }
-    finally { setBusy(false); stopAfterBatch.current = false; }
+    } catch (error) { setError(error instanceof Error && error.name === 'AbortError' ? 'OCR analysis cancelled. Saved proposals and approvals remain; refresh before continuing.' : error instanceof Error ? error.message : 'OCR analysis stopped. Saved proposals remain available.'); }
+    finally { operationInFlight.current = false; setBusy(false); stopAfterBatch.current = false; if (pendingRefresh.current) { pendingRefresh.current = false; void load(); } }
   }
   const groups = new Map<string, SourceRecoveryOccurrence[]>();
   for (const item of analysis?.occurrences || []) groups.set(item.groupId, [...(groups.get(item.groupId) || []), item]);
@@ -106,22 +142,57 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
     setPronunciation(item?.proposal?.pronunciation || ''); setVerified(false);
   }, [item?.id, item?.proposal?.correctedSurface, item?.proposal?.pronunciation]);
   const button = 'rounded border px-3 py-1 text-sm disabled:opacity-50';
-  return <section aria-label="OCR source recovery" className="max-h-80 shrink-0 overflow-auto border-b p-3 text-sm">
+  const coolingDown = (analysis?.recoveryRun?.nextAttemptAt || 0) > now && !backupNext;
+  const effectiveModel = ocrModel || configuration?.model || '';
+  const effectiveFallbacks = ocrFallbacks?.filter(Boolean).length ? ocrFallbacks.filter(Boolean)
+    : ocrModel ? [...(GEMINI_MODEL_FALLBACKS[ocrModel] || [])] : configuration?.fallbackModels || [];
+  return <section aria-label="OCR source recovery" className="min-w-0 p-3 text-sm">
     <h4 className="font-semibold">OCR source recovery</h4>
     <p className="my-1 text-xs text-muted">Pre-scan detects suspicious spellings but does not analyze them. Analyze proposals against PDF page images, then verify each selected reading before accepting it. Corrections stay local to this PDF; the original extraction and shared dictionaries are unchanged.</p>
     {error && <p role="alert" className="my-2 text-danger">{error}</p>}
+    {configuration && <fieldset className="my-3 min-w-0 space-y-2 rounded border p-3" disabled={busy}>
+      <legend className="font-semibold">OCR Gemini configuration</legend>
+      <p>Smart Audio profile: {configuration.profileName}</p>
+      <p className="break-words">Primary key: {configuration.primaryKeyConfigured ? 'configured' : 'not configured'} · Backup key: {configuration.backupKeyConfigured ? 'configured' : 'not configured'} · Automatic backup-key failover: {configuration.automaticBackupFailover ? 'enabled' : 'disabled'}</p>
+      <p className="text-xs">These controls apply to OCR analysis only. Pre-Scan pronunciation controls are separate. Credentials are resolved from this saved profile on the server.</p>
+      <label className="block">OCR Gemini model <select aria-label="OCR Gemini model" className="block w-full rounded border bg-background p-1" value={effectiveModel}
+        onChange={(event) => { setOcrModel(event.target.value); setOcrFallbacks(null); }}>
+        {[...new Set([effectiveModel, ...PRESET_MODELS.map((model) => model.id).filter((id) => id.startsWith('gemini-'))])].map((model) => <option key={model} value={model}>{model}</option>)}
+      </select></label>
+      {[0, 1].map((index) => <label key={index} className="block">OCR fallback model {index + 1}<select aria-label={`OCR fallback model ${index + 1}`}
+        className="block w-full rounded border bg-background p-1" value={effectiveFallbacks[index] || ''}
+        onChange={(event) => { const next = [...effectiveFallbacks]; next[index] = event.target.value; setOcrFallbacks(next); }}>
+        <option value="">Default fallback sequence</option>
+        {[...new Set([...effectiveFallbacks, ...PRESET_MODELS.map((model) => model.id).filter((id) => id.startsWith('gemini-'))])].filter((model) => model !== effectiveModel).map((model) => <option key={model} value={model}>{model}</option>)}
+      </select></label>)}
+      <p className="break-words text-xs">Effective sequence: {[effectiveModel, ...effectiveFallbacks].join(' → ')}</p>
+      <label className="flex items-start gap-2"><input type="checkbox" checked={backupNext} disabled={busy || !configuration.backupKeyConfigured}
+        onChange={(event) => { setBackupNext(event.target.checked); backupNextRef.current = event.target.checked; }} />Use backup API key for next OCR analysis</label>
+    </fieldset>}
     {busy && <p role="status">Analyzing saved batches {summary.analyzed} of {summary.total}. Proposals are saved after each batch.</p>}
     {analysis && <p className="my-1 text-xs">Occurrences {summary.total} · analyzed {summary.analyzed} · proposals awaiting review {summary.proposals} · ambiguous {summary.ambiguous} · approved {summary.approved} · not analyzed {summary.unresolved}</p>}
     {!!summary.invalidated && <p role="status">{summary.invalidated} source anchor(s) invalidated by rescanning; review the newly indexed occurrences. Prior evidence is retained.</p>}
     {analysis && refreshToken > 0 && applicationSummary && <p className="my-1 text-xs" role="status">Last pre-scan: {applicationSummary.applied} approved reading(s) applied to effective results; {applicationSummary.unmatched} anchor mismatch(es); {Math.max(0, summary.approved - applicationSummary.applied - applicationSummary.unmatched)} approved reading(s) not represented in the last effective scan; {Math.max(0, summary.total - applicationSummary.applied)} occurrence(s) remain unresolved. Raw PDF extraction is preserved.</p>}
-    {analysis?.recoveryRun?.status === 'provider_unavailable' && <p className="my-1 text-xs text-warning" role="status">Gemini was temporarily unavailable. Saved proposals remain; continue to retry unfinished occurrences.</p>}
+    {analysis?.recoveryRun?.status === 'provider_unavailable' && <p className="my-1 text-xs text-warning" role="status">{analysis.diagnostics.at(-1)?.attempted === false ? 'The previous analysis failed before contacting Gemini. Refresh and retry to obtain stage-specific diagnostics.' : 'Gemini provider requests did not complete. See the recorded attempts below. Saved proposals remain.'}</p>}
+    {coolingDown && <p role="status">Provider cooldown until {new Date(analysis!.recoveryRun!.nextAttemptAt!).toLocaleTimeString()}. No new request will start before then.</p>}
+    {analysis?.diagnostics.slice(-5).map((entry, index) => <div key={`${entry.at}-${index}`} className="my-2 rounded border p-2 text-xs" role="status">
+      <p>{new Date(entry.at).toLocaleString()}{entry.occurrenceIds ? ` · ${entry.occurrenceIds.length} occurrences` : ''}</p>
+      <p>{entry.stage || entry.outcome}: {entry.message} {entry.httpStatus ? `(HTTP ${entry.httpStatus})` : ''}</p>
+      <p>{entry.attempts ? entry.attempts.length : entry.attempted ? 'Unknown number of' : 0} Gemini request(s){entry.configuration ? ` · Profile: ${entry.configuration.profileName}` : ''}</p>
+      {entry.attempts?.map((attempt) => <p key={attempt.attempt} className="break-words">
+        {attempt.attempt}. {attempt.keyRole === 'backup' ? 'Backup' : 'Primary'} / {attempt.model || 'configured model'} — {attempt.httpStatus ? `HTTP ${attempt.httpStatus}` : attempt.errorCategory || attempt.outcome}
+        {attempt.httpStatus && attempt.errorCategory ? ` — ${attempt.errorCategory}` : ''}
+        {attempt.outcome === 'success' ? ' — response received' : attempt.retryable ? ' — recoverable' : ' — stopped'}{attempt.fallbackAttempted ? ' · fallback attempted' : ''}
+      </p>)}
+    </div>)}
     {analysis?.recoveryRun?.status === 'paused' && <p className="my-1 text-xs text-muted" role="status">Analysis is resumable. Each action analyzes at most 72 occurrences in six-item requests.</p>}
     {analysis?.recoveryRun?.status === 'completed' && <p className="my-1 text-xs text-muted" role="status">All indexed occurrences have a proposal or an explicit ambiguous result. Review is still required.</p>}
     {analysis && !analysis.occurrences.length && <p className="my-2">No indexed source-repair occurrences. Run a pre-scan to index suspect passages.</p>}
     {!analysis && !busy && !error && <p className="my-2" role="status">OCR analysis has not been run. Run a pre-scan to index suspicious passages.</p>}
     {analysis && summary.unresolved > 0 && <div className="my-2 flex flex-wrap gap-2">
-      <button type="button" className={`${button} font-semibold`} disabled={busy} onClick={() => void analyzeOcrProblems()}>{summary.analyzed ? 'Continue OCR analysis' : 'Analyze OCR Problems'}</button>
+      <button type="button" className={`${button} font-semibold`} disabled={busy || coolingDown} onClick={() => void analyzeOcrProblems()}>{summary.analyzed ? 'Continue OCR analysis' : 'Analyze OCR Problems'}</button>
       {busy && <button type="button" className={button} onClick={() => { stopAfterBatch.current = true; }}>Stop after this batch</button>}
+      {busy && <button type="button" className={button} onClick={() => { stopAfterBatch.current = true; activeRequest.current?.abort(); }}>Cancel OCR analysis</button>}
       <button type="button" className={button} disabled={busy} onClick={() => void load()}>Refresh</button>
     </div>}
     {!!groups.size && <div className="mt-3 space-y-3">
@@ -132,7 +203,7 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
         </select>
       </label>
       {group.length > 0 && <>
-        <button type="button" className={button} disabled={busy || !group.some((entry) => entry.status === 'unresolved')} onClick={() => void action('propose')}>Analyze next 6 occurrences with Gemini</button>
+        <button type="button" className={button} disabled={busy || coolingDown || !group.some((entry) => entry.status === 'unresolved')} onClick={() => void action('propose')}>Analyze next 6 occurrences with Gemini</button>
         <p className="text-xs text-muted">Gemini sees page images, this group’s spellings and passage contexts. Dictionary matches identify candidates; they do not approve readings.</p>
         {!!group.some((entry) => entry.status === 'proposed') && <div className="space-y-1 rounded border p-2">
           <p className="font-medium">Review proposals in a batch. Open each linked page and check its printed surface before selecting it.</p>
@@ -171,7 +242,6 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
           <button className={button} type="button" disabled={busy} onClick={() => void action('reset', item)}>Reset for analysis</button>
         </div>
       </div>}
-      {analysis?.diagnostics.filter((entry) => entry.groupId === groupId).slice(-3).map((entry, index) => <p key={index} className="text-xs" role="status">{entry.outcome}: {entry.message} {entry.httpStatus ? `(HTTP ${entry.httpStatus})` : ''}</p>)}
     </div>}
   </section>;
 }

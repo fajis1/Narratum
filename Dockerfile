@@ -126,8 +126,11 @@ COPY --from=app-builder /app/audiobook_worker.py ./audiobook_worker.py
 COPY --from=app-builder /app/biblical_scholar_worker.py ./biblical_scholar_worker.py
 COPY --from=app-builder /app/gemini_rate_limiter.py ./gemini_rate_limiter.py
 COPY --from=app-builder /app/scan_pdf_foreign_words.py ./scan_pdf_foreign_words.py
+COPY --from=app-builder /app/render_source_recovery_pages.py ./render_source_recovery_pages.py
+COPY --from=app-builder /app/scripts/check-source-recovery-runtime.py ./scripts/check-source-recovery-runtime.py
 RUN python3 -m venv .venv && \
-    .venv/bin/pip install --no-cache-dir nats-py google-genai pydantic pypdf nltk wordfreq
+    .venv/bin/pip install --no-cache-dir nats-py google-genai pydantic pypdf nltk wordfreq PyMuPDF==1.26.5 && \
+    .venv/bin/python3 scripts/check-source-recovery-runtime.py
 
 # Match the app's historical container port now that standalone server.js
 # is started directly instead of `next start -p 3003`.

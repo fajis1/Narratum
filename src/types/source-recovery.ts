@@ -31,6 +31,31 @@ export interface SourceRecoveryOccurrence {
   reviewedAt?: number;
   analyzedAt?: number;
 }
+export type SourceRecoveryStage = 'pdf_loading' | 'pdf_rendering' | 'renderer_startup' | 'gemini_configuration'
+  | 'gemini_request' | 'gemini_timeout' | 'response_parsing' | 'output_validation' | 'dictionary_lookup';
+export interface SourceRecoveryAttempt {
+  at: number;
+  stage: 'gemini_request' | 'gemini_timeout';
+  requestedModel?: string;
+  model?: string;
+  keyRole: 'primary' | 'backup';
+  httpStatus?: number;
+  errorCategory?: 'timeout' | 'transport' | 'cancelled';
+  retryable: boolean;
+  retryAfterMs?: number;
+  attempt: number;
+  fallbackAttempted: boolean;
+  outcome: 'success' | 'failed' | 'cancelled';
+}
+export interface SourceRecoveryConfiguration {
+  profileId: string;
+  profileName: string;
+  model: string;
+  fallbackModels: string[];
+  primaryKeyConfigured: boolean;
+  backupKeyConfigured: boolean;
+  automaticBackupFailover: boolean;
+}
 export interface SourceRecoveryAnalysis {
   schemaVersion: 1;
   documentId: string;
@@ -40,8 +65,12 @@ export interface SourceRecoveryAnalysis {
   anchorVersion?: number;
   scannedAt: number;
   occurrences: SourceRecoveryOccurrence[];
-  recoveryRun?: { status: 'paused' | 'completed' | 'provider_unavailable'; batchesCompleted: number; updatedAt: number };
-  diagnostics: { at: number; groupId: string; attempted: boolean; outcome: 'proposed' | 'provider_error' | 'validation_rejected'; httpStatus?: number; model?: string; message: string }[];
+  recoveryRun?: { status: 'paused' | 'completed' | 'provider_unavailable' | 'failed' | 'cancelled'; batchesCompleted: number; updatedAt: number; nextAttemptAt?: number };
+  diagnostics: { at: number; groupId: string; attempted: boolean;
+    outcome: 'proposed' | 'provider_error' | 'validation_rejected' | 'renderer_error' | 'configuration_error' | 'cancelled' | 'dictionary_warning';
+    stage?: SourceRecoveryStage; httpStatus?: number; model?: string; message: string;
+    usedBackup?: boolean; retryable?: boolean; retryAfterMs?: number; attempts?: SourceRecoveryAttempt[];
+    configuration?: SourceRecoveryConfiguration; occurrenceIds?: string[] }[];
 }
 export interface SourceRecoverySnapshot {
   schemaVersion: 1;

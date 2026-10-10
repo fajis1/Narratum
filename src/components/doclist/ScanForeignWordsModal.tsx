@@ -1,5 +1,6 @@
 import { requiresForeignWordSourceRepair } from '@/lib/shared/foreign-word-source-integrity';
 import { SourceRecoveryPanel } from './SourceRecoveryPanel';
+import { ScanRecoveryWorkspace } from './ScanRecoveryWorkspace';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ModalFrame } from '@/components/ui';
 import toast from 'react-hot-toast';
@@ -1043,12 +1044,11 @@ export function ScanForeignWordsModal({
         panelRef={panelRef}
         panelTestId="scan-foreign-words-modal"
       >
-      <div className="relative flex flex-col max-h-[80vh]">
-        {activeDocId && <SourceRecoveryPanel key={activeDocId} documentId={activeDocId} refreshToken={sourceRecoveryRefresh}
+      <ScanRecoveryWorkspace onClose={handleClose} recovery={activeDocId && <SourceRecoveryPanel key={activeDocId} documentId={activeDocId} refreshToken={sourceRecoveryRefresh}
           applicationSummary={{
             applied: words.reduce((sum, word) => sum + Number(word.sourceRecoveryCounts?.applied || 0), 0),
             unmatched: words.reduce((sum, word) => sum + Number(word.sourceRecoveryCounts?.unmatched || 0), 0),
-          }} />}
+          }} />}>
         <div className="p-4 border-b dark:border-gray-800 flex flex-col gap-3">
           <div className="flex justify-between items-center">
             <div>
@@ -1443,7 +1443,7 @@ export function ScanForeignWordsModal({
             </div>
           )}
         </div>
-        <div className="p-4 overflow-y-auto flex-1">
+        <div className="p-4">
           {hasScanned && (
             <div className="mb-4 flex flex-col gap-3">
               {flaggedWordsCount > 0 && (
@@ -2056,7 +2056,7 @@ export function ScanForeignWordsModal({
         >
           <span className="absolute bottom-1 right-1 h-3 w-3 border-b-2 border-r-2 border-gray-400" />
         </div>
-      </div>
+      </ScanRecoveryWorkspace>
     </ModalFrame>
     </>
   );

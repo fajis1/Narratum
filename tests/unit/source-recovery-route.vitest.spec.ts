@@ -108,3 +108,61 @@ test('rejection and reset remove an occurrence from accepted decisions', async (
   expect((await POST(request({ action: 'reset' }))).status).toBe(200);
   expect(mocks.save.mock.calls[1][1].occurrences[0]).not.toHaveProperty('proposal');
 });
+
+test('GET exposes selected profile and effective model configuration without credentials', async () => {
+  mocks.profile.mockReturnValue({ id: 'profile', name: 'Scholar', aiModel: 'gemini-3.8-flash', geminiApiKey: 'secret-primary', backupGeminiApiKey: 'secret-backup' });
+  const response = await GET(new NextRequest('http://localhost/api/documents/source-recovery?documentId=pdf'));
+  const data = await response.json();
+  expect(mocks.profile).toHaveBeenCalledWith({ selectedProfileId: 'profile' }, 'profile');
+  expect(data.configuration).toEqual({ profileId: 'profile', profileName: 'Scholar', model: 'gemini-3.8-flash',
+    fallbackModels: ['gemini-3.7-flash', 'gemini-3.6-flash'], primaryKeyConfigured: true, backupKeyConfigured: true, automaticBackupFailover: true });
+  expect(JSON.stringify(data)).not.toContain('secret-');
+});
+
+test('validates OCR-only model overrides and resolves credentials from the saved selected profile', async () => {
+  mocks.profile.mockReturnValue({ id: 'profile', name: 'Scholar', aiModel: 'gemini-3.8-flash', geminiApiKey: 'saved-primary', backupGeminiApiKey: 'saved-backup' });
+  expect((await POST(request({ action: 'propose', groupId: 'group', ocrModel: '../bad', ocrFallbackModels: [] }))).status).toBe(400);
+  expect((await POST(request({ action: 'propose', groupId: 'group', ocrFallbackModels: ['bad'] }))).status).toBe(400);
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect((await POST(request({ action: 'propose', groupId: 'group', ocrModel: 'gemini-3.7-flash',
+    ocrFallbackModels: ['gemini-3.6-flash'], useBackupKey: true, geminiApiKey: 'untrusted-browser-key' }))).status).toBe(200);
+  expect(mocks.propose).toHaveBeenCalledWith(expect.objectContaining({ useBackupKey: true, signal: expect.any(AbortSignal),
+    profile: expect.objectContaining({ geminiApiKey: 'saved-primary', backupGeminiApiKey: 'saved-backup', pronunciationAiModel: 'gemini-3.7-flash', pronunciationAiModelFallbacks: ['gemini-3.6-flash'] }) }));
+});
+
+test('rejects backup override without a saved backup and supports backup-only saved profiles', async () => {
+  expect((await POST(request({ action: 'propose', groupId: 'group', useBackupKey: true }))).status).toBe(400);
+  expect(mocks.save).not.toHaveBeenCalled();
+  mocks.profile.mockReturnValue({ id: 'profile', name: 'Backup only', backupGeminiApiKey: 'saved-backup' });
+  expect((await POST(request({ action: 'propose', groupId: 'group' }))).status).toBe(200);
+});
+
+test('persists a provider-directed cooldown and prevents premature requests after restart', async () => {
+  mocks.propose.mockImplementationOnce(({ analysis: input }: { analysis: SourceRecoveryAnalysis }) => ({ ...input, revision: input.revision + 1,
+    diagnostics: [{ at: Date.now(), groupId: 'group', attempted: true, outcome: 'provider_error', httpStatus: 429, retryable: true, retryAfterMs: 600_000, usedBackup: false, message: 'Rate limited.' }] }));
+  const before = Date.now();
+  expect((await POST(request({ action: 'propose', groupId: 'group' }))).status).toBe(200);
+  const saved = mocks.save.mock.calls[1][1] as SourceRecoveryAnalysis;
+  expect(saved.recoveryRun?.nextAttemptAt).toBeGreaterThanOrEqual(before + 600_000);
+  mocks.read.mockResolvedValue(saved); mocks.propose.mockClear(); mocks.save.mockClear();
+  expect((await POST(request({ action: 'propose', groupId: 'group', revision: saved.revision }))).status).toBe(429);
+  expect(mocks.propose).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
+});
+
+test.each(['renderer_error', 'configuration_error', 'validation_rejected', 'cancelled'] as const)('%s is not saved as Gemini temporarily unavailable', async outcome => {
+  mocks.propose.mockImplementationOnce(({ analysis: input }: { analysis: SourceRecoveryAnalysis }) => ({ ...input, revision: input.revision + 1,
+    diagnostics: [{ at: Date.now(), groupId: 'group', attempted: false, outcome, message: 'Stage-specific failure.' }] }));
+  expect((await POST(request({ action: 'propose', groupId: 'group' }))).status).toBe(200);
+  expect(mocks.save.mock.calls[1][1].recoveryRun).toMatchObject({ status: outcome === 'cancelled' ? 'cancelled' : 'failed', batchesCompleted: 0 });
+  expect(mocks.save.mock.calls[1][1].recoveryRun.nextAttemptAt).toBeUndefined();
+});
+
+test('an explicit independent backup may bypass a primary cooldown, but not its own saved cooldown', async () => {
+  mocks.profile.mockReturnValue({ geminiApiKey: 'primary', backupGeminiApiKey: 'backup' });
+  const current = analysis(); current.recoveryRun = { status: 'provider_unavailable', batchesCompleted: 0, updatedAt: 1, nextAttemptAt: Date.now() + 60_000 };
+  current.diagnostics = [{ at: 1, groupId: 'group', attempted: true, outcome: 'provider_error', message: 'Unavailable', usedBackup: true }];
+  mocks.read.mockResolvedValue(current);
+  expect((await POST(request({ action: 'propose', groupId: 'group', useBackupKey: true }))).status).toBe(429);
+  current.diagnostics[0].usedBackup = false;
+  expect((await POST(request({ action: 'propose', groupId: 'group', useBackupKey: true }))).status).toBe(200);
+});

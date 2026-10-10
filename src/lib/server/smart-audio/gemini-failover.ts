@@ -9,15 +9,8 @@ const MAX_ATTEMPTS = 8;
 const INITIAL_DELAY_MS = 4000;
 const MAX_DELAY_MS = 300000; // 5 minutes
 
-export const GEMINI_MODEL_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
-  'gemini-3.8-flash': ['gemini-3.7-flash', 'gemini-3.6-flash'],
-  'gemini-3.7-flash': ['gemini-3.6-flash', 'gemini-3.5-flash'],
-  'gemini-3.6-flash': ['gemini-3.5-flash'],
-  'gemini-3.5-flash': ['gemini-2.5-flash'],
-  'gemini-3.5-flash-lite': ['gemini-3.1-flash-lite'],
-  'gemini-3.1-flash-lite': ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
-  'gemini-2.5-flash-lite': ['gemini-2.5-flash'],
-};
+import { GEMINI_MODEL_FALLBACKS } from '@/lib/shared/smart-audio-models';
+export { GEMINI_MODEL_FALLBACKS } from '@/lib/shared/smart-audio-models';
 
 const sleep = async (ms: number, signal?: AbortSignal, details?: GeminiErrorDetails, model?: string) => {
   signal?.throwIfAborted();
@@ -56,6 +49,25 @@ export interface GeminiFallbackOptions {
   maxOverloadAttempts?: number;
   /** Set to true when an alternative provider (e.g. Groq) is configured for failover. */
   hasAlternativeProvider?: boolean;
+  /** OCR opts in without changing audiobook recovery's established policy. */
+  retryRequestTimeouts?: boolean;
+  maxRecoveryRequests?: number;
+  maxImmediateRetryAfterMs?: number;
+  maxRecoveryDelayMs?: number;
+  stopOnPermanentFailure?: boolean;
+  onAttempt?: (attempt: GeminiAttempt) => void;
+}
+
+export interface GeminiAttempt {
+  at: number;
+  model?: string;
+  keyRole: 'primary' | 'backup';
+  httpStatus?: number;
+  errorCategory?: 'timeout' | 'transport' | 'cancelled';
+  retryable: boolean;
+  retryAfterMs?: number;
+  attempt: number;
+  outcome: 'success' | 'failed' | 'cancelled';
 }
 
 async function fetchWithExponentialBackoff(
@@ -268,6 +280,38 @@ export async function fetchGeminiWithRateLimitFallback(
   usedModel?: string;
   usedModelFallback: boolean;
 }> {
+  let requests = 0;
+  const originalRequest = input.request;
+  // Observe actual requests, never keys, URLs, bodies or authorization headers.
+  input = { ...input, request: async (apiKey, model) => {
+    input.signal?.throwIfAborted();
+    const at = Date.now();
+    const attempt = ++requests;
+    const keyRole = apiKey === input.primaryApiKey.trim() ? 'primary' as const : 'backup' as const;
+    try {
+      const response = await (model === undefined ? originalRequest(apiKey) : originalRequest(apiKey, model));
+      const details = input.onAttempt ? await geminiErrorDetails(response) : undefined;
+      input.onAttempt?.({ at, model, keyRole, attempt, httpStatus: response.status,
+        retryable: [429, 500, 502, 503, 504].includes(response.status)
+          || (response.status === 403 && details?.apiStatus === 'RESOURCE_EXHAUSTED' && Boolean(details.retryAfterMs)),
+        ...(details?.retryAfterMs ? { retryAfterMs: details.retryAfterMs } : {}), outcome: response.ok ? 'success' : 'failed' });
+      return response;
+    } catch (error) {
+      const cancelled = input.signal?.aborted || (error instanceof Error && error.name === 'AbortError');
+      const timedOut = error instanceof Error && error.name === 'TimeoutError';
+      const status = (error as { httpStatus?: unknown } | null)?.httpStatus;
+      input.onAttempt?.({ at, model, keyRole, attempt,
+        ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}),
+        errorCategory: cancelled ? 'cancelled' : timedOut ? 'timeout' : 'transport',
+        retryable: !cancelled, outcome: cancelled ? 'cancelled' : 'failed' });
+      input.signal?.throwIfAborted();
+      if (timedOut && input.retryRequestTimeouts) {
+        // A request deadline is recoverable; explicit cancellation remains AbortError.
+        throw new TypeError('Gemini request timed out.', { cause: error });
+      }
+      throw error;
+    }
+  } };
   const requestedModel = input.requestedModel?.trim() || undefined;
   const models: Array<string | undefined> = requestedModel
     ? [...new Set([requestedModel, ...(input.fallbackModels ?? GEMINI_MODEL_FALLBACKS[requestedModel] ?? [])])]
@@ -277,7 +321,9 @@ export async function fetchGeminiWithRateLimitFallback(
     ?? (input.maxAttempts !== undefined ? input.maxAttempts : (hasFallback ? 2 : undefined));
   let lastResult: { response: Response; usedBackup: boolean } | null = null;
   let lastError: unknown;
-  let nextDelayMs = Math.min(input.initialDelayMs ?? INITIAL_DELAY_MS, MAX_DELAY_MS);
+  let lastModel = requestedModel;
+  const recoveryDelayCap = Math.min(input.maxRecoveryDelayMs ?? MAX_DELAY_MS, MAX_DELAY_MS);
+  let nextDelayMs = Math.min(input.initialDelayMs ?? INITIAL_DELAY_MS, recoveryDelayCap);
   let pendingDelayMs = 0;
   let pendingDetails: GeminiErrorDetails | undefined;
   let pendingModel: string | undefined;
@@ -297,14 +343,14 @@ export async function fetchGeminiWithRateLimitFallback(
         pendingModel = model;
         // Never shorten a server-specified cooldown, even beyond our local cap.
         pendingDelayMs = Math.max(nextDelayMs, details.retryAfterMs ?? 0);
-        nextDelayMs = Math.min(pendingDelayMs * 2, MAX_DELAY_MS);
+        nextDelayMs = Math.min(pendingDelayMs * 2, recoveryDelayCap);
       }
       return response;
     } catch (error) {
       pendingDetails = undefined;
       pendingModel = model;
       pendingDelayMs = nextDelayMs;
-      nextDelayMs = Math.min(nextDelayMs * 2, MAX_DELAY_MS);
+      nextDelayMs = Math.min(nextDelayMs * 2, recoveryDelayCap);
       throw error;
     }
   };
@@ -348,9 +394,10 @@ export async function fetchGeminiWithRateLimitFallback(
 
   // Key is deliberately the outer loop. A backup credential must not be used
   // until every configured model has been attempted with the primary key.
-  for (const [keyIndex, keyChain] of keyChains.entries()) {
+  keyLoop: for (const [keyIndex, keyChain] of keyChains.entries()) {
     for (const [modelIndex, candidateModel] of models.entries()) {
       input.signal?.throwIfAborted();
+      if (input.maxRecoveryRequests !== undefined && requests >= input.maxRecoveryRequests) break keyLoop;
       let result: { response: Response; usedBackup: boolean };
       try {
         const keyResult = await fetchGeminiWithKeyFallback({
@@ -358,6 +405,8 @@ export async function fetchGeminiWithRateLimitFallback(
           primaryApiKey: keyChain.apiKey,
           requestedModel: candidateModel,
           backupApiKey: undefined,
+          maxAttempts: input.maxRecoveryRequests === undefined ? input.maxAttempts
+            : Math.min(input.maxAttempts ?? MAX_ATTEMPTS, input.maxRecoveryRequests - requests),
           maxOverloadAttempts: effectiveMaxOverloadAttempts,
           request: (apiKey) => input.retryRateLimitedModels ? pacedRequest(apiKey, candidateModel) : candidateModel
             ? input.request(apiKey, candidateModel)
@@ -368,6 +417,7 @@ export async function fetchGeminiWithRateLimitFallback(
         input.signal?.throwIfAborted();
         if (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name)) throw error;
         lastError = error;
+        if (input.retryRequestTimeouts) lastResult = null;
         const nextModel = models[modelIndex + 1];
         if (nextModel) {
           await input.onStatusUpdate?.(`Gemini network retries exhausted for ${candidateModel} on the ${keyChain.keyType} key. Trying ${nextModel} on the ${keyChain.keyType} key.`);
@@ -377,6 +427,17 @@ export async function fetchGeminiWithRateLimitFallback(
       }
 
       lastResult = result;
+      lastModel = candidateModel;
+      if (input.maxImmediateRetryAfterMs !== undefined || input.stopOnPermanentFailure) {
+        const details = await geminiErrorDetails(result.response);
+        const permanent = [401, 402, 403].includes(result.response.status)
+          && !(result.response.status === 403 && details.apiStatus === 'RESOURCE_EXHAUSTED' && details.retryAfterMs);
+        if ((input.stopOnPermanentFailure && permanent)
+          || (input.maxImmediateRetryAfterMs !== undefined && (details.retryAfterMs ?? 0) > input.maxImmediateRetryAfterMs)) {
+          return { ...result, requestedModel, usedModel: candidateModel,
+            usedModelFallback: Boolean(requestedModel && candidateModel !== requestedModel) };
+        }
+      }
       const fallbackReason = await getGeminiModelFallbackReason(result.response);
       if (!fallbackReason) {
         return {
@@ -427,7 +488,7 @@ export async function fetchGeminiWithRateLimitFallback(
     response: lastResult?.response || new Response(null, { status: 502 }),
     usedBackup: lastResult?.usedBackup || false,
     requestedModel,
-    usedModel: models.at(-1),
-    usedModelFallback: models.length > 1,
+    usedModel: lastModel,
+    usedModelFallback: Boolean(requestedModel && lastModel !== requestedModel),
   };
 }
