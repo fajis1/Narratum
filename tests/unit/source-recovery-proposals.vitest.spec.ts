@@ -60,7 +60,8 @@ test('distinguishes rendering failures from attempted Gemini requests', async ()
   renderer.mockRejectedValueOnce(new Error('private local path'));
   const next = await proposeSourceRecovery({ analysis: analysis(), groupId: 'group', profile, globalPronunciations: {} }, { renderPages: renderer });
   expect(mocks.transport).not.toHaveBeenCalled();
-  expect(next.diagnostics[0]).toMatchObject({ attempted: false, outcome: 'provider_error' });
+  expect(next.diagnostics[0]).toMatchObject({ attempted: false, outcome: 'renderer_error', stage: 'pdf_rendering', attempts: [] });
+  expect(next.diagnostics[0].message).toContain('Gemini was not contacted');
   expect(JSON.stringify(next)).not.toContain('private local path');
 });
 test('keeps ambiguous readings explicitly unresolved from further auto-retry and advances the next bounded batch', async () => {
