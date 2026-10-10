@@ -28,7 +28,7 @@ successful backup usage was discarded from diagnostics.
   model/fallback controls. Validate overrides on the server; resolve keys only
   from the selected saved profile. Backup selection applies to the next batch.
 - [x] Opt OCR into bounded shared failover: at most six requests, one request per
-  model/key pair, 20-second request deadlines, primary model sequence before the
+  model/key pair, 20-second request deadlines covering headers and response bodies, primary model sequence before the
   backup sequence. Local backoff starts at one second and caps at eight seconds.
   Provider Retry-After is respected; delays exceeding ten seconds yield to a
   persisted cooldown. The browser requires an explicit continuation after failure.
@@ -51,9 +51,14 @@ successful backup usage was discarded from diagnostics.
 - TypeScript passed. New/changed supporting modules are lint-clean. The existing
   pre-scan modal retains its baseline 141 errors and two warnings; no broad lint
   refactor is included in this focused fix.
-- Final full suite: 218 files / 1,905 tests passed. TypeScript, production
+- Final full suite: 218 files / 1,906 tests passed. TypeScript, production
   application build, bundle guard and the real offline renderer smoke check passed.
   Docker matrix, GitHub checks and delivery: pending branch verification.
 
 No paid provider calls or production source decisions are made by these tests.
 The original production PDF and live recognition accuracy remain unverified.
+
+Response-body timeout hardening adds an integrated HTTP-200/body-timeout regression:
+known HTTP status is retained, model/key failover continues, and raw transport
+details are excluded. The final full suite (1,906 tests), six focused browser tests, TypeScript and
+unchanged lint baseline passed locally; GitHub checks rerun for this follow-up.

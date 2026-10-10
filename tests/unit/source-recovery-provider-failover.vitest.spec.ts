@@ -65,6 +65,19 @@ test('empty profile fallbacks use the shared built-in model sequence', async () 
   ]);
 });
 
+test('timeout while reading an HTTP 200 body receives failover and retains the known HTTP status', async () => {
+  const stalled = new Response('fixture body');
+  vi.spyOn(stalled, 'text').mockRejectedValueOnce(new DOMException('private transport detail', 'TimeoutError'));
+  fetchMock.mockResolvedValueOnce(stalled).mockResolvedValueOnce(success());
+  const next = await run();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(next.diagnostics.at(-1)).toMatchObject({ outcome: 'proposed', attempts: [
+    expect.objectContaining({ stage: 'gemini_timeout', httpStatus: 200, errorCategory: 'timeout', retryable: true, fallbackAttempted: true }),
+    expect.objectContaining({ outcome: 'success' }),
+  ] });
+  expect(JSON.stringify(next)).not.toContain('private transport detail');
+});
+
 test.each([401, 402, 403])('permanent HTTP %i stops with configuration diagnostics', async status => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: { status: 'PERMISSION_DENIED', message: profile.geminiApiKey } }), { status }));
   const next = await run();

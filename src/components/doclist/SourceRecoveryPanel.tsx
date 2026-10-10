@@ -181,6 +181,7 @@ export function SourceRecoveryPanel({ documentId, refreshToken = 0, applicationS
       <p>{entry.attempts ? entry.attempts.length : entry.attempted ? 'Unknown number of' : 0} Gemini request(s){entry.configuration ? ` · Profile: ${entry.configuration.profileName}` : ''}</p>
       {entry.attempts?.map((attempt) => <p key={attempt.attempt} className="break-words">
         {attempt.attempt}. {attempt.keyRole === 'backup' ? 'Backup' : 'Primary'} / {attempt.model || 'configured model'} — {attempt.httpStatus ? `HTTP ${attempt.httpStatus}` : attempt.errorCategory || attempt.outcome}
+        {attempt.httpStatus && attempt.errorCategory ? ` — ${attempt.errorCategory}` : ''}
         {attempt.outcome === 'success' ? ' — response received' : attempt.retryable ? ' — recoverable' : ' — stopped'}{attempt.fallbackAttempted ? ' · fallback attempted' : ''}
       </p>)}
     </div>)}

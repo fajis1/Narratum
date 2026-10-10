@@ -299,7 +299,9 @@ export async function fetchGeminiWithRateLimitFallback(
     } catch (error) {
       const cancelled = input.signal?.aborted || (error instanceof Error && error.name === 'AbortError');
       const timedOut = error instanceof Error && error.name === 'TimeoutError';
+      const status = (error as { httpStatus?: unknown } | null)?.httpStatus;
       input.onAttempt?.({ at, model, keyRole, attempt,
+        ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}),
         errorCategory: cancelled ? 'cancelled' : timedOut ? 'timeout' : 'transport',
         retryable: !cancelled, outcome: cancelled ? 'cancelled' : 'failed' });
       input.signal?.throwIfAborted();

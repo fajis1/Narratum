@@ -116,17 +116,33 @@ Other group contexts (pattern evidence only): ${JSON.stringify(group.slice(0, 75
         retryable = entry.retryable;
         retryAfterMs = entry.retryAfterMs;
       },
-      request: (apiKey, requestModel) => {
+      request: async (apiKey, requestModel) => {
         attempted = true;
         const deadline = AbortSignal.timeout(20_000);
-        return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(requestModel || requestedModel)}:generateContent`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        signal: input.signal ? AbortSignal.any([input.signal, deadline]) : deadline,
-        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }, ...images.flatMap((image) => [
-        { text: `PDF page ${image.page}${image.kind === 'crop' ? ` text-block context crop for occurrence ${image.occurrenceId || 'unknown'}; crop is not a word-tight target box` : ' full-page context'}` },
-        { inlineData: { mimeType: 'image/png', data: image.data } },
-        ])] }], generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 4096 } }),
-      }); } });
+        let httpResponse: Response | undefined;
+        try {
+          httpResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(requestModel || requestedModel)}:generateContent`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          signal: input.signal ? AbortSignal.any([input.signal, deadline]) : deadline,
+          body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }, ...images.flatMap((image) => [
+          { text: `PDF page ${image.page}${image.kind === 'crop' ? ` text-block context crop for occurrence ${image.occurrenceId || 'unknown'}; crop is not a word-tight target box` : ' full-page context'}` },
+          { inlineData: { mimeType: 'image/png', data: image.data } },
+          ])] }], generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 4096 } }),
+          });
+          // Fetch resolves on headers. Drain the body inside the same deadline so
+          // a stalled stream receives transport/timeout failover, not JSON rejection.
+          const body = await httpResponse.text();
+          return new Response(body || null, { status: httpResponse.status, headers: httpResponse.headers });
+        } catch (error) {
+          if (deadline.aborted && !input.signal?.aborted) {
+            const timeout = new Error('Gemini request deadline exceeded.', { cause: error });
+            timeout.name = 'TimeoutError';
+            throw Object.assign(timeout, { httpStatus: httpResponse?.status });
+          }
+          if (error instanceof Error && httpResponse) Object.assign(error, { httpStatus: httpResponse.status });
+          throw error;
+        }
+      } });
     // Test adapters and older callers may not emit onAttempt; the response is
     // still proof that an HTTP request occurred.
     attempted = true;
