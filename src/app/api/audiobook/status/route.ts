@@ -99,7 +99,7 @@ export async function GET(request: NextRequest) {
       allChapterIndices.add(row.chapterIndex);
     }
 
-    const sortedIndices = Array.from(allChapterIndices).sort((a, b) => a - b);
+    const sortedIndices = Array.from(allChapterIndices).filter(index => !completeness.omittedChapterIndexes.includes(index)).sort((a, b) => a - b);
     const chapterObjByIndex = new Map(chapterObjects.map((c) => [c.index, c]));
 
     const chapters: TTSAudiobookChapter[] = sortedIndices.map((index) => {
@@ -138,6 +138,8 @@ export async function GET(request: NextRequest) {
         hasFailure,
         hasHistoricalFailure: retainedFailure && !activeFailure,
         needsReview,
+        emptyFinalChapterSnapshot: completeness.emptyFinalChapterOmissionCandidate?.chapterIndex === index
+          ? completeness.emptyFinalChapterOmissionCandidate.snapshotHash : undefined,
       };
     });
 

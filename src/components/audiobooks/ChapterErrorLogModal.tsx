@@ -204,7 +204,7 @@ export function ChapterErrorLogModal({
               {activeFailures.length === 0 && activeReviewFlags.length === 0 && !effectiveJobError && (
                 <div className="py-10 text-center text-text-soft text-xs space-y-1">
                   <p className="text-base font-semibold text-text-strong">✨ No retained diagnostic records</p>
-                  <p>All chapters have valid recordings or have not logged unrecoverable errors.</p>
+                  <p>No saved error logs were found. Chapters may still be missing text or audio; check their status before uploading.</p>
                 </div>
               )}
 

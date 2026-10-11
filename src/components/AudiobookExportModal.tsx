@@ -3,6 +3,7 @@ import { readAudiobookGeminiCooldown, type AudiobookGeminiCooldown } from '@/lib
 import { AudiobookGeminiCooldownNotice } from '@/components/audiobooks/AudiobookGeminiCooldownNotice';
 import { readAudiobookProviderRetry, type AudiobookProviderRetrySchedule } from '@/lib/shared/audiobook-provider-retry';
 import { AudiobookProviderRetryNotice } from '@/components/audiobooks/AudiobookProviderRetryNotice';
+import { OmitEmptyFinalChapterButton } from '@/components/audiobooks/OmitEmptyFinalChapterButton';
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -1292,6 +1293,11 @@ export function AudiobookExportModal({
                                     </div>
                                   </div>
                                   <div className="flex items-center">
+                                    {bookId && chapter.emptyFinalChapterSnapshot && <OmitEmptyFinalChapterButton
+                                      key={`${chapter.index}:${chapter.emptyFinalChapterSnapshot}`}
+                                      bookId={bookId} chapterIndex={chapter.index} snapshotHash={chapter.emptyFinalChapterSnapshot}
+                                      disabled={isGenerating || regeneratingChapter !== null}
+                                      onOmitted={() => { void fetchExistingChapters(true); }} />}
                                     {((onRegenerateChapter && !isGenerating) || chapter.status === 'completed') && (
                                       <MenuRoot as="div" className="relative inline-block text-left">
                                         <MenuTrigger

@@ -4,6 +4,7 @@ import { audiobookJobs, audiobookChapters } from '@/db/schema';
 import { getAudiobookObjectBuffer, isMissingBlobError, listAudiobookObjects } from './blobstore';
 import { resolveChapterRecordings } from './chapters';
 import { createChapterOmissionEvidence, getChapterOmissionReason, isValidChapterOmissionEvidence } from './chapter-omissions';
+import { EMPTY_FINAL_CHAPTER_RECEIPT, isConfirmedEmptyFinalChapter, readEmptyFinalChapterCandidate } from './empty-final-chapter';
 
 export function missingAudiobookChapters(expected: number[], recorded: number[], omitted: number[] = []): number[] {
   const present = new Set([...recorded, ...omitted]);
@@ -13,14 +14,18 @@ export function missingAudiobookChapters(expected: number[], recorded: number[],
 /** Both durable database records and corresponding audio objects are required. */
 export async function readAudiobookCompleteness(bookId: string, userId: string, namespace: string | null, names?: string[]) {
   const objectNames = names ?? (await listAudiobookObjects(bookId, userId, namespace)).map(o => o.fileName);
-  const jobs = await db.select({ settingsJson: audiobookJobs.settingsJson }).from(audiobookJobs)
+  const jobs = await db.select({ id: audiobookJobs.id, status: audiobookJobs.status, settingsJson: audiobookJobs.settingsJson }).from(audiobookJobs)
     .where(and(eq(audiobookJobs.documentId, bookId), eq(audiobookJobs.userId, userId))).orderBy(desc(audiobookJobs.createdAt));
-  const settings = jobs.map((j: { settingsJson: unknown }) => typeof j.settingsJson === 'string' ? JSON.parse(j.settingsJson) : j.settingsJson ?? {})
-    .find((s: Record<string, unknown>) => !s.jobType || s.jobType === 'generate') ?? {};
+  const generationJob = jobs.map((j: { id: string; settingsJson: unknown }) => ({ ...j,
+    settings: typeof j.settingsJson === 'string' ? JSON.parse(j.settingsJson) : j.settingsJson ?? {},
+  })).find((j: { settings: Record<string, unknown> }) => !j.settings.jobType || j.settings.jobType === 'generate');
+  const settings = generationJob?.settings ?? {};
+  let sourceManifest: Buffer | null = null;
   let sourceChapters: Array<{ index: number; title?: string; text: string; cleanupText?: string }> | null = null;
   if (objectNames.includes('audiobook.source-chapters.json')) {
     try {
-      const manifest = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, 'audiobook.source-chapters.json', namespace)).toString('utf8'));
+      sourceManifest = await getAudiobookObjectBuffer(bookId, userId, 'audiobook.source-chapters.json', namespace);
+      const manifest = JSON.parse(sourceManifest.toString('utf8'));
       if (manifest?.schemaVersion === 1 && Array.isArray(manifest.chapters)) {
         sourceChapters = manifest.chapters.filter((chapter: unknown): chapter is { index: number; title?: string; text: string; cleanupText?: string } => (
           Boolean(chapter) && typeof chapter === 'object'
@@ -70,9 +75,8 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
     else if (expected.includes(index)) invalidOmissionChapterIndexes.push(index);
   }
   const omitted = verifiedOmissionIndexes;
-  const resolution = resolveChapterRecordings(objectNames, records, expected, omitted);
+  let resolution = resolveChapterRecordings(objectNames, records, expected, omitted);
   const recorded = resolution.chapters.map(chapter => chapter.index);
-  const missing = resolution.missingChapterIndexes;
   const activeReviewChapterIndexes: number[] = [];
   for (const name of objectNames.filter(n => /^\d{4,6}__pronunciation_failure\.json$/.test(n))) {
     const index = Number(name.split('__')[0]) - 1;
@@ -86,8 +90,27 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
     if (!recovered) activeReviewChapterIndexes.push(index);
   }
 
+  const candidate = await readEmptyFinalChapterCandidate({ bookId, userId, namespace,
+    generationJobId: generationJob?.id, expected, recorded,
+    chapterRecordIndexes: records.map((record: { chapterIndex: number }) => record.chapterIndex),
+    missing: resolution.missingChapterIndexes, review: activeReviewChapterIndexes, objectNames, sourceManifest });
+  let confirmation: unknown = null;
+  try {
+    confirmation = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, EMPTY_FINAL_CHAPTER_RECEIPT, namespace)).toString('utf8'));
+  } catch (error) { if (!isMissingBlobError(error) && !(error instanceof SyntaxError)) throw error; }
+  const confirmed = isConfirmedEmptyFinalChapter(confirmation, candidate, userId);
+  if (confirmed && candidate) {
+    omitted.push(candidate.chapterIndex);
+    const invalidIndex = invalidOmissionChapterIndexes.indexOf(candidate.chapterIndex);
+    if (invalidIndex >= 0) invalidOmissionChapterIndexes.splice(invalidIndex, 1);
+    resolution = resolveChapterRecordings(objectNames, records, expected, omitted);
+  }
+  const missing = resolution.missingChapterIndexes;
+  const activeJob = jobs.some((job: { status: string }) => ['queued', 'running', 'waiting_for_pdf', 'pausing', 'waiting_for_voices'].includes(job.status));
+
   return { expectedChapterIndexes: expected, missingChapterIndexes: missing, recordedChapterIndexes: recorded,
     omittedChapterIndexes: omitted, invalidOmissionChapterIndexes, activeReviewChapterIndexes,
+    emptyFinalChapterOmissionCandidate: !confirmed && !activeJob ? candidate : null,
     chapterReferenceIssues: resolution.issues,
     complete: expected.length > 0 && missing.length === 0 && activeReviewChapterIndexes.length === 0 };
 }

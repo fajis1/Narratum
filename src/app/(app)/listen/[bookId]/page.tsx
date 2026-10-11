@@ -44,6 +44,7 @@ import { ReviewUnsavedChangesDialog } from '@/components/audiobooks/review/Revie
 import { ReviewIssuesPanel } from '@/components/audiobooks/review/ReviewIssuesPanel';
 import { ReviewJobStatus } from '@/components/audiobooks/review/ReviewJobStatus';
 import { ReviewChapterList } from '@/components/audiobooks/review/ReviewChapterList';
+import { OmitEmptyFinalChapterButton } from '@/components/audiobooks/OmitEmptyFinalChapterButton';
 
 interface Chapter {
   index: number;
@@ -56,6 +57,7 @@ interface Chapter {
   hasFailure?: boolean;
   needsReview?: boolean;
   status?: string;
+  emptyFinalChapterSnapshot?: string;
 }
 
 export default function ListenPage({ params }: { params: Promise<{ bookId: string }> }) {
@@ -1084,6 +1086,12 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           onRecord={() => void handleRegenerate()} hasError={Boolean(currentChapter.status === 'error' || currentChapter.hasFailure || currentChapter.hasRejected || reviewFlags.some(f => f.chapterIndex === currentChapter.index))}
           dirty={isDirty} busy={isRegenerating || isAiCleaning || isTextLoading} />} />
       <ReviewMobilePaneSelector value={mobilePane} onChange={setMobilePane} />
+      {currentChapter.emptyFinalChapterSnapshot && <div className="px-3 py-2 border-b border-line-soft">
+        <OmitEmptyFinalChapterButton key={`${currentChapter.index}:${currentChapter.emptyFinalChapterSnapshot}`}
+          bookId={bookId} chapterIndex={currentChapter.index} snapshotHash={currentChapter.emptyFinalChapterSnapshot}
+          disabled={isDirty || hasActiveBookJob || isRegenerating || isAiCleaning || isTextLoading}
+          onOmitted={() => { void fetchStatus(); }} />
+      </div>}
       <ReviewIssuesPanel key={currentChapter.index} chapterIndex={currentChapter.index} flags={reviewFlags} error={reviewFlagsError}
         needsAttention={isChapterNeedingReview(currentChapter)} onChapterDetails={() => setErrorLogModalChapter({ index: currentChapter.index, title: currentChapter.title })}
         chapterExists={index => chapters.some(chapter => chapter.index === index)} retryingId={retryingReviewFlagId}

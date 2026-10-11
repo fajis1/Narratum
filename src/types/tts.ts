@@ -72,4 +72,5 @@ export interface TTSAudiobookChapter {
   hasRejected?: boolean;
   hasFailure?: boolean;
   needsReview?: boolean;
+  emptyFinalChapterSnapshot?: string;
 }
