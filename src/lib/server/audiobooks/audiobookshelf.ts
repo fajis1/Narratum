@@ -912,7 +912,10 @@ export async function uploadBookToAudiobookshelf(
     if (row.title.trim()) titleByIndex.set(row.chapterIndex, row.title.trim());
   }
 
-  const completeness = await readAudiobookCompleteness(bookId, userId, namespace, objectNames);
+  const completeness = await readAudiobookCompleteness(bookId, userId, namespace, objectNames, objects);
+  if (!isChapterMode && completeness.activeReviewChapterIndexes.length) {
+    throw new Error(`Chapter(s) ${completeness.activeReviewChapterIndexes.map(index => index + 1).join(', ')} require review and successful replacement recording before uploading to Audiobookshelf.`);
+  }
   if (!isChapterMode && !completeness.complete) {
     throw new Error(`Cannot upload incomplete audiobook; missing chapter(s): ${completeness.missingChapterIndexes.map(index => index + 1).join(', ')}.`);
   }
@@ -938,18 +941,10 @@ export async function uploadBookToAudiobookshelf(
       throw new Error('None of the selected chapters have generated audio files available.');
     }
     for (const chap of targetChapters) {
-      const oneBasedPrefix = `${String(chap.index + 1).padStart(4, '0')}__`;
-      const isRejected = objectNames.some((n) => n.startsWith(oneBasedPrefix) && n.endsWith('rejected.txt'));
+      const isRejected = completeness.activeReviewChapterIndexes.includes(chap.index);
       if (isRejected) {
         throw new Error(`Chapter ${chap.index + 1} ("${titleByIndex.get(chap.index) || chap.title}") requires review and replacement before uploading to Audiobookshelf.`);
       }
-    }
-  } else {
-    const failedChapters = objectNames.filter((name) => /^\d{1,6}__rejected\.txt$/u.test(name));
-    if (failedChapters.length > 0) {
-      throw new Error(
-        `${failedChapters.length} chapter(s) require review and successful replacement recording before uploading to Audiobookshelf.`,
-      );
     }
   }
 

@@ -1536,6 +1536,9 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
         throw new AudiobookProcessingError({ failureCategory: 'technical_unknown', stage: 'chapter_audio_without_record', chapterIndex: chapter.index });
       }
 
+      // Cleanup may rename the display title. Omission evidence must remain
+      // bound to the immutable chapter saved in the source manifest.
+      const omissionSourceChapter = { ...chapter };
       let processedTextForTts = chapter.text;
       let confirmedSmartAudioOmission = false;
       const cacheFile = `${String(chapter.index + 1).padStart(4, '0')}__validated.json`;
@@ -2004,9 +2007,9 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       const cleanupSource = chapter.cleanupText ?? chapter.text;
       if (!cleanedTrimmed) {
         const reason: ChapterOmissionReason | null = confirmedSmartAudioOmission
-          ? getChapterOmissionReason({ index: chapter.index, title: chapter.title, text: cleanupSource })
+          ? getChapterOmissionReason(omissionSourceChapter)
           : null;
-        const evidence = reason ? createChapterOmissionEvidence({ index: chapter.index, title: chapter.title, text: cleanupSource }, reason) : null;
+        const evidence = reason ? createChapterOmissionEvidence(omissionSourceChapter, reason) : null;
         if (!evidence) {
           throw new AudiobookProcessingError({ failureCategory: 'content_validation', stage: 'unverified_empty_chapter_output', chapterIndex: chapter.index });
         }

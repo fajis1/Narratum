@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   blobs: new Map<string, Buffer>(),
   reads: [] as string[],
   uploaded: new Map<string, Buffer>(),
+  modified: new Map<string, number>(),
   userId: 'owner',
 }));
 vi.mock('@/db', () => ({ get db() { return mocks.db; } }));
@@ -38,7 +39,7 @@ vi.mock('child_process', () => ({
 }));
 vi.mock('fs', () => ({ createReadStream: () => ({ async *[Symbol.asyncIterator]() { yield Buffer.from('combined-book'); } }) }));
 vi.mock('@/lib/server/audiobooks/blobstore', () => ({
-  listAudiobookObjects: async () => [...mocks.blobs].map(([fileName, body]) => ({ fileName, size: body.length })),
+  listAudiobookObjects: async () => [...mocks.blobs].map(([fileName, body]) => ({ fileName, size: body.length, lastModified: mocks.modified.get(fileName) ?? 0 })),
   getAudiobookObjectBuffer: async (_book: string, _user: string, fileName: string) => {
     mocks.reads.push(fileName);
     const value = mocks.blobs.get(fileName);
@@ -68,10 +69,12 @@ import { EMPTY_FINAL_CHAPTER_RECEIPT } from '@/lib/server/audiobooks/empty-final
 import { POST as omitFinal } from '@/app/api/audiobook/omit-empty-final-chapter/route';
 import { GET as status } from '@/app/api/audiobook/status/route';
 import { uploadBookToAudiobookshelf } from '@/lib/server/audiobooks/audiobookshelf';
+import { createChapterOmissionEvidence } from '@/lib/server/audiobooks/chapter-omissions';
+import { batchRefineTextHash } from '@/lib/server/audiobooks/batch-refine-assessment';
 
 let sqlite: Database.Database;
 beforeEach(() => {
-  mocks.blobs.clear(); mocks.reads.length = 0; mocks.uploaded.clear();
+  mocks.blobs.clear(); mocks.reads.length = 0; mocks.uploaded.clear(); mocks.modified.clear();
   mocks.userId = 'owner';
   sqlite = new Database(':memory:');
   for (const table of [schema.audiobooks, schema.audiobookJobs, schema.audiobookChapters, schema.documents]) {
@@ -244,5 +247,75 @@ test('full Audiobookshelf upload rejects chapter 74 before confirmation and uplo
   expect(upload).toBeDefined();
   const audio = (upload![1].body as FormData).get('file') as File;
   expect(await audio.text()).toBe('combined-book');
+  expect(JSON.parse(mocks.blobs.get('complete.mp3.manifest.json')!.toString()).map((c: { index: number }) => c.index)).toEqual([0, 25, 26]);
+});
+
+const uploadOptions = { bookId: 'book', userId: 'owner', title: 'Book', smartMatchExistingBook: false, includeCompanionDocument: false };
+function retainOldRejection(metadata = true) {
+  const text = 'Earlier invalid pronunciation.';
+  mocks.blobs.set('0026__rejected.txt', Buffer.from(text));
+  mocks.modified.set('0026__rejected.txt', 10_000);
+  if (metadata) mocks.blobs.set('0026__pronunciation_failure.json', Buffer.from(JSON.stringify({ createdAt: 10_500, rejectedHash: batchRefineTextHash(text) })));
+  mocks.blobs.set('0026__recording_state.json', Buffer.from(JSON.stringify({ recordedAt: 20_000 })));
+}
+
+test.each(['complete', 'chapters'] as const)('a proven replacement allows %s Audiobookshelf upload while retaining older rejection history', async uploadMode => {
+  retainOldRejection();
+  const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true })));
+  vi.stubGlobal('fetch', request);
+  expect(await readAudiobookCompleteness('book', 'owner', null)).toMatchObject({ complete: true, activeReviewChapterIndexes: [] });
+  expect(await uploadBookToAudiobookshelf({ ...uploadOptions, uploadMode, selectedChapterIndices: [25] })).toMatchObject({ success: true });
+  expect(request).toHaveBeenCalled();
+  expect(mocks.blobs.has('0026__rejected.txt')).toBe(true);
+  expect(mocks.blobs.has('0026__pronunciation_failure.json')).toBe(true);
+});
+
+test('a marker left after its metadata was removed is recovered only with storage time and a later receipt', async () => {
+  retainOldRejection(false);
+  expect(await readAudiobookCompleteness('book', 'owner', null)).toMatchObject({ complete: true, activeReviewChapterIndexes: [] });
+  mocks.modified.delete('0026__rejected.txt');
+  expect(await readAudiobookCompleteness('book', 'owner', null)).toMatchObject({ complete: false, activeReviewChapterIndexes: [25] });
+});
+
+test('matching failure metadata can prove recovery when historical storage timestamps are unavailable', async () => {
+  retainOldRejection();
+  mocks.modified.clear();
+  expect((await readAudiobookCompleteness('book', 'owner', null)).activeReviewChapterIndexes).toEqual([]);
+  mocks.blobs.set('0026__rejected.txt', Buffer.from('A different, unverified failure.'));
+  expect((await readAudiobookCompleteness('book', 'owner', null)).activeReviewChapterIndexes).toEqual([25]);
+});
+
+test.each(['new failure', 'new marker', 'missing receipt', 'invalid receipt', 'malformed failure', 'missing audio', 'missing row', 'uncertain time'])('%s cannot be treated as recovered merely because older chapter audio exists', async condition => {
+  retainOldRejection();
+  if (condition === 'new failure') mocks.blobs.set('0026__pronunciation_failure.json', Buffer.from(JSON.stringify({ createdAt: 30_000 })));
+  if (condition === 'new marker') mocks.modified.set('0026__rejected.txt', 30_000);
+  if (condition === 'missing receipt') mocks.blobs.delete('0026__recording_state.json');
+  if (condition === 'invalid receipt') mocks.blobs.set('0026__recording_state.json', Buffer.from(JSON.stringify({ recordedAt: 'tomorrow' })));
+  if (condition === 'malformed failure') mocks.blobs.set('0026__pronunciation_failure.json', Buffer.from('{'));
+  if (condition === 'missing audio') mocks.blobs.delete('0026__Chapter 26.mp3');
+  if (condition === 'missing row') mocks.db.delete(schema.audiobookChapters).where(eq(schema.audiobookChapters.chapterIndex, 25)).run();
+  if (condition === 'uncertain time') mocks.modified.set('0026__rejected.txt', 20_000);
+  const request = vi.fn();
+  vi.stubGlobal('fetch', request);
+  expect(await readAudiobookCompleteness('book', 'owner', null)).toMatchObject({ complete: false, activeReviewChapterIndexes: [25] });
+  await expect(executeAudiobookCombine('book', 'owner', 'mp3', null)).rejects.toThrow(/review/i);
+  for (const uploadMode of ['complete', 'chapters'] as const) {
+    await expect(uploadBookToAudiobookshelf({ ...uploadOptions, uploadMode, selectedChapterIndices: [25] })).rejects.toThrow(/review|authoritative/i);
+  }
+  expect(request).not.toHaveBeenCalled();
+});
+
+test('a source-validated index omission uploads the book without deleting or renumbering its pinned chapter 74', async () => {
+  addEmptyFinalChapter();
+  const source = { index: 73, title: 'Index of Selected Passages', text: '461 462 463 464',
+    cleanupText: '[SYSTEM HINT: The layout engine detected this section in the end-matter (e.g. index).]\n[LAYOUT_ENGINE_TAG: REFERENCE_CONTENT]\n461 462 463 464' };
+  const manifest = JSON.stringify({ schemaVersion: 1, chapters: [source] });
+  mocks.blobs.set('audiobook.source-chapters.json', Buffer.from(manifest));
+  mocks.blobs.set('audiobook.omissions.json', Buffer.from(JSON.stringify({ schemaVersion: 1, entries: [createChapterOmissionEvidence(source, 'confirmed_end_matter')] })));
+  retainOldRejection();
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }))));
+  expect(await readAudiobookCompleteness('book', 'owner', null)).toMatchObject({ complete: true, omittedChapterIndexes: [73], expectedChapterIndexes: [0, 25, 26, 73] });
+  expect(await uploadBookToAudiobookshelf(uploadOptions)).toMatchObject({ success: true });
+  expect(mocks.blobs.get('audiobook.source-chapters.json')!.toString()).toBe(manifest);
   expect(JSON.parse(mocks.blobs.get('complete.mp3.manifest.json')!.toString()).map((c: { index: number }) => c.index)).toEqual([0, 25, 26]);
 });

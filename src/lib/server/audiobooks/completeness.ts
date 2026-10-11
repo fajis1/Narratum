@@ -5,6 +5,8 @@ import { getAudiobookObjectBuffer, isMissingBlobError, listAudiobookObjects } fr
 import { resolveChapterRecordings } from './chapters';
 import { createChapterOmissionEvidence, getChapterOmissionReason, isValidChapterOmissionEvidence } from './chapter-omissions';
 import { EMPTY_FINAL_CHAPTER_RECEIPT, isConfirmedEmptyFinalChapter, readEmptyFinalChapterCandidate } from './empty-final-chapter';
+import { readActiveChapterReviewIndexes } from './chapter-review';
+import type { AudiobookBlobObject } from './blobstore';
 
 export function missingAudiobookChapters(expected: number[], recorded: number[], omitted: number[] = []): number[] {
   const present = new Set([...recorded, ...omitted]);
@@ -12,7 +14,7 @@ export function missingAudiobookChapters(expected: number[], recorded: number[],
 }
 
 /** Both durable database records and corresponding audio objects are required. */
-export async function readAudiobookCompleteness(bookId: string, userId: string, namespace: string | null, names?: string[]) {
+export async function readAudiobookCompleteness(bookId: string, userId: string, namespace: string | null, names?: string[], inventory?: Pick<AudiobookBlobObject, 'fileName' | 'lastModified'>[]) {
   const objectNames = names ?? (await listAudiobookObjects(bookId, userId, namespace)).map(o => o.fileName);
   const jobs = await db.select({ id: audiobookJobs.id, status: audiobookJobs.status, settingsJson: audiobookJobs.settingsJson }).from(audiobookJobs)
     .where(and(eq(audiobookJobs.documentId, bookId), eq(audiobookJobs.userId, userId))).orderBy(desc(audiobookJobs.createdAt));
@@ -77,18 +79,7 @@ export async function readAudiobookCompleteness(bookId: string, userId: string, 
   const omitted = verifiedOmissionIndexes;
   let resolution = resolveChapterRecordings(objectNames, records, expected, omitted);
   const recorded = resolution.chapters.map(chapter => chapter.index);
-  const activeReviewChapterIndexes: number[] = [];
-  for (const name of objectNames.filter(n => /^\d{4,6}__pronunciation_failure\.json$/.test(n))) {
-    const index = Number(name.split('__')[0]) - 1;
-    if (!recorded.includes(index)) { activeReviewChapterIndexes.push(index); continue; }
-    const failure = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, name, namespace)).toString('utf8'));
-    let recovered = false;
-    try {
-      const receipt = JSON.parse((await getAudiobookObjectBuffer(bookId, userId, `${String(index + 1).padStart(4, '0')}__recording_state.json`, namespace)).toString('utf8'));
-      recovered = typeof receipt.recordedAt === 'number' && receipt.recordedAt >= (failure.createdAt ?? 0);
-    } catch (error) { if (!isMissingBlobError(error)) throw error; }
-    if (!recovered) activeReviewChapterIndexes.push(index);
-  }
+  const activeReviewChapterIndexes = await readActiveChapterReviewIndexes(bookId, userId, namespace, objectNames, recorded, inventory);
 
   const candidate = await readEmptyFinalChapterCandidate({ bookId, userId, namespace,
     generationJobId: generationJob?.id, expected, recorded,

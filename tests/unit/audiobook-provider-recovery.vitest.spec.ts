@@ -212,14 +212,14 @@ test('truly empty pinned source receives validated omission evidence', async () 
   expect(mocks.tts).not.toHaveBeenCalled();
 });
 
-test('confirmed structural end matter is omitted only with an explicit Gemini OMIT result', async () => {
+test.each(['', 'Index of Selected Passages'])('confirmed end matter retains valid pinned-source evidence when Gemini returns title "%s"', async chapterTitle => {
   const endMatter = '[SYSTEM HINT: The layout engine detected this section in the end-matter (e.g. bibliography).]\n[LAYOUT_ENGINE_TAG: REFERENCE_CONTENT]\nA cited source by an author.';
   mocks.blobs.set('audiobook.source-chapters.json', Buffer.from(JSON.stringify({ schemaVersion: 1, chapters: [
     { index: 0, title: 'Done', text: 'Already recorded.' }, { index: 1, title: 'Bibliography', text: 'A cited source by an author.', cleanupText: endMatter },
   ] })));
   mocks.nats.mockImplementation(async (_subject: string, payload: Buffer) => {
     const request = JSON.parse(payload.toString());
-    return { data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: request.raw_text?.includes('SYSTEM HINT') ? '[OMIT]' : request.raw_text })) };
+    return { data: Buffer.from(JSON.stringify({ status: 'success', chapter_title: chapterTitle, cleaned_text: request.raw_text?.includes('SYSTEM HINT') ? '[OMIT]' : request.raw_text })) };
   });
 
   await processAudiobookQueue();
@@ -228,7 +228,8 @@ test('confirmed structural end matter is omitted only with an explicit Gemini OM
   expect(artifact.entries).toEqual([expect.objectContaining({ chapterIndex: 1, reason: 'confirmed_end_matter', validationVersion: 1 })]);
   expect(job().status).toBe('completed');
   expect(mocks.tts).not.toHaveBeenCalled();
-  expect((await readAudiobookCompleteness('book', 'owner', null)).omittedChapterIndexes).toEqual([1]);
+  expect(await readAudiobookCompleteness('book', 'owner', null)).toMatchObject({ complete: true, omittedChapterIndexes: [1], invalidOmissionChapterIndexes: [] });
+  expect(JSON.parse(mocks.blobs.get('audiobook.source-chapters.json')!.toString()).chapters[1].title).toBe('Bibliography');
 });
 
 test('short narratable chapter returned as OMIT is repaired or reviewed, never silently excluded', async () => {
