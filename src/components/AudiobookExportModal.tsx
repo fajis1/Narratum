@@ -831,7 +831,7 @@ export function AudiobookExportModal({
       )}
       {isGenerating && !isOpen && providerRetry && (
         <div className="fixed inset-x-0 bottom-4 z-[60] mx-auto max-w-md px-4">
-          <AudiobookProviderRetryNotice retry={providerRetry} />
+          <AudiobookProviderRetryNotice retry={providerRetry} jobId={activeJobId || undefined} onRetryRequested={() => { void fetchExistingChapters(true); }} />
         </div>
       )}
       <ProgressPopup
@@ -1235,7 +1235,7 @@ export function AudiobookExportModal({
                           </div>
                         )}
                         {isGenerating && geminiCooldown && <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />}
-                        {isGenerating && providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} />}
+                        {isGenerating && providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} jobId={activeJobId || undefined} onRetryRequested={() => { void fetchExistingChapters(true); }} />}
                         {/* Progress Info */}
                         {isGenerating && (
                           <ProgressCard

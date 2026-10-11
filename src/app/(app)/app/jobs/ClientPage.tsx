@@ -82,7 +82,7 @@ export function JobsClientPage() {
                       <span className="ml-3">Progress: {Math.round(job.progress || 0)}%</span>
                     )}
                   </div>
-                  {providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} />}
+                  {providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} jobId={job.id} onRetryRequested={() => { void fetchJobs(); }} />}
                 </div>
                 <div className="text-right text-xs text-soft">
                   Created: {new Date(job.createdAt).toLocaleString()}

@@ -450,7 +450,7 @@ export function JobsInlineView() {
                         </p>
                       )}
                       {geminiCooldown && <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />}
-                      {providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} />}
+                      {providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} jobId={job.id} onRetryRequested={() => { void fetchJobs(); }} />}
                       {!geminiCooldown && isGeminiDramaStarting && (
                         <div className="max-w-2xl rounded border border-warning/30 bg-warning/10 p-3 text-warning">
                           <p className="font-semibold">Waiting for Google Gemini to finish the first Drama chapter</p>

@@ -318,6 +318,47 @@ test('explicit same-job missing retry clears scheduling, preserves mappings/sett
   await processAudiobookQueue(); expect(job().status).toBe('completed'); expect(mocks.tts).toHaveBeenCalledTimes(1);
 });
 
+test('retry now clears a queued Gemini wait, preserves the same job and recordings, and defers a repeated 429', async () => {
+  mocks.nats.mockResolvedValue({ data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: 'The λόγος remains.' })) });
+  mocks.gemini.mockImplementation(async () => ({ response: new Response(JSON.stringify({ error: { status: 'RESOURCE_EXHAUSTED' } }), { status: 429, headers: { 'retry-after': '900' } }), usedModel: 'gemini-test' }));
+  await processAudiobookQueue();
+  const preserved = jobSettings();
+  const recording = mocks.blobs.get('0001__Done.mp3');
+  const chapters = mocks.db.select().from(schema.audiobookChapters).all();
+  mocks.db.update(schema.audiobookJobs).set({ progress: 50, settingsJson: { ...preserved,
+    geminiCooldown: { reason: 'rate_limit', startedAt: Date.now(), retryAt: Date.now() + 900000, serverDirected: true },
+  } }).where(eq(schema.audiobookJobs.id, 'job')).run();
+  const result = await PUT(new NextRequest('http://localhost/api/audiobooks/queue', { method: 'PUT', body: JSON.stringify({ id: 'job' }) }));
+  expect(result.status).toBe(200);
+  expect(job()).toMatchObject({ id: 'job', status: 'queued', progress: 50, error: null });
+  const expectedSettings = { ...preserved };
+  delete expectedSettings.nextAttemptAt;
+  delete expectedSettings.providerRetry;
+  expect(jobSettings()).toEqual(expectedSettings);
+  expect(mocks.db.select().from(schema.audiobookJobs).all()).toHaveLength(1);
+  expect(mocks.db.select().from(schema.audiobookChapters).all()).toEqual(chapters);
+  expect(mocks.blobs.get('0001__Done.mp3')).toEqual(recording);
+  expect(mocks.quota).not.toHaveBeenCalled();
+  globalState.__worker_booted = false;
+  await processAudiobookQueue();
+  expect(mocks.gemini).toHaveBeenCalledTimes(2);
+  expect(job().status).toBe('queued');
+  expect(jobSettings().nextAttemptAt).toBeGreaterThan(Date.now() + 890000);
+  expect(jobSettings()).toMatchObject({ marker: 'preserved', providerRetry: { count: 1, failure: { httpStatus: 429 } } });
+  expect(mocks.blobs.get('0001__Done.mp3')).toEqual(recording);
+  expect(mocks.tts).not.toHaveBeenCalled();
+});
+
+test('retry now refuses running and other-owner jobs without changing their wait or progress', async () => {
+  const settingsJson = { ...jobSettings(), nextAttemptAt: Date.now() + 900000, providerRetry: { failure: { provider: 'gemini' }, count: 1 } };
+  for (const changes of [{ status: 'running', userId: 'owner' }, { status: 'queued', userId: 'other-owner' }]) {
+    mocks.db.update(schema.audiobookJobs).set({ ...changes, settingsJson, progress: 50 }).where(eq(schema.audiobookJobs.id, 'job')).run();
+    const before = job();
+    expect((await PUT(new NextRequest('http://localhost/api/audiobooks/queue', { method: 'PUT', body: JSON.stringify({ id: 'job' }) }))).status).toBe(409);
+    expect(job()).toEqual(before);
+  }
+});
+
 test('manual retry refuses another active job for the same book and cancellation does not restart', async () => {
   mocks.db.update(schema.audiobookJobs).set({ status: 'error' }).where(eq(schema.audiobookJobs.id, 'job')).run();
   mocks.db.insert(schema.audiobookJobs).values({ id: 'other', documentId: 'book', userId: 'owner', status: 'running', settingsJson: {}, updatedAt: Date.now() }).run();
