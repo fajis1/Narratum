@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui';
 import { isGeminiRateLimitPause } from '@/lib/shared/audiobook-job-status';
 import { AUDIOBOOK_WAITING_FOR_GPU_PHASE } from '@/lib/shared/audiobook-runtime-phase';
+import { readAudiobookProviderRetry } from '@/lib/shared/audiobook-provider-retry';
+import { AudiobookProviderRetryNotice } from '@/components/audiobooks/AudiobookProviderRetryNotice';
 
 interface Job {
   id: string;
@@ -14,6 +16,7 @@ interface Job {
   progress?: number;
   error?: string;
   phase?: string | null;
+  settingsJson?: unknown;
 }
 
 export function JobsClientPage() {
@@ -60,6 +63,7 @@ export function JobsClientPage() {
             const isQueued = job.status === 'queued';
             const isGeminiPaused = isQueued && isGeminiRateLimitPause(job.error);
             const isWaitingForGpu = job.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE;
+            const providerRetry = readAudiobookProviderRetry(job.settingsJson, job.status);
             const position = isQueued ? jobs.filter(j => j.status === 'queued' && j.createdAt <= job.createdAt).length : null;
 
             return (
@@ -67,7 +71,7 @@ export function JobsClientPage() {
                 <div>
                   <h3 className="font-medium">Document ID: {job.documentId.substring(0, 8)}...</h3>
                   <div className="text-sm text-soft mt-1">
-                    Status: <span className="uppercase font-semibold text-accent">{job.status}</span>
+                    Status: <span className="uppercase font-semibold text-accent">{providerRetry ? `Waiting for ${providerRetry.providerLabel}` : job.status}</span>
                     {isWaitingForGpu && (
                       <span className="ml-2 uppercase font-semibold text-warning">· Waiting for GPU</span>
                     )}
@@ -78,6 +82,7 @@ export function JobsClientPage() {
                       <span className="ml-3">Progress: {Math.round(job.progress || 0)}%</span>
                     )}
                   </div>
+                  {providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} />}
                 </div>
                 <div className="text-right text-xs text-soft">
                   Created: {new Date(job.createdAt).toLocaleString()}

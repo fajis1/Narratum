@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { readAudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
 import { AudiobookGeminiCooldownNotice } from '@/components/audiobooks/AudiobookGeminiCooldownNotice';
+import { readAudiobookProviderRetry } from '@/lib/shared/audiobook-provider-retry';
+import { AudiobookProviderRetryNotice } from '@/components/audiobooks/AudiobookProviderRetryNotice';
 import { MultiVoiceCharacterModal } from '@/components/doclist/MultiVoiceCharacterModal';
 import { ChapterErrorLogModal } from '@/components/audiobooks/ChapterErrorLogModal';
 import {
@@ -375,6 +377,7 @@ export function JobsInlineView() {
               const isWaitingForVoices = job.status === WAITING_FOR_VOICES_STATUS
                 || (job.status === 'queued' && job.error === 'waiting_for_voices');
               const geminiCooldown = readAudiobookGeminiCooldown(job.settingsJson, job.status);
+              const providerRetry = readAudiobookProviderRetry(job.settingsJson, job.status);
               const isWaitingForGpu = job.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE;
               const isGeminiDramaJob = profileWorkerModes[jobProfileId(job)] === DRAMA_GEMINI_TTS_WORKER_MODE;
               const isGeminiDramaStarting = isGeminiDramaJob
@@ -384,7 +387,7 @@ export function JobsInlineView() {
               const globalPosition = job.globalQueuePosition;
               
               let queueEtaStr = '';
-              if (isQueued && globalPosition && activeGlobalJob && typeof activeGlobalJob.startedAt === 'number' && typeof activeGlobalJob.progress === 'number' && activeGlobalJob.progress > 0) {
+              if (isQueued && !providerRetry && globalPosition && activeGlobalJob && typeof activeGlobalJob.startedAt === 'number' && typeof activeGlobalJob.progress === 'number' && activeGlobalJob.progress > 0) {
                 const activeStartedAt = activeGlobalJob.startedAt;
                 const activeRemainingMs = getRemainingMs(now, activeStartedAt, activeGlobalJob.updatedAt || activeStartedAt, activeGlobalJob.progress);
                 if (activeRemainingMs >= 0) {
@@ -414,7 +417,7 @@ export function JobsInlineView() {
                         }`}>
                           {descriptiveState.badgeText}
                         </span>
-                        {geminiCooldown && <span className="ml-3 text-warning">{Math.round(job.progress || 0)}% complete · progress preserved</span>}
+                        {(geminiCooldown || providerRetry) && <span className="ml-3 text-warning">{Math.round(job.progress || 0)}% complete · progress preserved</span>}
                         {isWaitingForGpu && (
                           <span className="ml-2 uppercase font-semibold text-warning">· Waiting for GPU</span>
                         )}
@@ -447,6 +450,7 @@ export function JobsInlineView() {
                         </p>
                       )}
                       {geminiCooldown && <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />}
+                      {providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} />}
                       {!geminiCooldown && isGeminiDramaStarting && (
                         <div className="max-w-2xl rounded border border-warning/30 bg-warning/10 p-3 text-warning">
                           <p className="font-semibold">Waiting for Google Gemini to finish the first Drama chapter</p>

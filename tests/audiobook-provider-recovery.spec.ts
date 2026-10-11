@@ -54,3 +54,43 @@ test('failure log distinguishes automatic retry, recovered history, and genuine 
   await expect(page.getByText('Recovered — retained diagnostic history', { exact: true })).toBeVisible();
   await expect(page.getByText('Content requires review', { exact: true })).toBeVisible();
 });
+
+test('queued Gemini repair shows a live countdown, waits honestly when due, and clears it on resume', async ({ page }) => {
+  const bundle = await fixtureBundle('queue');
+  const start = new Date('2026-10-11T12:00:00Z');
+  await page.clock.install({ time: start });
+  let status = 'queued';
+  const settingsJson = {
+    nextAttemptAt: start.getTime() + 5000,
+    providerRetry: { count: 1, exhausted: false, failure: { provider: 'gemini', model: 'gemini-3.8-flash', httpStatus: 429, stage: 'targeted_pronunciation_repair' } },
+    // The durable queue schedule must win over an old in-flight cooldown.
+    geminiCooldown: { reason: 'rate_limit', startedAt: start.getTime() - 10000, retryAt: start.getTime() + 60000, serverDirected: true },
+  };
+  await page.route('http://localhost/**', async route => {
+    const url = new URL(route.request().url());
+    const json = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div><script src="/bundle.js"></script>' });
+    if (url.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
+    if (url.pathname === '/api/audiobooks/queue') return json({ jobs: [{
+      id: 'waiting', documentId: 'book', documentTitle: 'paulmoseshistory0000hafe', status, progress: 50,
+      createdAt: start.getTime() - 60000, startedAt: start.getTime() - 60000, updatedAt: start.getTime(), globalQueuePosition: 1,
+      error: status === 'queued' ? 'gemini / gemini-3.8-flash temporarily unavailable (HTTP 429) during targeted_pronunciation_repair. Completed chapters are preserved. Waiting for gemini; automatic retry scheduled.' : null,
+      settingsJson: status === 'queued' ? settingsJson : { ...settingsJson, geminiCooldown: null },
+    }], activeGlobalJob: { startedAt: start.getTime() - 60000, updatedAt: start.getTime(), progress: 50 } });
+    return json({});
+  });
+  await page.goto('http://localhost/');
+  await expect(page.getByText('Waiting for Gemini', { exact: true })).toBeVisible();
+  await expect(page.getByRole('timer')).toHaveText('Automatic retry at 2026-10-11 12:00:05 UTC — 5s remaining.');
+  await expect(page.getByText('50% complete · progress preserved', { exact: true })).toBeVisible();
+  await expect(page.getByText(/remaining before processing/)).toHaveCount(0);
+  await page.clock.runFor(2000);
+  await expect(page.getByRole('timer')).toContainText('3s remaining.');
+  await page.clock.runFor(3000);
+  await expect(page.getByRole('timer')).toHaveText('Retry time has arrived. Waiting for the queue to resume processing.');
+  await expect(page.getByText('Waiting for Gemini', { exact: true })).toBeVisible();
+  status = 'running';
+  await page.clock.runFor(5000);
+  await expect(page.getByText('Running', { exact: true })).toBeVisible();
+  await expect(page.getByRole('timer')).toHaveCount(0);
+});

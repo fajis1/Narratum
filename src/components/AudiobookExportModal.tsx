@@ -1,6 +1,8 @@
 'use client';
 import { readAudiobookGeminiCooldown, type AudiobookGeminiCooldown } from '@/lib/shared/audiobook-gemini-cooldown';
 import { AudiobookGeminiCooldownNotice } from '@/components/audiobooks/AudiobookGeminiCooldownNotice';
+import { readAudiobookProviderRetry, type AudiobookProviderRetrySchedule } from '@/lib/shared/audiobook-provider-retry';
+import { AudiobookProviderRetryNotice } from '@/components/audiobooks/AudiobookProviderRetryNotice';
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -79,6 +81,7 @@ export function AudiobookExportModal({
   const { isLoading, isDBReady, providerRef, providerType, ttsModel, ttsInstructions, voice: configVoice, voiceSpeed, audioPlayerSpeed, smartAudioProfileId, updateConfigKey } = useConfig();
   const { availableVoices, documentLanguage } = useTTS();
   const [geminiCooldown, setGeminiCooldown] = useState<AudiobookGeminiCooldown | null>(null);
+  const [providerRetry, setProviderRetry] = useState<AudiobookProviderRetrySchedule | null>(null);
   const { progress, setProgress, estimatedTimeRemaining } = useTimeEstimation();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -327,6 +330,8 @@ export function AudiobookExportModal({
           setActiveJobId(activeJob.id);
           const cooldown = readAudiobookGeminiCooldown(activeJob.settingsJson, activeJob.status);
           setGeminiCooldown(cooldown);
+          const retry = readAudiobookProviderRetry(activeJob.settingsJson, activeJob.status);
+          setProviderRetry(retry);
           if (activeJob.status === WAITING_FOR_VOICES_STATUS) {
             setCastingJobId(activeJob.id);
             setStartAfterCasting(false);
@@ -339,6 +344,8 @@ export function AudiobookExportModal({
             if (activeJob.progress !== undefined) setProgress(activeJob.progress);
             if (cooldown) {
               setCurrentChapter('Waiting for Gemini cooldown. Progress is preserved.');
+            } else if (retry) {
+              setCurrentChapter(`Waiting for ${retry.providerLabel} retry. Progress is preserved.`);
             } else if (activeJob.phase === AUDIOBOOK_WAITING_FOR_GPU_PHASE) {
               setCurrentChapter('Waiting for the shared GPU. Kokoro has priority and will start automatically when the shared GPU is ready.');
             } else if (activeJob.status === 'queued' && isGeminiRateLimitPause(activeJob.error)) {
@@ -351,6 +358,7 @@ export function AudiobookExportModal({
         } else {
           setActiveJobId(null);
           setGeminiCooldown(null);
+          setProviderRetry(null);
         }
       }
     } catch {
@@ -821,10 +829,15 @@ export function AudiobookExportModal({
           <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />
         </div>
       )}
+      {isGenerating && !isOpen && providerRetry && (
+        <div className="fixed inset-x-0 bottom-4 z-[60] mx-auto max-w-md px-4">
+          <AudiobookProviderRetryNotice retry={providerRetry} />
+        </div>
+      )}
       <ProgressPopup
         isOpen={isGenerating && !isOpen}
         progress={progress}
-        estimatedTimeRemaining={geminiCooldown ? undefined : estimatedTimeRemaining || undefined}
+        estimatedTimeRemaining={geminiCooldown || providerRetry ? undefined : estimatedTimeRemaining || undefined}
         onCancel={handleCancel}
         cancelText="Cancel"
         operationType="audiobook"
@@ -1222,11 +1235,12 @@ export function AudiobookExportModal({
                           </div>
                         )}
                         {isGenerating && geminiCooldown && <AudiobookGeminiCooldownNotice cooldown={geminiCooldown} />}
+                        {isGenerating && providerRetry && <AudiobookProviderRetryNotice retry={providerRetry} />}
                         {/* Progress Info */}
                         {isGenerating && (
                           <ProgressCard
                             progress={progress}
-                            estimatedTimeRemaining={geminiCooldown ? undefined : estimatedTimeRemaining || undefined}
+                            estimatedTimeRemaining={geminiCooldown || providerRetry ? undefined : estimatedTimeRemaining || undefined}
                             onCancel={handleCancel}
                             operationType="audiobook"
                             currentChapter={currentChapter}
