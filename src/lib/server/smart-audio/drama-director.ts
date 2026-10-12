@@ -213,10 +213,14 @@ function safeDirectorResponse(value: unknown): string {
   try { return JSON.stringify(value)?.slice(0, 2_000_000) ?? '[no Director response]'; } catch { return '[unserializable Director response]'; }
 }
 
+export const DRAMA_DIRECTOR_REQUEST_SCHEMA_VERSION = 2;
+
 /** JSON Schema from the shared taxonomy, using Gemini's supported subset. */
 export function buildDramaDirectorResponseSchema(castNames: readonly string[], spans: readonly DramaSourceSpan[]) {
   const choice = (values: readonly string[], description?: string) => ({ type: 'string', enum: [...values], ...(description ? { description } : {}) });
-  const array = (values: readonly string[], minItems: number, maxItems: number) => ({ type: 'array', items: choice(values), minItems, maxItems });
+  // Even small maxima can expand a large enum grammar. Keep the complete
+  // vocabulary on the wire; enforce every array cap in server validation.
+  const array = (values: readonly string[], minItems: number) => ({ type: 'array', items: choice(values), minItems });
   const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
   return object({ segments: {
     // Large nested maxima multiply provider grammar states. Exact coverage and
@@ -231,11 +235,11 @@ export function buildDramaDirectorResponseSchema(castNames: readonly string[], s
       omit_from_audio: { type: 'boolean', description: 'Must be false. All cleaned source is narratable.' },
       performance: object({
         primaryEmotion: choice(DRAMA_PRIMARY_EMOTIONS, 'Dominant internal emotional state. Not friendly, welcoming, helpful, or conversational.'),
-        secondaryEmotions: array(DRAMA_SECONDARY_EMOTIONS, 0, 2),
+        secondaryEmotions: { ...array(DRAMA_SECONDARY_EMOTIONS, 0), description: 'At most two secondary emotions.' },
         socialIntent: choice(DRAMA_SOCIAL_INTENTS, 'Interpersonal purpose toward another character.'),
-        delivery: { ...array(DRAMA_DELIVERY_STYLES, 1, 2), description: 'Audible manner of speaking.' },
+        delivery: { ...array(DRAMA_DELIVERY_STYLES, 1), description: 'Audible manner of speaking. Choose one or two styles.' },
         pace: choice(DRAMA_PACING), energy: choice(DRAMA_ENERGY), intensity: choice(DRAMA_INTENSITY),
-        tags: array(DRAMA_INLINE_VOCAL_EVENTS, 0, 2),
+        tags: { ...array(DRAMA_INLINE_VOCAL_EVENTS, 0), description: 'At most two localized vocal cues.' },
         nuance: { type: 'string', description: 'Optional brief acting hint.' },
       }, ['primaryEmotion', 'secondaryEmotions', 'socialIntent', 'delivery', 'pace', 'energy', 'intensity', 'tags']),
     }),
@@ -309,7 +313,8 @@ export async function directDramaWithGemini(input: {
   for (const [index, sourceSpans] of batches.entries()) {
     input.signal?.throwIfAborted();
     const sourceText = sourceSpans.map((span) => span.text).join('');
-    const base = { batchIndex: (input.batchIndex ?? 0) + index, sourceByteCount: Buffer.byteLength(sourceText, 'utf8'), sourceSpanCount: sourceSpans.length };
+    const base = { batchIndex: (input.batchIndex ?? 0) + index, sourceByteCount: Buffer.byteLength(sourceText, 'utf8'), sourceSpanCount: sourceSpans.length,
+      requestSchemaVersion: DRAMA_DIRECTOR_REQUEST_SCHEMA_VERSION };
     let attempt = 0;
     let provider: Record<string, unknown> = {};
     const emit = (fields: Record<string, unknown>) => {

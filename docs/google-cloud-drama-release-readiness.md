@@ -272,3 +272,28 @@ Worker/chapter-route existing lint baselines remain unchanged at respectively
 No local Gemini credential is available. A live probe of the reduced 46-span
 schema remains required before claiming production resolution; no serving-state
 threshold is documented, so automated structural tests cannot certify acceptance.
+
+### 2026-10-12 — Remaining bounded enum arrays
+
+A new reported two-chapter job passed cleanup but failed both Director output
+contracts with generic HTTP 400. The new job's deployed build and detailed field
+violations have not been verified locally; that message alone does not prove a
+serving-state failure.
+
+Director request schema version 2 also removes the small `maxItems` constraints
+from secondary emotions, delivery styles and vocal tags. Bounded arrays over
+large enum sets can add compiler complexity. All enum choices, required fields,
+array types and minimum lengths remain on the wire. Prompt/schema descriptions
+still specify the limits, and server validation still rejects more than two
+secondary emotions, delivery styles or tags. Invalid responses receive the same
+bounded correction attempts and cannot reach synthesis. Exact source-span order,
+coverage, cast membership and no-new-omission checks remain unchanged.
+
+Request diagnostics now include `requestSchemaVersion: 2` so the next live
+artifact can establish which schema was sent. Both API contracts use the same
+schema; there is no schema-free, vocabulary-reduced or neutral-narration fallback.
+
+Tests cover the complete vocabulary in a mocked 46-span request, oversized array
+correction, permanent 400 handling and source preservation. These checks do not
+certify Google's acceptance or acting quality. After deployment, retry the failed
+chapters and inspect the new diagnostics before claiming live resolution.

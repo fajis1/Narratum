@@ -33,9 +33,8 @@ describe('immutable Director metadata', () => {
     for (const [field, vocabulary] of Object.entries({ secondaryEmotions: DRAMA_SECONDARY_EMOTIONS, delivery: DRAMA_DELIVERY_STYLES, tags: DRAMA_INLINE_VOCAL_EVENTS })) expect(props[field].items!.enum).toEqual(vocabulary);
     expect(props.primaryEmotion.enum).not.toContain('friendly');
     expect(props.socialIntent.enum).not.toContain('conversational');
-    expect(props.delivery).toMatchObject({ minItems: 1, maxItems: 2 });
-    expect(props.secondaryEmotions.maxItems).toBe(2);
-    expect(props.tags.maxItems).toBe(2);
+    expect(props.delivery).toMatchObject({ minItems: 1 });
+    for (const field of ['secondaryEmotions', 'delivery', 'tags']) expect(props[field]).not.toHaveProperty('maxItems');
     expect(fields.items.properties).not.toHaveProperty('text');
   });
 
@@ -50,6 +49,46 @@ describe('immutable Director metadata', () => {
       output: { segments: [group([...productionSpans.map(span => span.id), 's0'])] } })).toThrow(/Duplicate/);
     expect(() => validateDirectedSpanGroups({ ...input, output: { segments: [{ ...group(['A', 'B', 'C', 'D']),
       performance: { ...performance, secondaryEmotions: ['calm', 'calm', 'calm'] } }] } })).toThrow(/secondaryEmotions/);
+  });
+
+  it('sends the complete vocabulary without bounded enum arrays for a 46-span production-sized request', async () => {
+    const sourceSpans = Array.from({ length: 46 }, (_, index) => ({ id: `s${index}`, text: `Line ${index}.\n` }));
+    const sourceText = sourceSpans.map(span => span.text).join('');
+    const castNames = ['Narrator', 'Bethany', 'Ali', 'Dominic', 'Seth', 'Tylor'];
+    const fetch = vi.fn().mockImplementation((_url, request) => {
+      const body = JSON.parse(request.body);
+      const schema = body.generationConfig.responseFormat?.text?.schema ?? body.generationConfig.responseJsonSchema;
+      // Reproduce a compiler rejecting bounded enum arrays; this mock does
+      // not establish Google's undocumented serving-state threshold.
+      if (JSON.stringify(schema).includes('maxItems')) return Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Too many states for serving.' } }, { status: 400 });
+      expect(schema.properties.segments.items.properties.performance.properties.primaryEmotion.enum).toEqual(DRAMA_PRIMARY_EMOTIONS);
+      expect(body.contents[0].parts[0].text).toContain(JSON.stringify(DRAMA_PRIMARY_EMOTIONS));
+      return envelope(JSON.stringify({ segments: sourceSpans.map(span => ({ ...group([span.id]),
+        performance: { ...performance, primaryEmotion: 'injured', secondaryEmotions: ['sad', 'uneasy'], delivery: ['breathless', 'halting'] } })) }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const result = await directDramaWithGemini({ sourceText, sourceSpans, castNames, apiKey: 'fixture', model: 'gemini-3.8-flash' });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(result.map(segment => segment.text).join('')).toBe(sourceText);
+    expect(result[0].performance).toMatchObject({ primaryEmotion: 'injured', secondaryEmotions: ['sad', 'uneasy'], delivery: ['breathless', 'halting'] });
+  });
+
+  it.each([
+    ['secondaryEmotions', ['calm', 'sad', 'uneasy']],
+    ['delivery', ['natural', 'soft', 'urgent']],
+    ['tags', ['sigh', 'laughing', 'uhm']],
+  ] as const)('repairs oversized %s arrays before accepting a provider response', async (field, values) => {
+    const onRepair = vi.fn();
+    const invalid = { ...group(['A', 'B', 'C', 'D']), performance: { ...performance, [field]: values } };
+    const fetch = vi.fn().mockResolvedValueOnce(envelope(JSON.stringify({ segments: [invalid] })))
+      .mockResolvedValueOnce(envelope(JSON.stringify({ segments: [group(['A', 'B', 'C', 'D'])] })));
+    vi.stubGlobal('fetch', fetch);
+    const result = await directDramaWithGemini({ ...input, apiKey: 'fixture', model: 'gemini-3.8-flash', onRepair });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(onRepair).toHaveBeenCalledOnce();
+    expect(onRepair.mock.calls[0][1].join(' ')).toContain(field);
+    expect(result.map(segment => segment.text).join('')).toBe('ABCD');
+    expect(result[0].performance).toEqual(performance);
   });
 
   it('reports actual attempt counts instead of a hardcoded two repairs', () => {
@@ -140,7 +179,7 @@ describe('immutable Director metadata', () => {
     const config = JSON.parse(fetch.mock.calls[0][1].body).generationConfig;
     expect(config.responseFormat.text).toEqual({ mimeType: 'APPLICATION_JSON', schema: buildDramaDirectorResponseSchema(input.castNames, spans) });
     expect(fetch.mock.calls[0][0]).not.toContain('private-test-credential');
-    expect(diagnostic.mock.calls[0][0]).toMatchObject({ batchIndex: 7, finishReason: 'MAX_TOKENS', responseLength: 25, parseFailure: true, sourceSpanCount: 4, sourceByteCount: 4, promptTokenCount: 300, candidatesTokenCount: 100, totalTokenCount: 400, modelVersion: 'gemini-test' });
+    expect(diagnostic.mock.calls[0][0]).toMatchObject({ batchIndex: 7, requestSchemaVersion: 2, finishReason: 'MAX_TOKENS', responseLength: 25, parseFailure: true, sourceSpanCount: 4, sourceByteCount: 4, promptTokenCount: 300, candidatesTokenCount: 100, totalTokenCount: 400, modelVersion: 'gemini-test' });
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private-test-credential');
   });
 
