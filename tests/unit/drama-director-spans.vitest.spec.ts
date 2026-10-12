@@ -179,7 +179,7 @@ describe('immutable Director metadata', () => {
     const config = JSON.parse(fetch.mock.calls[0][1].body).generationConfig;
     expect(config.responseFormat.text).toEqual({ mimeType: 'APPLICATION_JSON', schema: buildDramaDirectorResponseSchema(input.castNames, spans) });
     expect(fetch.mock.calls[0][0]).not.toContain('private-test-credential');
-    expect(diagnostic.mock.calls[0][0]).toMatchObject({ batchIndex: 7, requestSchemaVersion: 2, finishReason: 'MAX_TOKENS', responseLength: 25, parseFailure: true, sourceSpanCount: 4, sourceByteCount: 4, promptTokenCount: 300, candidatesTokenCount: 100, totalTokenCount: 400, modelVersion: 'gemini-test' });
+    expect(diagnostic.mock.calls[0][0]).toMatchObject({ batchIndex: 7, requestSchemaVersion: 3, schemaVariant: 'full', finishReason: 'MAX_TOKENS', responseLength: 25, parseFailure: true, sourceSpanCount: 4, sourceByteCount: 4, promptTokenCount: 300, candidatesTokenCount: 100, totalTokenCount: 400, modelVersion: 'gemini-test' });
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private-test-credential');
   });
 
@@ -224,23 +224,90 @@ describe('immutable Director metadata', () => {
     const fetch = vi.fn().mockImplementation(() => Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Invalid argument private-credential', details: [{ '@type': 'type.googleapis.com/google.rpc.BadRequest', fieldViolations: [{ field: 'generation_config.response_json_schema', description: 'Too many states private-credential' }] }] } }, { status: 400 }));
     vi.stubGlobal('fetch', fetch);
     const error = await directDramaWithGemini({ ...input, apiKey: 'private-credential', model: 'gemini-3.8-flash', batchIndex: 8, onDiagnostic: diagnostic, onRepair }).catch(value => value);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(onRepair).not.toHaveBeenCalled();
     expect(error.attempts).toHaveLength(1);
-    expect(error.attempts[0].diagnostics).toMatchObject({ httpStatus: 400, apiStatus: 'INVALID_ARGUMENT', batchIndex: 8, outputContract: 'responseJsonSchema',
-      contractFailures: [{ contract: 'responseFormat', status: 400, message: 'Invalid argument [redacted]' }] });
+    expect(error.attempts[0].diagnostics).toMatchObject({ httpStatus: 400, apiStatus: 'INVALID_ARGUMENT', batchIndex: 8, outputContract: 'responseJsonSchema', requestSchemaVersion: 3, schemaVariant: 'structural',
+      contractFailures: [{ contract: 'responseFormat', schemaVariant: 'full', status: 400, message: 'Invalid argument [redacted]' },
+        { contract: 'responseJsonSchema', schemaVariant: 'full', status: 400, message: 'Invalid argument [redacted]' }] });
+    expect(getDramaDirectorAttemptCount(error)).toBe(3);
     expect(JSON.parse(error.attempts[0].response).fieldViolations).toEqual([{ field: 'generation_config.response_json_schema', description: 'Too many states [redacted]' }]);
     expect(JSON.stringify(error.attempts)).not.toContain('private-credential');
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('Invalid argument');
   });
 
   it('never downgrades the schema contract on quota or availability failures', async () => {
-    for (const status of [429, 503]) {
+    for (const status of [401, 403, 429, 503]) {
       const fetch = vi.fn().mockImplementation(() => Response.json({ error: { code: status, status: 'UNAVAILABLE', message: 'Provider unavailable' } }, { status }));
       vi.stubGlobal('fetch', fetch);
       await expect(directDramaWithGemini({ ...input, apiKey: 'fixture', model: 'gemini-3.8-flash' })).rejects.toThrow();
-      for (const call of fetch.mock.calls) expect(JSON.parse(call[1].body).generationConfig).not.toHaveProperty('responseJsonSchema');
+      for (const call of fetch.mock.calls) {
+        const config = JSON.parse(call[1].body).generationConfig;
+        expect(config).not.toHaveProperty('responseJsonSchema');
+        expect(config.responseFormat.text.schema).toEqual(buildDramaDirectorResponseSchema(input.castNames, spans));
+      }
     }
+  });
+
+  it('recovers the reported two-contract rejection with one typed structural schema and unchanged full-vocabulary prompt', async () => {
+    const sourceSpans = Array.from({ length: 45 }, (_, index) => ({ id: `s${index}`, text: `Scene ${index}.\n` }));
+    const sourceText = sourceSpans.map(span => span.text).join('');
+    const diagnostic = vi.fn();
+    const reject = () => Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Request contains an invalid argument.' } }, { status: 400 });
+    const directed = { ...group(sourceSpans.map(span => span.id)), performance: { ...performance, primaryEmotion: 'injured', secondaryEmotions: ['uneasy', 'sad'], delivery: ['breathless', 'halting'] } };
+    const fetch = vi.fn().mockResolvedValueOnce(reject()).mockResolvedValueOnce(reject())
+      .mockResolvedValueOnce(envelope(JSON.stringify({ segments: [directed] })));
+    vi.stubGlobal('fetch', fetch);
+    const result = await directDramaWithGemini({ sourceText, sourceSpans, castNames: ['Narrator'], apiKey: 'fixture', model: 'gemini-3.8-flash', onDiagnostic: diagnostic });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const requests = fetch.mock.calls.map(call => JSON.parse(call[1].body));
+    expect(requests[1].contents).toEqual(requests[0].contents);
+    expect(requests[2].contents).toEqual(requests[0].contents);
+    expect(JSON.stringify(requests[2].generationConfig.responseJsonSchema)).not.toContain('"enum"');
+    expect(requests[2].generationConfig.responseJsonSchema).toMatchObject({ type: 'object', required: ['segments'], additionalProperties: false,
+      properties: { segments: { type: 'array', items: { type: 'object', required: expect.arrayContaining(['spanIds', 'speaker', 'performance', 'omit_from_audio']) } } } });
+    expect(requests[2].contents[0].parts[0].text).toContain(JSON.stringify(DRAMA_PRIMARY_EMOTIONS));
+    expect(result.map(segment => segment.text).join('')).toBe(sourceText);
+    expect(result[0].performance).toEqual(directed.performance);
+    expect(diagnostic.mock.calls.at(-1)![0]).toMatchObject({ requestSchemaVersion: 3, schemaVariant: 'structural', outputContract: 'responseJsonSchema' });
+  });
+
+  it.each([
+    ['unknown emotion', { performance: { ...performance, primaryEmotion: 'friendly' } }],
+    ['oversized delivery', { performance: { ...performance, delivery: ['natural', 'soft', 'urgent'] } }],
+    ['unknown speaker', { speaker: 'Unreviewed Character' }],
+    ['generated text', { text: 'Replacement narration.' }],
+    ['generated voice', { voiceId: 'Aoede' }],
+    ['omitted source', { omit_from_audio: true }],
+    ['missing span', { spanIds: ['A', 'B', 'D'] }],
+    ['duplicate span', { spanIds: ['A', 'B', 'C', 'D', 'D'] }],
+    ['reordered spans', { spanIds: ['B', 'A', 'C', 'D'] }],
+    ['unknown span', { spanIds: ['A', 'B', 'C', 'D', 'E'] }],
+  ])('the structural fallback never accepts %s', async (_label, change) => {
+    const fetch = vi.fn().mockImplementation((_url, request) => {
+      const config = JSON.parse(request.body).generationConfig;
+      const schema = config.responseFormat?.text?.schema ?? config.responseJsonSchema;
+      return JSON.stringify(schema).includes('"enum"')
+        ? Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Request contains an invalid argument.' } }, { status: 400 })
+        : envelope(JSON.stringify({ segments: [{ ...group(['A', 'B', 'C', 'D']), ...change }] }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const error = await directDramaWithGemini({ ...input, apiKey: 'fixture', model: 'gemini-3.8-flash' }).catch(value => value);
+    expect(error.name).toBe('DramaDirectorValidationError');
+    expect(fetch).toHaveBeenCalledTimes(5);
+    expect(error.attempts).toHaveLength(3);
+    expect(getDramaDirectorAttemptCount(error)).toBe(5);
+    expect(error.attempts[0].diagnostics.contractFailures).toHaveLength(2);
+    expect(error.attempts.every((attempt: { diagnostics: { schemaVariant: string } }) => attempt.diagnostics.schemaVariant === 'structural')).toBe(true);
+  });
+
+  it('cancels before the structural compatibility request starts', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn().mockImplementation(() => Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Invalid argument.' } }, { status: 400 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(directDramaWithGemini({ ...input, apiKey: 'fixture', model: 'gemini-3.8-flash', signal: controller.signal,
+      onDiagnostic: fields => { if (fields.schemaFallback === 'structural') controller.abort(); } })).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('retains finish, parse and batch diagnostics in the bounded failure artifact', async () => {

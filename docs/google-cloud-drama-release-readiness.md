@@ -297,3 +297,32 @@ Tests cover the complete vocabulary in a mocked 46-span request, oversized array
 correction, permanent 400 handling and source preservation. These checks do not
 certify Google's acceptance or acting quality. After deployment, retry the failed
 chapters and inspect the new diagnostics before claiming live resolution.
+
+### 2026-10-12 — Bounded structural-schema compatibility
+
+The user supplied a new production artifact with `requestSchemaVersion: 2`,
+45 source spans and both output contracts rejected with generic HTTP 400. This
+confirms the earlier change was deployed and insufficient for that request. No
+field violations were returned, so the exact rejected argument remains unknown.
+
+Request schema version 3 retains the existing enum-constrained schema first. If
+both contracts return HTTP 400, the Director makes one compatibility request
+using `responseJsonSchema` with the same typed object/array structure and required
+fields, but without enum constraints. The unchanged prompt contains every allowed
+acting value, cast name and immutable source ID. The server still enforces the
+full vocabulary, array caps, reviewed cast, no voice overrides, no generated text,
+no omissions and exact source coverage/order before allowing synthesis. This is
+not a plain-JSON or neutral-narration fallback.
+
+The structural variant is reused for subsequent repairs/batches within that
+Director call. It is not persisted globally. A persistent HTTP 400 stops after at
+most three request-format/schema attempts; existing bounded metadata repairs apply
+only once a response is generated. Cancellation is honored before each transition.
+Non-400 responses do not trigger this new compatibility request. Diagnostics show
+`schemaVariant: full` or `structural`, retain both preceding failures privately and
+count all requests. Public logs omit private provider messages/field violations.
+
+Mocked transport and chapter orchestration tests demonstrate valid fallback output
+reaching synthesis and invalid output stopping before any TTS call. Live provider
+acceptance remains unverified. Deploy the new build, retry the failed chapters and
+inspect schema version/variant plus any fresh Google error details.

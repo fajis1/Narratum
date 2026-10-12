@@ -213,11 +213,14 @@ function safeDirectorResponse(value: unknown): string {
   try { return JSON.stringify(value)?.slice(0, 2_000_000) ?? '[no Director response]'; } catch { return '[unserializable Director response]'; }
 }
 
-export const DRAMA_DIRECTOR_REQUEST_SCHEMA_VERSION = 2;
+export const DRAMA_DIRECTOR_REQUEST_SCHEMA_VERSION = 3;
+export type DramaDirectorSchemaVariant = 'full' | 'structural';
 
 /** JSON Schema from the shared taxonomy, using Gemini's supported subset. */
-export function buildDramaDirectorResponseSchema(castNames: readonly string[], spans: readonly DramaSourceSpan[]) {
-  const choice = (values: readonly string[], description?: string) => ({ type: 'string', enum: [...values], ...(description ? { description } : {}) });
+export function buildDramaDirectorResponseSchema(castNames: readonly string[], spans: readonly DramaSourceSpan[], variant: DramaDirectorSchemaVariant = 'full') {
+  const choice = (values: readonly string[], description?: string) => ({ type: 'string',
+    ...(variant === 'full' ? { enum: [...values] } : {}),
+    ...(description ? { description } : {}) });
   // Even small maxima can expand a large enum grammar. Keep the complete
   // vocabulary on the wire; enforce every array cap in server validation.
   const array = (values: readonly string[], minItems: number) => ({ type: 'array', items: choice(values), minItems });
@@ -310,6 +313,7 @@ export async function directDramaWithGemini(input: {
   let continuity = input.priorContinuityState;
   // Compatibility is scoped to this Director call, never persisted globally.
   let legacyStructuredOutput = false;
+  let schemaVariant: DramaDirectorSchemaVariant = 'full';
   for (const [index, sourceSpans] of batches.entries()) {
     input.signal?.throwIfAborted();
     const sourceText = sourceSpans.map((span) => span.text).join('');
@@ -320,7 +324,7 @@ export async function directDramaWithGemini(input: {
     const emit = (fields: Record<string, unknown>) => {
       const { contractFailures: _privateFailures, ...publicProvider } = provider;
       void _privateFailures;
-      const diagnostic = { ...base, ...publicProvider, ...fields };
+      const diagnostic = { ...base, ...publicProvider, schemaVariant, ...fields };
       serverLogger.info({ event: 'drama_director.diagnostic', ...diagnostic }, 'Drama Director request diagnostic');
       input.onDiagnostic?.(diagnostic);
     };
@@ -330,42 +334,60 @@ export async function directDramaWithGemini(input: {
         input.signal?.throwIfAborted();
         attempt += 1;
         provider = {};
-        const schema = buildDramaDirectorResponseSchema(input.castNames, sourceSpans);
         const contractFailures: Record<string, unknown>[] = [];
-        const requestStructuredOutput = () => fetchGeminiWithRateLimitFallback({
-          primaryApiKey: input.apiKey, backupApiKey: input.backupApiKey, requestedModel: input.model, signal: input.signal,
-          request: (apiKey, model) => fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || input.model)}:generateContent`,
-            {
-              method: 'POST', signal: input.signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-              body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
-                // TextResponseFormat.mimeType is a REST enum, unlike the older
-                // responseMimeType string field. Keep the structured schema.
-                generationConfig: {
-                  ...(legacyStructuredOutput
-                    ? { responseMimeType: 'application/json', responseJsonSchema: schema }
-                    : { responseFormat: { text: { mimeType: 'APPLICATION_JSON', schema } } }),
-                  maxOutputTokens: 24_000,
-                },
-              }),
-            },
-          ),
-        });
-        let { response } = await requestStructuredOutput();
-        if (response.status === 400 && !legacyStructuredOutput) {
+        const captureRejection = async (response: Response) => {
           const details = await geminiPrivateErrorDetails(response);
           if (details.message) details.message = redact(details.message);
           if (details.fieldViolations) details.fieldViolations = details.fieldViolations.map(({ field, description }) => ({ field: redact(field), description: redact(description) }));
-          contractFailures.push({ contract: 'responseFormat', ...details });
+          // Retain the legacy artifact field name; every entry counts a failed
+          // request before the final response, including schema compatibility.
+          contractFailures.push({ contract: legacyStructuredOutput ? 'responseJsonSchema' : 'responseFormat', schemaVariant, ...details });
+        };
+        const requestStructuredOutput = () => fetchGeminiWithRateLimitFallback({
+          primaryApiKey: input.apiKey, backupApiKey: input.backupApiKey, requestedModel: input.model, signal: input.signal,
+          request: (apiKey, model) => {
+            const schema = buildDramaDirectorResponseSchema(input.castNames, sourceSpans, schemaVariant);
+            return fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || input.model)}:generateContent`,
+              {
+                method: 'POST', signal: input.signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
+                  // TextResponseFormat.mimeType is a REST enum, unlike the older
+                  // responseMimeType string field. Keep the structured schema.
+                  generationConfig: {
+                    ...(legacyStructuredOutput
+                      ? { responseMimeType: 'application/json', responseJsonSchema: schema }
+                      : { responseFormat: { text: { mimeType: 'APPLICATION_JSON', schema } } }),
+                    maxOutputTokens: 24_000,
+                  },
+                }),
+              },
+            );
+          },
+        });
+        let { response } = await requestStructuredOutput();
+        if (response.status === 400 && !legacyStructuredOutput) {
+          await captureRejection(response);
           provider = { ...base, attempt, httpStatus: 400, requestedModel: input.model, outputContract: 'responseFormat' };
           emit({ failure: 'provider', contractFallback: 'responseJsonSchema' });
           // Retry once with the documented legacy JSON-schema wire contract.
-          // Never fall back to MIME-only JSON or remove schema constraints.
+          // Keep a structured schema in every request, including compatibility.
           legacyStructuredOutput = true;
           input.signal?.throwIfAborted();
           ({ response } = await requestStructuredOutput());
         }
-        provider = { requestedModel: input.model, outputContract: legacyStructuredOutput ? 'responseJsonSchema' : 'responseFormat',
+        if (response.status === 400 && schemaVariant === 'full') {
+          await captureRejection(response);
+          provider = { ...base, attempt, httpStatus: 400, requestedModel: input.model, outputContract: 'responseJsonSchema' };
+          emit({ failure: 'provider', schemaFallback: 'structural' });
+          // One smaller typed schema after provider rejection. Full vocabulary,
+          // cast membership, source coverage and array caps remain enforced by
+          // the prompt and authoritative server validators before any TTS call.
+          schemaVariant = 'structural';
+          input.signal?.throwIfAborted();
+          ({ response } = await requestStructuredOutput());
+        }
+        provider = { requestedModel: input.model, schemaVariant, outputContract: legacyStructuredOutput ? 'responseJsonSchema' : 'responseFormat',
           ...(contractFailures.length ? { contractFailures } : {}) };
         if (!response.ok) {
           const details = await geminiPrivateErrorDetails(response);

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { direct, synthesize, concatenate, silence } = vi.hoisted(() => ({
   direct: vi.fn(), synthesize: vi.fn(), concatenate: vi.fn(), silence: vi.fn(),
@@ -7,6 +7,7 @@ const { direct, synthesize, concatenate, silence } = vi.hoisted(() => ({
 vi.mock('@/lib/server/smart-audio/gemini-cast-helpers', () => ({
   getGeminiTtsCharacterMapReadiness: async ({ value }: { value: unknown }) => ({ ready: true, map: value }),
 }));
+vi.mock('@/lib/server/logger', () => ({ serverLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../../src/lib/server/smart-audio/drama-director', () => ({ directDramaWithGemini: direct }));
 vi.mock('../../src/lib/server/smart-audio/drama-cloud-synthesis', () => ({
   synthesizeGeminiDramaSegment: synthesize,
@@ -39,6 +40,38 @@ describe('Cloud Drama chapter orchestration', () => {
     direct.mockResolvedValue([segment]);
     concatenate.mockResolvedValue(Buffer.from('chapter'));
     silence.mockResolvedValue(Buffer.from('silence'));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(['valid', 'invalid'])('gates synthesis on actual Director validation after the structural fallback (%s metadata)', async validity => {
+    const actual = await vi.importActual<typeof import('@/lib/server/smart-audio/drama-director')>('@/lib/server/smart-audio/drama-director');
+    direct.mockImplementation(actual.directDramaWithGemini);
+    const fetch = vi.fn().mockImplementation((_url, request) => {
+      const config = JSON.parse(request.body).generationConfig;
+      const schema = config.responseFormat?.text?.schema ?? config.responseJsonSchema;
+      if (JSON.stringify(schema).includes('"enum"')) return Response.json({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Request contains an invalid argument.' } }, { status: 400 });
+      const { text: _text, ...metadata } = segment;
+      void _text;
+      return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({ segments: [{
+        ...metadata, spanIds: ['s000001'],
+        performance: { ...segment.performance, primaryEmotion: validity === 'valid' ? 'calm' : 'friendly' },
+      }] }) }] } }] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    synthesize.mockResolvedValue({ chunks: [{ audioBuffer: Buffer.from('spoken'), needsPlaceholder: false, omitted: false }], reviewFlags: [] });
+    const generation = generateCloudDramaAudiobook({ cleanedText: 'Hello.', characterMap: map, geminiApiKey: 'fixture', directorModel: 'gemini-test' });
+    if (validity === 'valid') {
+      expect((await generation).audioBuffer).toEqual(Buffer.from('chapter'));
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(synthesize).toHaveBeenCalledOnce();
+      expect(synthesize.mock.calls[0][0].segment.text).toBe('Hello.');
+      expect(synthesize.mock.calls[0][0].characterMap.entries.Narrator.voiceId).toBe('Kore');
+    } else {
+      await expect(generation).rejects.toThrow(/primaryEmotion/);
+      expect(fetch).toHaveBeenCalledTimes(5);
+      expect(synthesize).not.toHaveBeenCalled();
+      expect(concatenate).not.toHaveBeenCalled();
+    }
   });
 
   it('directs cleaned text, synthesizes with reviewed cast, and stitches audio', async () => {
