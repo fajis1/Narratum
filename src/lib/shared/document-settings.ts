@@ -105,6 +105,8 @@ export function normalizeSmartAudioReviewFlags(value: unknown): SmartAudioReview
         ...(typeof record.reason === 'string' ? { reason: record.reason.slice(0, 200) } : {}),
         ...(Number.isInteger(record.chunkIndex) && Number(record.chunkIndex) >= 0 ? { chunkIndex: Number(record.chunkIndex) } : {}),
         ...(Number.isInteger(record.attempts) && Number(record.attempts) >= 0 ? { attempts: Number(record.attempts) } : {}),
+        ...(Number.isInteger(record.segmentNumber) && Number(record.segmentNumber) > 0 ? { segmentNumber: Number(record.segmentNumber) } : {}),
+        ...(typeof record.timestampKnown === 'boolean' ? { timestampKnown: record.timestampKnown } : {}),
       } : {}),
     });
   }

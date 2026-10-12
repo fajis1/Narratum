@@ -11,6 +11,7 @@ import {
 } from './google-cloud-tts-client';
 import type { CloudTtsSynthesizeRequest, CloudTtsSynthesisOptions } from './google-cloud-tts-client';
 import type { DramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
+import { dramaSpeechDeliveryHint } from '@/lib/shared/drama-speech-settings';
 
 function resolveCastEntry(map: SmartAudioCharacterMap, speaker: string): SmartAudioCharacterEntry {
   let entry = map.entries[speaker];
@@ -30,6 +31,15 @@ export function resolveGeminiCastEntry(map: SmartAudioCharacterMap, speaker: str
     throw new CloudTtsInputError(`Speaker ${speaker} has no valid Gemini voice.`);
   }
   return entry;
+}
+
+/** Title voice is a recording policy, never a Director-supplied voice override. */
+export function resolveGeminiDramaVoiceEntry(map: SmartAudioCharacterMap, segment: DramaDirectorSegment, policy?: DramaDirectorPolicy): SmartAudioCharacterEntry {
+  const entry = resolveGeminiCastEntry(map, segment.utteranceType === 'chapter-title' && map.entries.Narrator ? 'Narrator' : segment.speaker);
+  if (segment.utteranceType !== 'chapter-title' || !policy?.chapterTitles?.voiceId) return entry;
+  if (!isSafeGeminiVoiceId(policy.chapterTitles.voiceId)) throw new CloudTtsInputError('Invalid Gemini chapter title voice.');
+  return { ...entry, name: 'Chapter title announcer', voiceId: policy.chapterTitles.voiceId,
+    description: 'Announce the supplied chapter heading clearly.', cloudDirection: undefined };
 }
 
 /** Stable character identity plus scene-specific acting directions. */
@@ -143,10 +153,12 @@ function formatPerformanceValue(value: string): string {
 export function buildGemini38SpeechStyle(
   segment: DramaDirectorSegment,
   entry: SmartAudioCharacterEntry,
-  _policy?: DramaDirectorPolicy,
+  policy?: DramaDirectorPolicy,
 ): string {
   const performance = segment.performance;
   const hints = [
+    segment.utteranceType === 'chapter-title' ? 'Announce this chapter title clearly; speak only the supplied heading' : '',
+    dramaSpeechDeliveryHint(segment.utteranceType, policy?.speechTypes),
     entry.cloudDirection?.audioProfile || entry.description,
     performance.primaryEmotion !== 'neutral' ? performance.primaryEmotion : '',
     ...performance.secondaryEmotions,
@@ -212,7 +224,7 @@ export function buildGeminiDramaTtsRequest(input: {
   if (input.segment.omit_from_audio) {
     throw new CloudTtsInputError('An omitted segment cannot be synthesized.');
   }
-  const entry = resolveGeminiCastEntry(input.characterMap, input.segment.speaker);
+  const entry = resolveGeminiDramaVoiceEntry(input.characterMap, input.segment, input.policy);
   const requestText = renderProviderAwareDramaText({ provider: 'gemini', sourceText: input.segment.text, events: input.segment.performance.tags });
   const style = buildGemini38SpeechStyle(input.segment, entry, input.policy);
   const modelName = input.modelName

@@ -34,6 +34,7 @@ vi.mock('@/lib/server/audiobooks/blobstore', () => ({
 import { processAudiobookQueue } from '@/lib/server/audiobooks/worker';
 import { PUT } from '@/app/api/audiobooks/queue/route';
 import { GET as failureLog } from '@/app/api/audiobook/failure-log/route';
+import { GET as reviewFlags } from '@/app/api/audiobook/review-flags/route';
 import { readAudiobookCompleteness, assertAudiobookComplete } from '@/lib/server/audiobooks/completeness';
 import { classifyAudiobookFailure, planProviderRetry, PROVIDER_RETRY_BUDGET } from '@/lib/shared/audiobook-processing-failure';
 import { resolveAudiobookJobDescriptiveState } from '@/lib/shared/audiobook-job-status';
@@ -68,6 +69,25 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response()));
 });
 afterEach(() => { sqlite.close(); globalState.__worker_booted = oldBoot; vi.unstubAllGlobals(); });
+
+test('successful fallback notices stay in diagnostics without becoming failures or active review issues', async () => {
+  const flags = [
+    { id: 'backup', chapterIndex: 0, timestampMs: 1500, timestampKnown: true, createdAt: 1, kind: 'tts-fallback-used', reason: 'Gemini TTS used the backup API key with model gemini-3.8-flash-tts.', segmentNumber: 2 },
+    { id: 'repair', chapterIndex: 0, timestampMs: 0, createdAt: 1, kind: 'director-validation-repair', reason: 'Director output required validation repair 1.' },
+  ];
+  mocks.db.insert(schema.documentSettings).values({ documentId: 'book', userId: 'owner', dataJson: JSON.stringify({ schemaVersion: 1, smartAudioReviewFlags: flags }), updatedAt: 1, clientUpdatedAtMs: 1 }).run();
+  for (const suffix of ['', '&chapterIndex=0']) {
+    const report = await (await failureLog(new NextRequest('http://localhost/api/audiobook/failure-log?bookId=book' + suffix))).json();
+    expect(report.failures).toEqual([]); expect(report.reviewFlags).toHaveLength(2);
+    expect(report.reviewFlags[0]).toMatchObject({ timestampMs: 1500, timestampKnown: true, segmentNumber: 2 });
+  }
+  expect(await (await reviewFlags(new NextRequest('http://localhost/api/audiobook/review-flags?documentId=book'))).json()).toEqual({ flags: [] });
+  const failed = { ...flags[1], id: 'failed', reason: 'Drama Director output failed validation: invalid speaker.' };
+  mocks.db.update(schema.documentSettings).set({ dataJson: JSON.stringify({ schemaVersion: 1, smartAudioReviewFlags: [...flags, failed] }) }).where(eq(schema.documentSettings.documentId, 'book')).run();
+  const report = await (await failureLog(new NextRequest('http://localhost/api/audiobook/failure-log?bookId=book'))).json();
+  expect(report.failures[0].errors).toEqual(['Drama Director output failed validation: invalid speaker.']);
+  expect((await (await reviewFlags(new NextRequest('http://localhost/api/audiobook/review-flags?documentId=book'))).json()).flags.map((flag: { id: string }) => flag.id)).toEqual(['failed']);
+});
 
 test.each([429, 503])('Gemini HTTP %s persists cooldown, retains diagnostics, never creates false review, and skips recorded chapters', async status => {
   mocks.nats.mockResolvedValue({ data: Buffer.from(JSON.stringify({ status: 'success', cleaned_text: 'The λόγος remains.' })) });

@@ -142,6 +142,7 @@ export function buildDramaDirectorPrompt(input: { sourceText: string; castNames:
     'Return direction metadata over immutable source span IDs. Cover EVERY ID exactly once in supplied order. Each segment.spanIds is a non-empty contiguous group. Never return text, offsets, rewritten source, or voiceId.',
     'Use only cast names supplied below for speaker. Never choose or emit a voiceId.',
     'Start a new segment whenever the speaker or utterance type changes. Keep narration and speech attribution in narrator segments, separate from character dialogue, internal thoughts, and squad-link turns. Never combine different speakers into one segment.',
+    'Classify standalone chapter headings as chapter-title with speaker Narrator, separate from the surrounding narration. Keep their source spans even when title recording is disabled; the recording layer decides whether to speak them.',
     'Formatting is evidence, not proof of utterance type. Internal thought and squad-link may both be italicized; use narrative context. Squad-link uses the character’s natural voice, never an automatic whisper.',
     'Authority is not loudness. High intensity can be quiet and low energy. Performance can change within a thought; split between source spans when needed. Default to tags: []; use vocal cues only for localized effects. A pause applies after the referenced source spans; split at the intended boundary for a pause inside a line.',
     `utteranceType: ${JSON.stringify(DRAMA_UTTERANCE_TYPES)}`,

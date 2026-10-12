@@ -16,9 +16,10 @@ vi.mock('@/lib/server/smart-audio-profiles', () => ({
   findSmartAudioProfileById: (profiles: Array<{ id: string }>, id: string) => profiles.find((profile) => profile.id === id),
 }));
 
-import { GET, POST } from '@/app/api/audiobook/drama-segments/route';
-import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
+import { GET, POST, PUT } from '@/app/api/audiobook/drama-segments/route';
+import { saveDramaSpeakerReview, validateSavedDramaReview, dramaCastHash, loadReusableDramaReview } from '@/lib/server/audiobooks/drama-speaker-review';
 import { getMatchingDramaSpeakerReview } from '@/lib/shared/drama-speaker-review';
+import { normalizeDramaSpeechSettings } from '@/lib/shared/drama-speech-settings';
 
 const segment: DramaDirectorSegment = {
   speaker: 'Bethany', utteranceType: 'spoken-dialogue', text: 'Understood.', sceneContext: 'Ali waits for a reply.', omit_from_audio: false,
@@ -38,9 +39,12 @@ const request = () => new NextRequest('http://localhost/api/audiobook/drama-segm
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.mockResolvedValue({ userId: 'owner' });
-  mocks.rows = [[{ id: 'book' }], [{ dataJson: JSON.stringify({ smartAudioCharacters: map }) }]];
+  mocks.rows = [[{ id: 'book' }], [{ dataJson: JSON.stringify({ smartAudioCharacters: map }) }], [], [], [{ dataJson: JSON.stringify({ smartAudioCharacters: map }) }]];
   mocks.profiles.mockResolvedValue([profile]);
-  mocks.get.mockResolvedValue(Buffer.from(segment.text));
+  mocks.get.mockImplementation(async (_book, _user, file) => {
+    if (file.endsWith('drama_segments.json')) throw new Error('missing');
+    return Buffer.from(segment.text);
+  });
   mocks.put.mockResolvedValue(undefined);
   mocks.generate.mockResolvedValue({ segments: [segment], audioBuffer: Buffer.alloc(0), reviewFlags: [] });
 });
@@ -72,7 +76,7 @@ describe('Gemini Drama speaker review', () => {
   it('falls back to rejected text for failed chapters', async () => {
     mocks.get.mockRejectedValueOnce(new Error('missing')).mockResolvedValueOnce(Buffer.from(segment.text));
     expect((await POST(request())).status).toBe(200);
-    expect(mocks.get.mock.calls.map((call) => call[2])).toEqual(['0001__text.txt', '0001__rejected.txt']);
+    expect(mocks.get.mock.calls.slice(0, 2).map((call) => call[2])).toEqual(['0001__text.txt', '0001__rejected.txt']);
   });
 
   it('does not contact Gemini or storage for a book owned by someone else', async () => {
@@ -95,5 +99,86 @@ describe('Gemini Drama speaker review', () => {
     const response = await GET(new NextRequest('http://localhost/api/audiobook/drama-segments?bookId=book&chapterIndex=0'));
     expect((await response.json()).review.segments[0].speaker).toBe('Bethany');
     expect(mocks.generate).not.toHaveBeenCalled();
+  });
+
+  const saved = () => ({ schemaVersion: 1 as const, chapterIndex: 0, profileId: 'drama', sourceText: segment.text,
+    complete: true, preparedOnly: true, revision: 'revision-1', castHash: dramaCastHash(map), segments: [{ ...segment, voiceId: 'Kore' }] });
+
+  it.each(['revision', 'text', 'cast', 'running'])('does not overwrite changes to %s while the Director prepares turns', async conflict => {
+    let generated = false;
+    mocks.generate.mockImplementation(async () => { generated = true; return { segments: [segment] }; });
+    mocks.get.mockImplementation(async (_book, _user, file) => {
+      if (file.endsWith('drama_segments.json')) {
+        if (generated && conflict === 'revision') return Buffer.from(JSON.stringify(saved()));
+        throw new Error('missing');
+      }
+      return Buffer.from(generated && conflict === 'text' ? 'Changed.' : segment.text);
+    });
+    if (conflict === 'running') mocks.rows[3] = [{ id: 'job' }];
+    if (conflict === 'cast') mocks.rows[4] = [{ dataJson: JSON.stringify({ smartAudioCharacters: { ...map, entries: { ...map.entries, Ali: { ...map.entries.Ali, voiceId: 'Puck' } } } }) }];
+    expect((await POST(request())).status).toBe(409);
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+  const correction = (patch: Record<string, unknown> = {}) => new NextRequest('http://localhost/api/audiobook/drama-segments', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookId: 'book', chapterIndex: 0,
+      revision: 'revision-1', turns: [{ index: 0, speaker: 'Ali', utteranceType: 'squad-link' }],
+      speechTypes: normalizeDramaSpeechSettings({ 'squad-link': { effect: 'cb-radio', strength: 50 } }), ...patch }),
+  });
+  function correctionStorage() {
+    const review = saved();
+    mocks.rows = [[{ id: 'book' }], [], [{ dataJson: JSON.stringify({ smartAudioCharacters: map }) }], []];
+    mocks.get.mockImplementation(async (_book, _user, file) => Buffer.from(file.endsWith('drama_segments.json') ? JSON.stringify(review) : segment.text));
+    return review;
+  }
+
+  it('saves user classifications and effects without synthesis, source edits or audio writes', async () => {
+    correctionStorage();
+    const response = await PUT(correction());
+    expect(response.status).toBe(200);
+    const { review } = await response.json();
+    expect(review.segments[0]).toMatchObject({ speaker: 'Ali', utteranceType: 'squad-link', voiceId: 'Kore', text: segment.text });
+    expect(review.reviewedAt).toBeGreaterThan(0); expect(review.revision).not.toBe('revision-1');
+    expect(review.speechTypes['squad-link'].effect).toBe('cb-radio');
+    expect(validateSavedDramaReview(review, { sourceText: segment.text, characterMap: map, profileId: 'drama' })[0].speaker).toBe('Ali');
+    expect(mocks.put.mock.calls.map(call => call[2])).toEqual(['0001__drama_segments.json']);
+    expect(mocks.generate).not.toHaveBeenCalled();
+  });
+
+  it.each(['revision', 'text', 'cast', 'running', 'speaker', 'speech-type'])('refuses %s conflicts or invalid choices before any write', async conflict => {
+    correctionStorage();
+    let patch: Record<string, unknown> = {};
+    if (conflict === 'revision') patch = { revision: 'stale' };
+    if (conflict === 'text') mocks.get.mockImplementation(async (_book, _user, file) => Buffer.from(file.endsWith('drama_segments.json') ? JSON.stringify(saved()) : 'Changed.'));
+    if (conflict === 'cast') mocks.rows[2] = [{ dataJson: JSON.stringify({ smartAudioCharacters: { ...map, entries: { ...map.entries, Ali: { ...map.entries.Ali, voiceId: 'Puck' } } } }) }];
+    if (conflict === 'running') mocks.rows[1] = [{ id: 'job' }];
+    if (conflict === 'speaker' || conflict === 'speech-type') patch = { turns: [{ index: 0, speaker: conflict === 'speaker' ? 'Unknown' : 'Ali', utteranceType: conflict === 'speech-type' ? 'invented' : 'squad-link' }] };
+    expect((await PUT(correction(patch))).status).toBe(['speaker', 'speech-type'].includes(conflict) ? 400 : 409);
+    expect(mocks.put).not.toHaveBeenCalled(); expect(mocks.generate).not.toHaveBeenCalled();
+  });
+
+  it('does not allow uploaded turn text or performance to replace authoritative direction', async () => {
+    correctionStorage();
+    const response = await PUT(correction({ turns: [{ index: 0, speaker: 'Ali', utteranceType: 'internal-thought', text: 'Replacement.', omit_from_audio: true, performance: { primaryEmotion: 'invented' }, voiceId: 'Unknown' }] }));
+    expect(response.status).toBe(200);
+    const { review } = await response.json();
+    expect(review.segments[0]).toMatchObject({ text: segment.text, omit_from_audio: false, performance: segment.performance, voiceId: 'Kore' });
+  });
+
+  it('saves a chapter-title classification with the selected title voice, retaining the cast', async () => {
+    correctionStorage();
+    const response = await PUT(correction({ turns: [{ index: 0, speaker: 'Ali', utteranceType: 'chapter-title' }], chapterTitles: { enabled: true, voiceId: 'Puck' } }));
+    expect(response.status).toBe(200);
+    const { review } = await response.json();
+    expect(review.chapterTitles).toEqual({ enabled: true, voiceId: 'Puck' });
+    expect(review.segments[0]).toMatchObject({ utteranceType: 'chapter-title', voiceId: 'Puck', text: segment.text });
+    expect(map.entries.Ali.voiceId).toBe('Kore');
+    expect(validateSavedDramaReview(review, { sourceText: segment.text, characterMap: map, profileId: 'drama' })).toHaveLength(1);
+  });
+
+  it('rejects stale explicitly reviewed direction while treating old automatic artifacts as non-reusable', async () => {
+    mocks.get.mockResolvedValue(Buffer.from(JSON.stringify({ ...saved(), reviewedAt: 1 })));
+    await expect(loadReusableDramaReview({ bookId: 'book', userId: 'owner', chapterIndex: 0, profileId: 'drama', sourceText: 'Changed.', characterMap: map })).rejects.toThrow(/no longer matches/);
+    mocks.get.mockResolvedValue(Buffer.from(JSON.stringify({ ...saved(), castHash: undefined })));
+    expect(await loadReusableDramaReview({ bookId: 'book', userId: 'owner', chapterIndex: 0, profileId: 'drama', sourceText: segment.text, characterMap: map })).toBeNull();
   });
 });

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ direct: vi.fn(), synthesize: vi.fn(), concat: vi.fn(), silent: vi.fn() }));
-vi.mock('@/lib/server/smart-audio/gemini-cast-helpers', () => ({
+vi.mock('@/lib/server/smart-audio/gemini-cast-helpers', async importOriginal => ({
+  ...await importOriginal<typeof import('@/lib/server/smart-audio/gemini-cast-helpers')>(),
   getGeminiTtsCharacterMapReadiness: async ({ value }: { value: unknown }) => ({ ready: true, map: value }),
 }));
 vi.mock('@/lib/server/smart-audio/drama-director', () => ({ directDramaWithGemini: mocks.direct }));

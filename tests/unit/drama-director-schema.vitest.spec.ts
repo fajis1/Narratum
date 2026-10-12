@@ -18,9 +18,9 @@ import { DRAMA_ALLOWED_TAG_SET } from '../../src/lib/server/smart-audio/google-c
 import type { DramaDirectorSegment } from '../../src/lib/shared/drama-director-schema';
 
 describe('Drama Director schema', () => {
-  it('covers the four utterance types and author-specific social intents', () => {
+  it('covers speech and chapter-title types and author-specific social intents', () => {
     expect(DRAMA_UTTERANCE_TYPES).toEqual([
-      'narration', 'spoken-dialogue', 'internal-thought', 'squad-link',
+      'narration', 'spoken-dialogue', 'internal-thought', 'squad-link', 'chapter-title',
     ]);
     expect(DRAMA_SOCIAL_INTENTS).toEqual(expect.arrayContaining([
       'teasing', 'bantering', 'celebrating', 'complaining',

@@ -89,6 +89,8 @@ import { generateSegmentedAudiobookTtsBuffer } from '@/lib/server/audiobooks/seg
 import { CloudDramaGenerationError, generateCloudDramaAudiobook } from '@/lib/server/audiobooks/cloud-drama';
 import { getDramaDirectorAttemptCount, DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
 import { persistCloudDramaReviewFlags } from '@/lib/server/audiobooks/cloud-drama-review';
+import { loadReusableDramaReview } from '@/lib/server/audiobooks/drama-speaker-review';
+import { GeminiDramaQuotaTracker } from '@/lib/server/smart-audio/gemini-drama-quota';
 import { getGeminiTtsCharacterMapReadiness } from '@/lib/server/smart-audio/gemini-cast-helpers';
 import { resolveGeminiPrebuiltVoiceCatalog } from '@/lib/server/smart-audio/gemini-voice-catalog-cache';
 import { autoAssignGeminiMinorVoices } from '@/lib/shared/gemini-voice-matching';
@@ -1491,6 +1493,10 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       await updateProgress(Math.floor((processedLength / totalLength) * 100));
     };
 
+    const dramaQuotaTracker = new GeminiDramaQuotaTracker(jobSettings.dramaTtsQuotaCooldowns, Date.now, async entries => {
+      await updateClaimedAudiobookJob(job.id, 'running', { settingsJson: mergeJobSettings({ dramaTtsQuotaCooldowns: entries }) });
+    });
+
     for (const chapter of chapters) {
       setGeminiRecoveryChapter(chapter.index);
       // ABORT CHECK: If user cancelled/deleted the job from the UI, abort processing
@@ -2038,8 +2044,13 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
       try {
         if (selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE) {
           try {
+            const savedReview = await loadReusableDramaReview({ bookId, userId, chapterIndex: chapter.index,
+              profileId: selectedProfile.id, sourceText: processedTextForTts,
+              characterMap: resolvedDocumentSettings.smartAudioCharacters!, namespace: testNamespace });
             const drama = await generateCloudDramaAudiobook({
+              savedReview, profileId: selectedProfile.id, quotaTracker: dramaQuotaTracker,
               cleanedText: processedTextForTts,
+              chapterTitle: chapter.title,
               deferProviderFailures: true,
               characterMap: resolvedDocumentSettings.smartAudioCharacters!,
               geminiApiKey: selectedProfile.geminiApiKey || '',
@@ -2050,7 +2061,8 @@ async function processSingleAudiobookJobWithRecovery(job: typeof audiobookJobs.$
               onDirectedSegments: async (segments, complete) => {
                 await saveDramaSpeakerReview({ bookId, userId, chapterIndex: chapter.index,
                   profileId: selectedProfile.id, sourceText: processedTextForTts,
-                  characterMap: resolvedDocumentSettings.smartAudioCharacters!, segments, complete, namespace: testNamespace });
+                  characterMap: resolvedDocumentSettings.smartAudioCharacters!, segments, complete, namespace: testNamespace,
+                  speechTypes: savedReview?.speechTypes, reviewedAt: savedReview?.reviewedAt, chapterTitles: savedReview?.chapterTitles });
               },
               onTtsAttempt: createTtsAttemptRecorder({ bookId, userId, chapterIndex: chapter.index,
                 jobId: job.id, profileId: selectedProfile.id, namespace: testNamespace }),

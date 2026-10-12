@@ -187,6 +187,8 @@ export interface SmartAudioReviewFlag {
   reason?: string;
   chunkIndex?: number;
   attempts?: number;
+  segmentNumber?: number;
+  timestampKnown?: boolean;
 }
 
 export interface DocumentSettings {

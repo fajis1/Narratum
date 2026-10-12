@@ -1,7 +1,7 @@
 import { persistAudiobookChapter } from '@/lib/server/audiobooks/chapter-record';
 import { sourceRecoveryPronunciations, assertRecoveredReadings } from '@/lib/shared/source-recovery';
 import type { SourceRecoverySnapshot } from '@/types/source-recovery';
-import { saveDramaSpeakerReview } from '@/lib/server/audiobooks/drama-speaker-review';
+import { saveDramaSpeakerReview, loadReusableDramaReview } from '@/lib/server/audiobooks/drama-speaker-review';
 import { createTtsAttemptRecorder } from '@/lib/server/audiobooks/troubleshooting';
 import { saveDramaTtsDiagnostic } from '@/lib/server/audiobooks/drama-tts-diagnostics';
 import { NextRequest, NextResponse } from 'next/server';
@@ -730,9 +730,12 @@ export async function POST(request: NextRequest) {
     // ==========================================
     let processedTextForTts = data.text;
     let smartAudioOmitted = false;
+    const reviewedDirection = cloudDramaCast && selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
+      ? await loadReusableDramaReview({ bookId, userId: storageUserId, chapterIndex,
+        profileId: selectedProfile.id, sourceText: data.text, characterMap: cloudDramaCast, namespace: testNamespace }) : null;
 
     // ONLY run the Python worker if the frontend toggle is switched ON
-    if (useSmartAudio && profilesDocument) {
+    if (useSmartAudio && profilesDocument && !reviewedDirection?.reviewedAt && !reviewedDirection?.preparedOnly) {
         const geminiApiKey = (selectedProfile?.geminiApiKey || '').trim();
         if (scholarScanIncomplete && confirmScholarAutoScan && selectedProfile) {
           const previousBookLexicon = bookLexicon?.profileId === selectedProfile.id
@@ -1099,13 +1102,18 @@ export async function POST(request: NextRequest) {
     const ttsBuffer = cloudDramaCast && selectedProfile?.workerMode === DRAMA_GEMINI_TTS_WORKER_MODE
       ? await (async () => {
         try {
+          const savedReview = reviewedDirection ?? await loadReusableDramaReview({ bookId, userId: storageUserId, chapterIndex,
+            profileId: selectedProfile.id, sourceText: processedTextForTts, characterMap: cloudDramaCast, namespace: testNamespace });
           const drama = await generateCloudDramaAudiobook({
+            savedReview, profileId: selectedProfile.id,
             cleanedText: processedTextForTts,
+            chapterTitle: data.chapterTitle,
             characterMap: cloudDramaCast,
             onDirectedSegments: async (segments, complete) => {
               await saveDramaSpeakerReview({ bookId, userId: storageUserId, chapterIndex,
                 profileId: selectedProfile.id, sourceText: processedTextForTts,
-                characterMap: cloudDramaCast, segments, complete, namespace: testNamespace });
+                characterMap: cloudDramaCast, segments, complete, namespace: testNamespace,
+                speechTypes: savedReview?.speechTypes, reviewedAt: savedReview?.reviewedAt, chapterTitles: savedReview?.chapterTitles });
             },
             onTtsAttempt: createTtsAttemptRecorder({ bookId, userId: storageUserId, chapterIndex,
               profileId: selectedProfile.id, namespace: testNamespace }),

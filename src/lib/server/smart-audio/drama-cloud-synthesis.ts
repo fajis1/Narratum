@@ -13,6 +13,7 @@ import {
 } from './google-cloud-tts-client';
 import type { CloudTtsSynthesisOptions, CloudTtsSynthesisResult } from './google-cloud-tts-client';
 import { serverLogger } from '@/lib/server/logger';
+import type { GeminiDramaQuotaTracker } from './gemini-drama-quota';
 
 const oneShot = new Set<string>(DRAMA_ONE_SHOT_TAGS);
 const style = new Set<string>(DRAMA_STYLE_TAGS);
@@ -26,6 +27,8 @@ export interface DramaSynthesisReviewFlag {
   chunkIndex: number;
   attempts: number;
   reason: string;
+  timestampMs?: number;
+  segmentNumber?: number;
 }
 
 export interface DramaSynthesisChunk {
@@ -365,6 +368,7 @@ export async function synthesizeGeminiDramaSegment(input: {
   wait?: (milliseconds: number) => Promise<void>;
   signal?: AbortSignal;
   deferProviderFailures?: boolean;
+  quotaTracker?: GeminiDramaQuotaTracker;
 }): Promise<DramaSynthesisResult> {
   if (input.segment.omit_from_audio) {
     return { chunks: [{ sourceText: input.segment.text, requestText: '', audioBuffer: null, needsPlaceholder: false, omitted: true }], reviewFlags: [] };
@@ -407,11 +411,14 @@ export async function synthesizeGeminiDramaSegment(input: {
     let succeeded = false;
     let quotaRetryAfterMs: number | undefined;
     let quotaError: GeminiTtsApiError | undefined;
+    const cooldowns: number[] = [];
     for (const [keyIndex, apiKey] of keys.entries()) {
-      if (keyIndex > 0) serverLogger.warn({
+      if (keyIndex > 0 && attempts > 0) serverLogger.warn({
         event: 'gemini.tts.failover.backup_key', chunkIndex: index, requestedModel,
       }, 'Primary Gemini TTS model chain exhausted; switching to the backup API key');
       for (const [modelIndex, modelName] of models.entries()) {
+        const remaining = input.quotaTracker?.remaining(apiKey, modelName) ?? 0;
+        if (remaining > 0) { cooldowns.push(remaining); continue; }
         for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
           input.signal?.throwIfAborted();
           attempts += 1;
@@ -444,6 +451,7 @@ export async function synthesizeGeminiDramaSegment(input: {
             lastError = error;
             if (error instanceof GeminiTtsApiError && (error.statusCode === 429 || error.providerStatus === 'RESOURCE_EXHAUSTED')) {
               quotaError = error;
+              await input.quotaTracker?.defer(apiKey, modelName, error.retryAfterMs);
               if (error.retryAfterMs !== undefined) quotaRetryAfterMs = Math.max(quotaRetryAfterMs ?? 0, error.retryAfterMs);
               // Quota retries on the same key/model cannot recover before Retry-After.
               // Try independent models/credentials, then let the durable worker schedule recovery.
@@ -457,10 +465,17 @@ export async function synthesizeGeminiDramaSegment(input: {
       }
       if (succeeded) break;
       // Input/schema failures are not repaired by changing credentials.
-      if (!(lastError instanceof GeminiTtsTransportError) && !(lastError instanceof GeminiTtsApiError &&
+      if (lastError && !(lastError instanceof GeminiTtsTransportError) && !(lastError instanceof GeminiTtsApiError &&
           ([401, 402, 403, 404, 429, 500, 502, 503, 504].includes(lastError.statusCode) || lastError.providerStatus === 'RESOURCE_EXHAUSTED'))) break;
     }
     if (!succeeded) {
+      if (input.quotaTracker) {
+        const remaining = keys.flatMap(key => models.map(model => input.quotaTracker!.remaining(key, model)));
+        if (remaining.length && remaining.every(ms => ms > 0)) throw new GeminiTtsQuotaExhaustedError(
+          'Available Gemini TTS credentials and models are still in provider cooldown (HTTP 429).', 429, Math.min(...remaining));
+      }
+      if (!lastError && cooldowns.length) throw new GeminiTtsQuotaExhaustedError(
+        'Available Gemini TTS credentials and models are still in provider cooldown (HTTP 429).', 429, Math.min(...cooldowns));
       if (input.deferProviderFailures && lastError instanceof Error) throw lastError;
       if (quotaError) {
         throw new GeminiTtsQuotaExhaustedError(

@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 // Render the real Next.js page/components. All browser APIs are intercepted;
 // these interaction tests never enqueue production TTS/AI jobs or modify books.
-async function setupReview(page: Page, options: { flags?: boolean; job?: boolean; jobType?: string; cleanedText?: string; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean; globalDrama?: boolean; bookDrama?: boolean; noBookProfile?: boolean; pronunciationText?: string; savedPronunciationIssue?: boolean; approvedOverrideTextHash?: string } = {}) {
+async function setupReview(page: Page, options: { speakerTurns?: boolean; reviewSaveConflict?: boolean; flags?: boolean; job?: boolean; jobType?: string; cleanedText?: string; drama?: boolean; delayedSave?: boolean; delayedPoll?: boolean; globalDrama?: boolean; bookDrama?: boolean; noBookProfile?: boolean; pronunciationText?: string; savedPronunciationIssue?: boolean; approvedOverrideTextHash?: string } = {}) {
   await page.addInitScript(() => localStorage.setItem('cookie-consent', 'declined'));
   const chapters = [
     { index: 2, title: 'Opening', format: 'mp3', hasAudio: true },
@@ -17,11 +17,17 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
   let pollWaiting = false;
   let saveFails = false;
   let releaseSave: (() => void) | undefined;
+  let savedTurnReview = {
+    schemaVersion: 1, chapterIndex: 2, profileId: 'profile', sourceText: 'Opening text.', complete: true, preparedOnly: false, revision: 'turn-revision-1',
+    segments: [{ speaker: 'Narrator', voiceId: 'Kore', text: 'Opening text.', utteranceType: 'narration', sceneContext: 'Opening.', omit_from_audio: false,
+      performance: { primaryEmotion: 'neutral', secondaryEmotions: [], socialIntent: 'none', delivery: ['natural'], pace: 'normal', energy: 'normal', intensity: 'medium', tags: [] } }],
+  };
+  let savedChapterTitles = { enabled: false, voiceId: '' };
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname;
-    const body = request.method() === 'POST' ? request.postDataJSON() as Record<string, unknown> : null;
+    const body = ['POST', 'PUT'].includes(request.method()) ? request.postDataJSON() as Record<string, unknown> : null;
     requests.push({ path: pathname, method: request.method(), body });
     const json = (value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
     if (pathname.includes('/auth/get-session')) return json({ user: { id: 'review-fixture', name: 'Reviewer', email: 'review@example.test', isAnonymous: false }, session: { id: 'fixture', expiresAt: '2099-01-01T00:00:00.000Z', userId: 'review-fixture' } });
@@ -45,7 +51,20 @@ async function setupReview(page: Page, options: { flags?: boolean; job?: boolean
     }
     if (pathname === '/api/tts-settings') return json({ smartAudioProfiles: [{ id: 'profile', name: 'Biblical Scholarship', aiModel: 'test-model', workerMode: options.bookDrama ? 'drama-gemini-tts' : options.drama ? 'multi-voice' : 'standard', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }, ...(options.globalDrama ? [{ id: 'global-drama', name: 'Global Drama', aiModel: 'test-model', workerMode: 'drama-gemini-tts', abbreviations: {}, books: {}, pronunciations: {}, customTtsPrompt: '' }] : [])], selectedSmartAudioProfileId: options.globalDrama ? 'global-drama' : 'profile' });
     if (pathname === '/api/audiobooks/pronunciation-issues') return json({ repairs: options.approvedOverrideTextHash ? [{ changeId: 'approved-change', runId: 'approved-run', fileName: '0003__text.txt', chapterIndex: 2, title: 'Opening', decision: 'approved', audioStatus: 'completed', unresolvedCount: 0, ready: false, approvedOverrideTextHash: options.approvedOverrideTextHash }] : options.savedPronunciationIssue ? [{ changeId: 'pronunciation-change', runId: 'pronunciation-run', fileName: '0010__text.txt', chapterIndex: 9, title: 'Closing', decision: 'pending', audioStatus: 'not_requested', unresolvedCount: 2, ready: false }] : [] });
-    if (pathname === '/api/audiobook/drama-segments') return json({ review: null });
+    if (pathname === '/api/audiobook/drama-segments') {
+      if (!options.speakerTurns) return json({ review: null });
+      if (request.method() === 'PUT') {
+        if (options.reviewSaveConflict) return json({ error: 'Speaker review changed. Refresh before saving your corrections.' }, 409);
+        const turns = body?.turns as Array<{ speaker: string; utteranceType: string }>;
+        savedTurnReview = { ...savedTurnReview, revision: 'turn-revision-2', preparedOnly: true,
+          segments: savedTurnReview.segments.map((turn, index) => ({ ...turn, speaker: turns[index].speaker, utteranceType: turns[index].utteranceType, voiceId: turns[index].speaker === 'Bethany' ? 'Puck' : 'Kore' })) };
+        savedChapterTitles = body?.chapterTitles as typeof savedChapterTitles ?? savedChapterTitles;
+        return json({ review: { ...savedTurnReview, speechTypes: body?.speechTypes, chapterTitles: savedChapterTitles, reviewedAt: 1 } });
+      }
+      return json({ review: savedTurnReview, chapterTitles: savedChapterTitles, castNames: ['Narrator', 'Bethany'], castVoices: { Narrator: { voiceId: 'Kore' }, Bethany: { voiceId: 'Puck' } } });
+    }
+    if (pathname === '/api/audiobook/voices/gemini') return json({ voices: [{ id: 'Kore', displayName: 'Kore' }, { id: 'Puck', displayName: 'Puck' }] });
+    if (pathname === '/api/audiobook/characters/preview') return json({ error: 'Fixture preview stopped before synthesis.' }, 503);
     if (pathname === '/api/audiobooks/batch-regenerate') return json(body?.dryRun ? { needsRegeneration: [{ modifiedChunks: 2 }] } : { success: true });
     if (pathname === '/api/audiobooks/fix-abbreviations-all') return json({ modifiedCount: 0 });
     if (pathname === '/api/audiobooks/queue') return json({ jobs: options.job ? [{ id: 'job-fixture', documentId: 'review-fixture', status: 'running', progress: 46, settingsJson: { jobType: options.jobType || 'batch-refine', ...(options.jobType && options.jobType !== 'batch-refine' ? {} : { batchRefineRunId: 'run-fixture' }) } }] : [] });
@@ -408,6 +427,70 @@ test('a saved Gemini Drama book still opens its speaker review', async ({ page }
   await setupReview(page, { bookDrama: true });
   await expect(page.getByText('This chapter has no saved Gemini speaker assignments yet.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Prepare speaker review', exact: true })).toBeVisible();
+});
+
+test('Gemini speech sounds and classifications save explicitly, survive polls and reach preview without automatic synthesis', async ({ page }) => {
+  const fixture = await setupReview(page, { bookDrama: true, speakerTurns: true });
+  await page.getByRole('combobox', { name: 'Turn 1 speaker', exact: true }).selectOption('Bethany');
+  await page.getByRole('combobox', { name: 'Turn 1 speech type', exact: true }).selectOption('squad-link');
+  await page.getByRole('combobox', { name: 'Squad link sound', exact: true }).selectOption('cb-radio');
+  await page.getByRole('slider', { name: 'Squad link effect strength', exact: true }).fill('60');
+  await page.getByRole('combobox', { name: 'Squad link radio texture', exact: true }).selectOption('both');
+  await page.getByRole('combobox', { name: 'Squad link delivery', exact: true }).selectOption('urgent');
+  await page.waitForTimeout(5200);
+  await expect(page.getByRole('combobox', { name: 'Turn 1 speaker', exact: true })).toHaveValue('Bethany');
+  expect(fixture.requests.some(r => r.method === 'POST' && (r.path === '/api/audiobook/characters/preview' || r.path === '/api/audiobook/chapter'))).toBe(false);
+  await page.getByRole('button', { name: 'Preview character sample', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Gemini Drama speaker turns' }).getByRole('alert')).toContainText('Could not preview');
+  const preview = fixture.requests.find(r => r.path === '/api/audiobook/characters/preview')?.body;
+  expect(preview).toMatchObject({ characterName: 'Bethany', voiceName: 'Puck', utteranceType: 'squad-link', speechTypes: { 'squad-link': { effect: 'cb-radio', strength: 60, delivery: 'urgent', radioTexture: 'both' } } });
+  await page.getByRole('button', { name: 'Save speaker turns and sounds', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Re-record this chunk' })).toBeVisible();
+  const saved = fixture.requests.find(r => r.path === '/api/audiobook/drama-segments' && r.method === 'PUT')?.body;
+  expect(saved).toMatchObject({ revision: 'turn-revision-1', turns: [{ index: 0, speaker: 'Bethany', utteranceType: 'squad-link' }] });
+  expect(fixture.requests.filter(r => r.path === '/api/audiobook/chapter' && r.method === 'POST')).toHaveLength(0);
+});
+
+test('Gemini review conflicts retain unsaved speech choices for correction', async ({ page }) => {
+  await setupReview(page, { bookDrama: true, speakerTurns: true, reviewSaveConflict: true });
+  await page.getByRole('combobox', { name: 'Turn 1 speech type', exact: true }).selectOption('internal-thought');
+  await page.getByRole('combobox', { name: 'Internal thought sound', exact: true }).selectOption('inner-voice');
+  await page.getByRole('button', { name: 'Save speaker turns and sounds', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Gemini Drama speaker turns' }).getByRole('alert')).toContainText('Speaker review changed');
+  await expect(page.getByRole('combobox', { name: 'Turn 1 speech type', exact: true })).toHaveValue('internal-thought');
+  await expect(page.getByRole('combobox', { name: 'Internal thought sound', exact: true })).toHaveValue('inner-voice');
+  await expect(page.getByRole('button', { name: 'Save speaker turns and sounds', exact: true })).toBeEnabled();
+  await next(page).click();
+  await expect(page.getByRole('heading', { name: 'Review: Opening', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edit full text', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Discard edits and reload saved turns', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Turn 1 speech type', exact: true })).toHaveValue('narration');
+  await expect(page.getByRole('combobox', { name: 'Internal thought sound', exact: true })).toHaveValue('clean');
+  await expect(page.getByRole('button', { name: 'Save speaker turns and sounds', exact: true })).toBeDisabled();
+  await next(page).click();
+  await expect(page.getByRole('heading', { name: 'Review: Needs attention', exact: true })).toBeVisible();
+});
+
+test('Gemini chapter title recording and its separate voice save explicitly and reach title preview', async ({ page }) => {
+  const fixture = await setupReview(page, { bookDrama: true, speakerTurns: true });
+  const title = page.getByRole('article', { name: 'Chapter title announcement', exact: true });
+  await expect(title).toContainText('Opening');
+  await expect(title.getByRole('button', { name: 'Preview chapter title', exact: true })).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'Read chapter titles', exact: true }).check();
+  const voice = page.getByRole('combobox', { name: 'Chapter title voice', exact: true });
+  await expect(voice.getByRole('option', { name: 'Puck', exact: true })).toHaveCount(1);
+  await voice.selectOption('Puck');
+  await expect(title).toContainText('Puck');
+  await expect(page.getByRole('combobox', { name: 'Turn 2 speech type', exact: true }).getByRole('option', { name: 'Chapter title', exact: true })).toHaveCount(1);
+  await title.getByRole('button', { name: 'Preview chapter title', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Gemini Drama speaker turns' }).getByRole('alert')).toContainText('Could not preview');
+  expect(fixture.requests.find(request => request.path === '/api/audiobook/characters/preview')?.body).toMatchObject({
+    text: 'Opening', characterName: 'Narrator', utteranceType: 'chapter-title', voiceName: 'Puck', chapterTitles: { enabled: true, voiceId: 'Puck' },
+  });
+  await page.getByRole('button', { name: 'Save speaker turns and sounds', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Re-record this chunk' })).toBeVisible();
+  expect(fixture.requests.find(request => request.path === '/api/audiobook/drama-segments' && request.method === 'PUT')?.body?.chapterTitles).toEqual({ enabled: true, voiceId: 'Puck' });
+  expect(fixture.requests.filter(request => request.path === '/api/audiobook/chapter' && request.method === 'POST')).toHaveLength(0);
 });
 
 test('pronunciation issues slowly cycle both controls ten times and disappear when fixed', async ({ page }) => {

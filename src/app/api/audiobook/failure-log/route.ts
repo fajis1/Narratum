@@ -14,6 +14,7 @@ import {
 import { getOpenReaderTestNamespace } from '@/lib/server/testing/test-namespace';
 import { normalizeSmartAudioReviewFlags } from '@/lib/shared/document-settings';
 import type { SmartAudioReviewFlag } from '@/types/document-settings';
+import { isDramaRecoveryNotice } from '@/lib/shared/drama-diagnostic-notices';
 
 export const dynamic = 'force-dynamic';
 
@@ -171,12 +172,13 @@ export async function GET(request: NextRequest) {
       }
 
       // If no file was found but there are review flags for this chapter, synthesize a failure item
-      if (!processedIndices.has(targetChapterIndex) && filteredReviewFlags.length > 0) {
+      const reviewFailures = filteredReviewFlags.filter(flag => !isDramaRecoveryNotice(flag));
+      if (!processedIndices.has(targetChapterIndex) && reviewFailures.length > 0) {
         failures.push({
           chapterIndex: targetChapterIndex,
           chapterTitle: `Chapter ${targetChapterIndex + 1}`,
-          errors: filteredReviewFlags.map((f) => `${f.speaker ? `[${f.speaker}] ` : ''}${f.reason || f.kind}`),
-          createdAt: filteredReviewFlags[0]?.createdAt,
+          errors: reviewFailures.map((f) => `${f.speaker ? `[${f.speaker}] ` : ''}${f.reason || f.kind}`),
+          createdAt: reviewFailures[0]?.createdAt,
         });
       }
     } else {
@@ -209,10 +211,11 @@ export async function GET(request: NextRequest) {
       }
 
       // Check review flags for chapters without an explicit failure file
-      const flaggedChapterIndices = Array.from(new Set(allReviewFlags.map((f) => f.chapterIndex)));
+      const reviewFailures = allReviewFlags.filter(flag => !isDramaRecoveryNotice(flag));
+      const flaggedChapterIndices = Array.from(new Set(reviewFailures.map((f) => f.chapterIndex)));
       for (const idx of flaggedChapterIndices) {
         if (idx !== undefined && !processedIndices.has(idx)) {
-          const chapterFlags = allReviewFlags.filter((f) => f.chapterIndex === idx);
+          const chapterFlags = reviewFailures.filter((f) => f.chapterIndex === idx);
           failures.push({
             chapterIndex: idx,
             chapterTitle: `Chapter ${idx + 1}`,

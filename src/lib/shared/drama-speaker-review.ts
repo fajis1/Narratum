@@ -1,4 +1,6 @@
 import type { DramaDirectorSegment } from './drama-director-schema';
+import type { DramaSpeechSettings } from './drama-speech-settings';
+import type { DramaChapterTitleSettings } from './drama-chapter-titles';
 
 export interface DramaSpeakerReviewTurn extends DramaDirectorSegment {
   voiceId: string;
@@ -13,6 +15,11 @@ export interface DramaSpeakerReview {
   complete: boolean;
   preparedOnly: boolean;
   segments: DramaSpeakerReviewTurn[];
+  revision?: string;
+  castHash?: string;
+  reviewedAt?: number;
+  speechTypes?: DramaSpeechSettings;
+  chapterTitles?: DramaChapterTitleSettings;
 }
 
 /** Edited text must never display assignments from a different transcript. */

@@ -155,7 +155,11 @@ export function batchAudiobookText(
 
     for (const paragraph of paragraphs) {
       const addedLength = paragraph.length + (currentText ? 2 : 0);
-      if (currentText && currentText.length + addedLength > targetCharacters) {
+      // PDF extraction may insert a blank line inside a sentence. The target
+      // is soft: keep its lowercase continuation with the preceding fragment.
+      const continuesSentence = currentText && !/[.!?…'"”’\]}):;]\s*$/u.test(currentText)
+        && /^[\p{Ll}\p{M}]/u.test(paragraph);
+      if (currentText && !continuesSentence && currentText.length + addedLength > targetCharacters) {
         flush();
       }
       if (!currentText) currentTitle = chapter.title;

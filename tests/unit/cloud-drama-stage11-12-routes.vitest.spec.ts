@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
+import { inspectDramaWav } from '@/lib/server/audiobooks/drama-audio-effects';
+
+function previewWav() {
+  const audio = Buffer.alloc(44 + 9600);
+  audio.write('RIFF'); audio.writeUInt32LE(audio.length - 8, 4); audio.write('WAVEfmt ', 8); audio.writeUInt32LE(16, 16);
+  audio.writeUInt16LE(1, 20); audio.writeUInt16LE(1, 22); audio.writeUInt32LE(24000, 24); audio.writeUInt32LE(48000, 28);
+  audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36); audio.writeUInt32LE(9600, 40);
+  for (let i = 0; i < 4800; i++) audio.writeInt16LE(Math.round(Math.sin(i / 24000 * 440 * 2 * Math.PI) * 5000), 44 + i * 2);
+  return audio;
+}
 
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(), profiles: vi.fn(), synthesize: vi.fn(), catalog: vi.fn(), getStoredPreview: vi.fn(), putStoredPreview: vi.fn(), rows: [] as unknown[][],
@@ -161,6 +171,17 @@ describe('Gemini character preview route', () => {
     expect(style).toContain('concise audiobook performance');
   });
 
+  it('synthesizes chapter-title previews with the configured title voice rather than the character voice', async () => {
+    mocks.catalog.mockResolvedValue({ voices: [{ id: 'Kore' }, { id: 'Puck' }] });
+    const { POST } = await import('@/app/api/audiobook/characters/preview/route');
+    const response = await POST(request({ previewMode: 'scene', characterName: 'Rina', utteranceType: 'chapter-title', text: 'Chapter 8: Arrival',
+      chapterTitles: { enabled: true, voiceId: 'Puck' } }));
+    expect(response.status).toBe(200);
+    expect(mocks.synthesize).toHaveBeenCalledWith(expect.objectContaining({ text: 'Chapter 8: Arrival', voiceName: 'Puck' }));
+    expect(mocks.synthesize.mock.calls[0][0].style).toContain('Announce this chapter title');
+    expect(mocks.synthesize.mock.calls[0][0].style).not.toContain('Quiet and controlled');
+  });
+
   it('bounds scene input and does not expose or persist manuscript content', async () => {
     const { POST } = await import('@/app/api/audiobook/characters/preview/route');
     const response = await POST(request({ previewMode: 'scene', characterName: 'Rina', sceneContext: 'x'.repeat(2_000), text: 'y'.repeat(500) }));
@@ -174,6 +195,31 @@ describe('Gemini character preview route', () => {
     const { POST } = await import('@/app/api/audiobook/characters/preview/route');
     const response = await POST(request({ previewMode: 'scene', characterName: 'Missing' }));
     expect(response.status).toBe(400);
+    expect(mocks.synthesize).not.toHaveBeenCalled();
+  });
+
+  it('changes only local effects on cached scene audio and matches the selected speech delivery', async () => {
+    const { POST } = await import('@/app/api/audiobook/characters/preview/route');
+    mocks.synthesize.mockResolvedValue({ audioBuffer: previewWav(), mimeType: 'audio/wav' });
+    const settings = (effect: string) => ({ 'squad-link': { effect, strength: 60, delivery: 'urgent', radioTexture: 'both' } });
+    const first = await POST(request({ previewMode: 'scene', characterName: 'Rina', utteranceType: 'squad-link', sceneContext: 'Unique effect preview.', speechTypes: settings('clean') }));
+    expect(first.status).toBe(200);
+    const clean = Buffer.from(await first.arrayBuffer());
+    expect(mocks.synthesize).toHaveBeenCalledOnce();
+    expect(mocks.synthesize.mock.calls[0][0].style).toContain('urgent delivery');
+    mocks.rows = [[{ id: 'doc-1' }], [{ dataJson: JSON.stringify({ smartAudioCharacters: { schemaVersion: 1, status: 'complete', entries: {
+      Rina: { name: 'Rina', description: 'Guarded.', voiceId: 'Kore', cloudDirection: { audioProfile: 'Quiet and controlled.' } },
+    } } }) }]];
+    const second = await POST(request({ previewMode: 'scene', characterName: 'Rina', utteranceType: 'squad-link', sceneContext: 'Unique effect preview.', speechTypes: settings('cb-radio') }));
+    expect(second.status).toBe(200); expect(second.headers.get('X-Narratum-Preview-Cache')).toBe('HIT');
+    const treated = Buffer.from(await second.arrayBuffer());
+    expect(treated).not.toEqual(clean); expect(inspectDramaWav(treated)?.durationMs).toBe(200);
+    expect(mocks.synthesize).toHaveBeenCalledOnce();
+  });
+
+  it('rejects invalid speech type or direction before requesting preview audio', async () => {
+    const { POST } = await import('@/app/api/audiobook/characters/preview/route');
+    expect((await POST(request({ previewMode: 'scene', characterName: 'Rina', utteranceType: 'unrecognized' }))).status).toBe(400);
     expect(mocks.synthesize).not.toHaveBeenCalled();
   });
 });

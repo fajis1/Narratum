@@ -1,3 +1,6 @@
+import { normalizeDramaSpeechSettings, type DramaSpeechSettings } from './drama-speech-settings';
+import { normalizeDramaChapterTitleSettings, type DramaChapterTitleSettings } from './drama-chapter-titles';
+
 export type DramaStyle = 'restrained' | 'balanced' | 'cinematic';
 export type NarratorExpressiveness = 'subtle' | 'moderate' | 'expressive';
 export type CharacterExpressiveness = 'subtle' | 'expressive' | 'dramatic';
@@ -15,6 +18,8 @@ export interface DramaGeminiTtsProfileSettings {
   characterConsistency: CharacterConsistency;
   languageCode: string;
   failedSegmentBehavior: DramaFailedSegmentBehavior;
+  speechTypes: DramaSpeechSettings;
+  chapterTitles: DramaChapterTitleSettings;
 }
 
 export const DEFAULT_DRAMA_GEMINI_TTS_SETTINGS = {
@@ -26,6 +31,8 @@ export const DEFAULT_DRAMA_GEMINI_TTS_SETTINGS = {
   characterConsistency: 'strong',
   languageCode: 'en-US',
   failedSegmentBehavior: 'continue-and-flag',
+  speechTypes: normalizeDramaSpeechSettings(),
+  chapterTitles: normalizeDramaChapterTitleSettings(),
 } as const satisfies DramaGeminiTtsProfileSettings;
 
 const VALUES = {
@@ -58,6 +65,8 @@ export function normalizeDramaGeminiTtsProfileSettings(value: unknown): DramaGem
     characterConsistency: choice(source.characterConsistency, VALUES.characterConsistency, DEFAULT_DRAMA_GEMINI_TTS_SETTINGS.characterConsistency),
     languageCode,
     failedSegmentBehavior: choice(source.failedSegmentBehavior, VALUES.failedSegmentBehavior, DEFAULT_DRAMA_GEMINI_TTS_SETTINGS.failedSegmentBehavior),
+    speechTypes: normalizeDramaSpeechSettings(source.speechTypes),
+    chapterTitles: normalizeDramaChapterTitleSettings(source.chapterTitles),
   };
 }
 
@@ -68,6 +77,8 @@ export interface DramaDirectorPolicy {
   tags: { usage: DramaAudioTagUsage; pauseStyle: DramaPauseStyle };
   languageCode: string;
   failedSegmentBehavior: DramaFailedSegmentBehavior;
+  speechTypes?: DramaSpeechSettings;
+  chapterTitles?: DramaChapterTitleSettings;
 }
 
 export function buildDramaDirectorPolicy(value: unknown): DramaDirectorPolicy {
@@ -82,6 +93,7 @@ export function buildDramaDirectorPolicy(value: unknown): DramaDirectorPolicy {
     tags: { usage: settings.audioTagUsage, pauseStyle: settings.dramaticPauses },
     languageCode: settings.languageCode,
     failedSegmentBehavior: settings.failedSegmentBehavior,
+    speechTypes: settings.speechTypes,
+    chapterTitles: settings.chapterTitles,
   };
 }
-

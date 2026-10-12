@@ -16,6 +16,8 @@ export function ReviewIssuesPanel({ chapterIndex, flags, error, chapterExists, r
   const others = flags.filter(f => f.chapterIndex !== chapterIndex);
   const renderIssue = (flag: SmartAudioReviewFlag) => <article key={flag.id} className="rounded border border-line bg-surface p-3 text-xs text-foreground">
     <p className="font-semibold">Chapter {flag.chapterIndex + 1}{flag.speaker ? ` · ${flag.speaker}` : ''}</p>
+    {flag.segmentNumber && <p>Turn {flag.segmentNumber}</p>}
+    <p className="text-soft">{flag.timestampKnown === true || !flag.kind ? `Audio position: ${(flag.timestampMs / 1000).toFixed(1)}s` : 'Audio position unavailable'}</p>
     {flag.kind && <p className="mt-1 capitalize">{flag.kind.replaceAll('-', ' ')}</p>}
     {flag.sourceText && <p className="mt-1 line-clamp-2 text-soft">“{flag.sourceText}”</p>}
     {flag.reason && <p className="mt-1 text-soft">Reason: {flag.reason}</p>}

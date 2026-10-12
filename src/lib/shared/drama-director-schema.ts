@@ -1,6 +1,6 @@
 /** Controlled choices shared by the Drama Director and Cloud TTS pipeline. */
 export const DRAMA_UTTERANCE_TYPES = [
-  'narration', 'spoken-dialogue', 'internal-thought', 'squad-link',
+  'narration', 'spoken-dialogue', 'internal-thought', 'squad-link', 'chapter-title',
 ] as const;
 export type DramaUtteranceType = (typeof DRAMA_UTTERANCE_TYPES)[number];
 

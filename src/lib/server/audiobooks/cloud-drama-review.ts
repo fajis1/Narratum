@@ -31,9 +31,11 @@ export async function persistCloudDramaReviewFlags(input: {
       && CLOUD_DRAMA_REVIEW_KINDS.has(flag.kind)
     )),
     ...input.flags.map((flag) => ({
-      id: randomUUID(), chapterIndex: input.chapterIndex, timestampMs: 0, createdAt: Date.now(),
+      id: randomUUID(), chapterIndex: input.chapterIndex, timestampMs: flag.timestampMs ?? 0, createdAt: Date.now(),
       kind: flag.kind, speaker: flag.speaker, sourceText: flag.sourceText,
       reason: flag.reason, chunkIndex: flag.chunkIndex, attempts: flag.attempts,
+      ...(flag.segmentNumber ? { segmentNumber: flag.segmentNumber } : {}),
+      timestampKnown: flag.timestampMs !== undefined,
     })),
   ];
   await db.update(documentSettings).set({ dataJson: JSON.stringify(settings) }).where(condition);

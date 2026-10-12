@@ -77,6 +77,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const [showAiClean, setShowAiClean] = useState(false);
   const [showForceRecord, setShowForceRecord] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState<number | 'home' | null>(null);
+  const [dramaTurnsDirty, setDramaTurnsDirty] = useState(false);
   const [hasSpeakerChanges, setHasSpeakerChanges] = useState(false);
   const savedChapterText = useRef('');
   const editorSnapshot = useRef({ index: undefined as number | undefined, text: '', dirty: false });
@@ -244,12 +245,16 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   const requestChapterSelection = useCallback((chapterIndex: number) => {
     if (chapterIndex === editorSnapshot.current.index) return;
     if (!chapters.some(chapter => chapter.index === chapterIndex)) return;
+    if (dramaTurnsDirty) {
+      toast.error('Save speaker turns and sounds or discard their edits before leaving this chunk.');
+      return;
+    }
     if (editorSnapshot.current.dirty) {
       setPendingNavigation(chapterIndex);
       return;
     }
     setCurrentChapterPosition(chapters.findIndex(chapter => chapter.index === chapterIndex));
-  }, [chapters]);
+  }, [chapters, dramaTurnsDirty]);
 
   useEffect(() => {
     if (chapterFilter !== 'needs_review' || !visibleChapters.length) {
@@ -321,14 +326,14 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   useEffect(() => {
-    if (!isDirty) return;
+    if (!isDirty && !dramaTurnsDirty) return;
     const protectReload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', protectReload);
     return () => window.removeEventListener('beforeunload', protectReload);
-  }, [isDirty]);
+  }, [isDirty, dramaTurnsDirty]);
 
   useEffect(() => {
     setActiveSpeakerSegment(null);
@@ -583,6 +588,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   const handleRegenerate = async (textOverride?: string) => {
+    if (dramaTurnsDirty) { toast.error('Save speaker turns and sounds or discard their edits before recording.'); return false; }
     if (isAiCleaning || isRegenerating) return false;
     const textToRecord = textOverride ?? textWithSpeakerDrafts();
     if (!textToRecord || !currentChapter) return false;
@@ -945,6 +951,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
   };
 
   const handleAiClean = async (confirmedOriginal = false) => {
+    if (dramaTurnsDirty) { toast.error('Save speaker turns and sounds or discard their edits before cleaning.'); return; }
     if (isAiCleaning || isRegenerating) return;
     if (cleanTarget === 'original' && isDirty && !confirmedOriginal) {
       setConfirmOriginalClean(true);
@@ -1003,6 +1010,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     if (target === 'home') requestHome(); else requestChapterSelection(target);
   };
   const requestHome = () => {
+    if (dramaTurnsDirty) { toast.error('Save speaker turns and sounds or discard their edits before leaving this chunk.'); return; }
     if (editorSnapshot.current.dirty) { setPendingNavigation('home'); return; }
     router.push('/app');
   };
@@ -1056,7 +1064,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
     <div className="flex h-dvh min-h-0 flex-col bg-surface" data-testid="audiobook-review">
       <ReviewHeader onHome={requestHome} title={currentChapter.title}
         position={`Chunk ${currentChapter.index + 1} · ${chapterFilter === 'needs_review' ? `Flagged ${currentVisibleIndex >= 0 ? currentVisibleIndex + 1 : '—'} of ${visibleChapters.length}` : `Item ${currentChapterPosition + 1} of ${chapters.length}`}`}
-        needsReview={isChapterNeedingReview(currentChapter)} dirty={isDirty} recording={isRegenerating}
+        needsReview={isChapterNeedingReview(currentChapter)} dirty={isDirty || dramaTurnsDirty} recording={isRegenerating}
         processing={isTextLoading || isAiCleaning} filtered={chapterFilter === 'needs_review'}
         canPrevious={canGoPrev} canNext={canGoNext} onPrevious={handlePrevChapter} onNext={handleNextChapter}
         bookTools={<ReviewBookMenu onScan={() => setShowPronunciationIssues(true)}
@@ -1064,7 +1072,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
           onBatchRefine={() => void handleOpenBatchRefine()} onRecordModified={() => void handleRebuildAllModified()}
           onExport={() => setShowAudiobookshelfModal(true)} onForceRecord={() => setShowForceRecord(true)}
           fixing={isFixingAll} rebuilding={isRebuildingAll} empty={!chapters.length}
-          dirty={isDirty} activeJob={hasActiveBookJob || isRegenerating || isAiCleaning} pronunciationAttention={hasPronunciationAttention}
+          dirty={isDirty || dramaTurnsDirty} activeJob={hasActiveBookJob || isRegenerating || isAiCleaning} pronunciationAttention={hasPronunciationAttention}
           showReviewChanges={Boolean(activeBatchRefineRunId) && !(hasActiveBookJob && jobPresentation.reviewChanges)} />}
       />
       {activeJob && hasActiveBookJob && <ReviewJobStatus
@@ -1230,7 +1238,7 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
                 {isGeminiDrama && !showGeminiFullText ? 'Gemini Drama · Speaker Review' : 'Edited Text'}
               </h2>
               {isDirty && <Button size="sm" variant="ghost" onClick={revertEdits} disabled={isRegenerating}>Revert</Button>}
-              {isGeminiDrama && <button type="button" onClick={() => setShowGeminiFullText((value) => !value)}
+              {isGeminiDrama && <button type="button" disabled={dramaTurnsDirty} onClick={() => setShowGeminiFullText((value) => !value)}
                 className="shrink-0 rounded border border-line-soft px-2 py-1 text-xs text-text-strong">
                 {showGeminiFullText ? 'Speaker turns' : 'Edit full text'}
               </button>}
@@ -1238,8 +1246,8 @@ export default function ListenPage({ params }: { params: Promise<{ bookId: strin
             <div className={`flex-1 p-4 relative ${isGeminiDrama && !showGeminiFullText ? 'overflow-y-auto' : 'overflow-hidden'}`}>
               {isGeminiDrama && !showGeminiFullText && currentChapter ? (
                 <GeminiDramaSpeakerReview key={`${bookId}-${currentChapter.index}`} bookId={bookId}
-                  chapterIndex={currentChapter.index} profileId={bookReviewProfile?.id || ''}
-                  chapterText={chapterText} hasEditedText={hasEditedText} />
+                  chapterIndex={currentChapter.index} profileId={bookReviewProfile?.id || ''} chapterTitle={currentChapter.title}
+                  chapterText={chapterText} hasEditedText={hasEditedText} onDirtyChange={setDramaTurnsDirty} />
               ) : <textarea
                 aria-label="Edited chapter text"
                 disabled={isTextLoading || isRegenerating}

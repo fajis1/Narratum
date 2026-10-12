@@ -1,6 +1,8 @@
 /* eslint-disable no-restricted-syntax */
 "use client";
 
+import { DramaSpeechControls } from '@/components/audiobooks/DramaSpeechControls';
+import { DramaChapterTitleControls } from '@/components/audiobooks/DramaChapterTitleControls';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BASE_ABBREVIATIONS, BASE_BOOKS, PRESET_MODELS, PRESET_PROMPTS } from './constants';
 import type { SmartAudioProfile } from '@/types/client';
@@ -1587,6 +1589,8 @@ export function SmartAudioSettings() {
                 </select>
                 <span className="block text-xs text-gray-600 dark:text-gray-300">The selected BCP-47 language code is used in Cloud TTS requests.</span>
               </label>
+              <DramaSpeechControls value={dramaGeminiTtsSettings.speechTypes} onChange={speechTypes => setDramaGeminiTtsSettings(current => ({ ...current, speechTypes }))} />
+              <DramaChapterTitleControls profileId={selectedProfileId} value={dramaGeminiTtsSettings.chapterTitles} onChange={chapterTitles => setDramaGeminiTtsSettings(current => ({ ...current, chapterTitles }))} />
             </div>
           )}
 

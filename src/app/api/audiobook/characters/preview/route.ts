@@ -11,6 +11,15 @@ import { normalizeGeminiTtsCharacterMap } from '@/lib/server/smart-audio/gemini-
 import { synthesizeWithGeminiTts, GEMINI_TTS_AUDIO_MIME_TYPE, GEMINI_TTS_MODEL, isGeminiTtsModel } from '@/lib/server/smart-audio/gemini-tts-client';
 import { errorToLog, serverLogger } from '@/lib/server/logger';
 import { getStoredGeminiVoicePreview, putStoredGeminiVoicePreview } from '@/lib/server/smart-audio/gemini-voice-preview-cache';
+import { applyDramaAudioEffect } from '@/lib/server/audiobooks/drama-audio-effects';
+import { DRAMA_UTTERANCE_TYPES } from '@/lib/shared/drama-director-schema';
+import { normalizeDramaSpeechSettings } from '@/lib/shared/drama-speech-settings';
+import { normalizeDramaChapterTitleSettings } from '@/lib/shared/drama-chapter-titles';
+import { buildDramaDirectorPolicy } from '@/lib/shared/drama-profile-settings';
+import { validateDramaDirectorOutput, DramaDirectorValidationError } from '@/lib/server/smart-audio/drama-director';
+import { buildGeminiDramaTtsRequest, resolveGeminiCastEntry } from '@/lib/server/smart-audio/drama-cloud-request';
+import { synthesizeGeminiDramaSegment } from '@/lib/server/smart-audio/drama-cloud-synthesis';
+import { GeminiDramaQuotaTracker } from '@/lib/server/smart-audio/gemini-drama-quota';
 import {
   GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION,
   GEMINI_VOICE_ONLY_PREVIEW_STYLE,
@@ -21,6 +30,7 @@ export const dynamic = 'force-dynamic';
 const PREVIEW_TTL_MS = 30 * 60 * 1_000;
 const MAX_PREVIEW_CACHE_ENTRIES = 80;
 const previewCache = new Map<string, { expiresAt: number; audio: Buffer }>();
+const previewQuota = new GeminiDramaQuotaTracker();
 
 function previewStyle(input: { mode: 'voice-only' | 'character' | 'scene'; description: string; sceneContext: string }): string {
   if (input.mode === 'voice-only') return GEMINI_VOICE_ONLY_PREVIEW_STYLE;
@@ -91,18 +101,37 @@ export async function POST(request: NextRequest) {
     if (previewMode !== 'voice-only' && !entry) {
       return NextResponse.json({ error: 'Select a saved character before using this preview mode.' }, { status: 400 });
     }
+    const classifiedScene = previewMode === 'scene' && body.utteranceType !== undefined;
+    const resolvedEntry = classifiedScene && characterMap ? resolveGeminiCastEntry(characterMap, characterName) : entry;
     const requestedModel = typeof body.modelName === 'string' && isGeminiTtsModel(body.modelName)
       ? body.modelName
       : undefined;
-    const voiceModel = requestedModel
+    const voiceModel = classifiedScene ? (resolvedEntry?.ttsModel && isGeminiTtsModel(resolvedEntry.ttsModel) ? resolvedEntry.ttsModel : GEMINI_TTS_MODEL) : requestedModel
       ?? (entry?.ttsModel && isGeminiTtsModel(entry.ttsModel) ? entry.ttsModel : undefined)
       ?? (catalogVoice.model && isGeminiTtsModel(catalogVoice.model) ? catalogVoice.model : undefined)
       ?? GEMINI_TTS_MODEL;
+    const speechTypes = normalizeDramaSpeechSettings(body.speechTypes ?? profile.dramaGeminiTtsSettings?.speechTypes);
+    if (classifiedScene && !DRAMA_UTTERANCE_TYPES.includes(body.utteranceType as typeof DRAMA_UTTERANCE_TYPES[number])) {
+      return NextResponse.json({ error: 'Select a valid speech type.' }, { status: 400 });
+    }
+    const segment = classifiedScene ? validateDramaDirectorOutput({ sourceText: text, castNames: Object.keys(characterMap!.entries), output: [{
+      speaker: characterName, text, utteranceType: body.utteranceType, sceneContext: sceneContext || 'Preview this speaking turn.', omit_from_audio: false,
+      performance: body.performance ?? { primaryEmotion: 'neutral', secondaryEmotions: [], socialIntent: 'none', delivery: ['natural'], pace: 'normal', energy: 'normal', intensity: 'medium', tags: [] },
+    }] })[0] : null;
+    const policy = buildDramaDirectorPolicy({ ...profile.dramaGeminiTtsSettings, speechTypes,
+      chapterTitles: normalizeDramaChapterTitleSettings(body.chapterTitles ?? profile.dramaGeminiTtsSettings?.chapterTitles) });
+    const built = segment ? buildGeminiDramaTtsRequest({ segment, characterMap: characterMap!, policy, modelName: voiceModel }) : null;
+    const style = built?.style ?? previewStyle({ mode: previewMode, description: entry?.cloudDirection?.audioProfile || entry?.description || '', sceneContext });
+    const respond = async (audio: Buffer, hit: string, maxAge = 1800) => {
+      const treated = segment ? await applyDramaAudioEffect(audio, speechTypes[segment.utteranceType], request.signal) : audio;
+      return new NextResponse(new Uint8Array(treated), { headers: { 'Content-Type': GEMINI_TTS_AUDIO_MIME_TYPE,
+        'Cache-Control': `private, max-age=${maxAge}`, 'X-Narratum-Preview-Cache': hit } });
+    };
     const key = previewMode === 'voice-only'
       ? cacheKey({ kind: 'gemini-voice-only', version: GEMINI_VOICE_ONLY_PREVIEW_CACHE_VERSION, voiceName, model: voiceModel })
-      : cacheKey({ userId: context.userId, documentId, profileId, voiceName, text, previewMode, characterName, sceneContext, model: voiceModel });
+      : cacheKey({ userId: context.userId, documentId, profileId, voiceName: built?.voiceName ?? voiceName, text, previewMode, characterName, sceneContext, model: voiceModel, style });
     const cached = readCachedPreview(key);
-    if (cached) return new NextResponse(new Uint8Array(cached), { headers: { 'Content-Type': GEMINI_TTS_AUDIO_MIME_TYPE, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'HIT' } });
+    if (cached) return await respond(cached, 'HIT');
     if (previewMode === 'voice-only') {
       const stored = await getStoredGeminiVoicePreview(key).catch((storageError) => {
         serverLogger.warn({ event: 'audiobook.gemini_drama.preview.cache_read_failed', error: errorToLog(storageError), voiceName }, 'Could not read the stored Gemini voice preview.');
@@ -114,9 +143,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const result = await synthesizeWithGeminiTts({
+    const sceneResult = segment ? await synthesizeGeminiDramaSegment({ segment, characterMap: characterMap!, apiKey,
+      backupApiKey: profile.backupGeminiApiKey, quotaTracker: previewQuota, policy, modelName: voiceModel,
+      signal: request.signal, deferProviderFailures: true,
+    }) : null;
+    const result = sceneResult ? { audioBuffer: sceneResult.chunks[0].audioBuffer!, mimeType: GEMINI_TTS_AUDIO_MIME_TYPE } : await synthesizeWithGeminiTts({
       text, voiceName, apiKey,
-      style: previewStyle({ mode: previewMode, description: entry?.cloudDirection?.audioProfile || entry?.description || '', sceneContext }),
+      style, signal: request.signal,
       ...(previewMode === 'voice-only' || voiceModel !== GEMINI_TTS_MODEL ? { modelName: voiceModel } : {}),
     });
     writeCachedPreview(key, result.audioBuffer);
@@ -125,10 +158,10 @@ export async function POST(request: NextRequest) {
         serverLogger.warn({ event: 'audiobook.gemini_drama.preview.cache_write_failed', error: errorToLog(storageError), voiceName }, 'Could not store the Gemini voice preview.');
       });
     }
-    return new NextResponse(new Uint8Array(result.audioBuffer), { headers: { 'Content-Type': result.mimeType, 'Cache-Control': 'private, max-age=1800', 'X-Narratum-Preview-Cache': 'MISS' } });
+    return await respond(result.audioBuffer, 'MISS');
   } catch (error) {
+    if (error instanceof DramaDirectorValidationError) return NextResponse.json({ error: 'The preview has invalid speech direction.' }, { status: 400 });
     serverLogger.error({ event: 'audiobook.gemini_drama.preview.failed', error: errorToLog(error), documentId, profileId, voiceName }, 'Gemini voice preview failed.');
-    const message = error instanceof Error ? error.message : 'Gemini voice preview failed.';
-    return NextResponse.json({ error: `Gemini voice preview failed: ${message}. Check the profile API key and Gemini access.` }, { status: 502 });
+    return NextResponse.json({ error: 'Gemini voice preview failed. Check the profile API key and Gemini access.' }, { status: 502 });
   }
 }

@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { categorizeErrors, describeAudiobookFailure } from '@/lib/shared/audiobook-error-category';
 import { ModalFrame } from '@/components/ui';
 import type { AudiobookFailureLogResponse } from '@/app/api/audiobook/failure-log/route';
+import { groupDramaRecoveryNotices, isDramaRecoveryNotice } from '@/lib/shared/drama-diagnostic-notices';
 
 export interface ChapterErrorLogModalProps {
   open: boolean;
@@ -103,6 +104,8 @@ export function ChapterErrorLogModal({
   };
 
   const effectiveJobError = data?.jobStatus === 'completed' ? null : jobError || data?.jobError;
+  const recoveryNotices = groupDramaRecoveryNotices(activeReviewFlags);
+  const reviewConcerns = activeReviewFlags.filter(flag => !isDramaRecoveryNotice(flag));
 
   return (
     <ModalFrame open={open} onClose={onClose} size="xl">
@@ -311,14 +314,19 @@ export function ChapterErrorLogModal({
               })}
 
               {/* Segment Review Flags Breakdown */}
-              {activeReviewFlags.length > 0 && (
+              {recoveryNotices.length > 0 && <div className="rounded-xl border border-line-soft bg-surface-raised p-4 space-y-2">
+                <h3 className="text-sm font-semibold">Successful recovery notices</h3>
+                <p className="text-xs text-text-soft">These segments succeeded after a fallback or repair. Individual records remain in the copied and downloaded diagnostics.</p>
+                {recoveryNotices.map((notice, index) => <p key={index} className="text-xs">Chunk {notice.chapterIndex + 1}: {notice.reason} <strong>({notice.count})</strong></p>)}
+              </div>}
+              {reviewConcerns.length > 0 && (
                 <div className="rounded-xl border border-warning bg-warning-wash p-4 space-y-2">
                   <h3 className="text-xs font-bold text-warning  flex items-center gap-1.5">
                     <span>🚩</span>
-                    <span>Segment Performance Flags ({activeReviewFlags.length})</span>
+                    <span>Segment Performance Flags ({reviewConcerns.length})</span>
                   </h3>
                   <div className="space-y-2">
-                    {activeReviewFlags.map((flag) => (
+                    {reviewConcerns.map((flag) => (
                       <div
                         key={flag.id}
                         className="rounded border border-line bg-surface p-2.5 text-xs text-text-strong space-y-1"
@@ -327,6 +335,8 @@ export function ChapterErrorLogModal({
                           <span className="font-semibold">
                             Chapter {(flag.chapterIndex ?? 0) + 1}
                             {flag.speaker ? ` · ${flag.speaker}` : ''}
+                            {flag.segmentNumber ? ` · Turn ${flag.segmentNumber}` : ''}
+                            {flag.timestampKnown === true ? ` · ${(flag.timestampMs / 1000).toFixed(1)}s` : ' · Audio position unavailable'}
                           </span>
                           {flag.kind && (
                             <span className="capitalize px-1.5 py-0.2 rounded bg-warning-wash text-warning  text-[10px]">

@@ -9,6 +9,7 @@ import { requireAuthContext } from '@/lib/server/auth/auth';
 import { errorResponse } from '@/lib/server/errors/next-response';
 import { serverLogger } from '@/lib/server/logger';
 import { mergeDocumentSettings, normalizeSmartAudioReviewFlags } from '@/lib/shared/document-settings';
+import { isDramaRecoveryNotice } from '@/lib/shared/drama-diagnostic-notices';
 import {
   DEFAULT_DOCUMENT_SETTINGS,
   type SmartAudioReviewFlag,
@@ -84,7 +85,7 @@ export async function GET(request: NextRequest) {
     const chapterParam = new URL(request.url).searchParams.get('chapterIndex');
     const chapterIndex = chapterParam === null ? null : Number(chapterParam);
     const flags = scope.flags.filter((flag) => (
-      !flag.resolvedAt && (chapterIndex === null || flag.chapterIndex === chapterIndex)
+      !flag.resolvedAt && !isDramaRecoveryNotice(flag) && (chapterIndex === null || flag.chapterIndex === chapterIndex)
     ));
     return NextResponse.json({ flags });
   } catch (error) {

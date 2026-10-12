@@ -33,7 +33,7 @@ describe('audiobook cleanup batching', () => {
   });
 
   test('combines paragraphs until the target without breaking them', () => {
-    const paragraph = (label: string) => `${label} ${'word '.repeat(790)}`.trim();
+    const paragraph = (label: string) => `${label} ${'word '.repeat(790).trim()}.`;
     const batches = batchAudiobookText([{
       index: 0,
       title: 'Chapter One',
@@ -58,6 +58,14 @@ describe('audiobook cleanup batching', () => {
     expect(batches.length).toBeGreaterThan(1);
     expect(batches.every((batch) => batch.text.length <= 12_000)).toBe(true);
     expect(batches.every((batch) => batch.text.endsWith('.'))).toBe(true);
+  });
+
+  test('keeps a PDF sentence continuation across blank lines in the same recording batch', () => {
+    const text = 'A complete opening.\n\n"Tonight we have potatoes and\n\nasparagus from our greenhouse," Ali said.\n\nA new paragraph begins.';
+    const batches = batchAudiobookText([{ index: 0, title: 'Opening', text }], 50);
+    expect(batches.map(batch => batch.text).join('\n\n')).toBe(text);
+    expect(batches.some(batch => batch.text.includes('potatoes and\n\nasparagus'))).toBe(true);
+    expect(batches.some(batch => batch.text.endsWith('potatoes and'))).toBe(false);
   });
 
   test('preserves decimals and abbreviations in oversized paragraphs', () => {
