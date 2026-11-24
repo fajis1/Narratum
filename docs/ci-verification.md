@@ -19,8 +19,8 @@ python3 -I -S tests/fixtures/ocr_source_recovery.py
 Playwright uses SeaweedFS 4.53, matching the Docker runtime. It caches the binary
 extracted from its official container and checks its version on every run. Cache
 misses use three bounded pull attempts for transient registry failures with
-30/60-second waits. Invalid
-image names and permanent authorization errors fail immediately. Browser tests
+30/60-second waits. Invalid image names and permanent authorization errors fail
+immediately. Browser tests
 use local mocked provider endpoints, never a paid production API key.
 
 CPU tests and dependency installation skip ONNX Runtime's optional CUDA
@@ -32,6 +32,28 @@ CUDA 11.8/cuDNN 8 and P100 support without mixing native libraries from differen
 builds. `scripts/install-onnx-cuda.mjs` checks package versions and the complete
 native file set before linking it into the deployed worker. Keep the pinned
 source image available until this bootstrap dependency is replaced.
+
+## Verification record: 2026-11-24
+
+- `e560ad0` upgraded SeaweedFS to 4.53 and aligned the browser CI binary pin.
+- `14ef7d3` restored CUDA publication using the pinned native bundle above.
+  The [Docker workflow](https://github.com/fajis1/Narratum/actions/runs/45346344775)
+  successfully built and published all image families, including the all-in-one
+  `ghcr.io/fajis1/openreader-cuda:latest` image.
+- The published CUDA amd64 manifest for that revision was
+  `sha256:06b6d513fdef0118d48fb7312d8cedf1720ac6c75b18fb795c9ca18453cf2218`.
+  Later publications can move `latest`; this digest records the verified build.
+- Local verification passed 224 unit-test files / 2,043 tests, TypeScript,
+  scoped ESLint, native-library checksum comparisons, and real CPU Identity
+  inference after installing the pinned bundle. The
+  [GitHub unit workflow](https://github.com/fajis1/Narratum/actions/runs/45346344725)
+  also passed. No live GPU inference or deployed-host idle CPU was verified.
+- Browser CI [stopped before tests](https://github.com/fajis1/Narratum/actions/runs/45346344837):
+  `ubuntu-latest` selected Ubuntu 26.04, unsupported by Playwright 1.60.0.
+  Follow-up: pin the browser job to supported Ubuntu 24.04 and rerun it. This
+  remains separate from the successful image publication and unit checks.
+
+## Registry and browser recovery
 
 Ephemeral CI Docker daemons and BuildKit use Google's documented public Docker
 Hub cache (`mirror.gcr.io`), with Docker Hub fallback. Existing daemon settings,

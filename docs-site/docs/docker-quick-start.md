@@ -26,10 +26,10 @@ should use the same version.
 
 ## Published images
 
-- App server: `ghcr.io/richardr1126/openreader:latest`
-- All-in-one NVIDIA CUDA app (Linux amd64): `ghcr.io/richardr1126/openreader-cuda:latest`
-- Compute worker (Optional): `ghcr.io/richardr1126/openreader-compute-worker:latest`
-- Legacy app alias: `ghcr.io/richardr1126/openreader-webui:latest`
+- App server: `ghcr.io/fajis1/openreader:latest`
+- All-in-one NVIDIA CUDA app (Linux amd64): `ghcr.io/fajis1/openreader-cuda:latest`
+- Compute worker (Optional): `ghcr.io/fajis1/openreader-compute-worker:latest`
+- Legacy app alias: `ghcr.io/fajis1/openreader-webui:latest`
 
 ## 1. Start the Docker container
 
@@ -48,7 +48,7 @@ docker run --name openreader \
   -e BASE_URL=http://localhost:3003 \
   -e AUTH_SECRET=$(openssl rand -base64 32) \
   -e ADMIN_EMAILS=you@example.com \
-  ghcr.io/richardr1126/openreader:latest
+  ghcr.io/fajis1/openreader:latest
 ```
 
 What this command enables:
@@ -77,7 +77,7 @@ docker run --name openreader \
   -e AUTH_TRUSTED_ORIGINS=http://localhost:3003,http://127.0.0.1:3003 \
   -e USE_ANONYMOUS_AUTH_SESSIONS=true \
   -e ADMIN_EMAILS=you@example.com \
-  ghcr.io/richardr1126/openreader:latest
+  ghcr.io/fajis1/openreader:latest
 ```
 
 Replace `YOUR_LAN_IP` with the Docker host IP address on your local network to allow access from other devices.
@@ -105,7 +105,7 @@ docker run --name openreader \
   -p 8333:8333 \
   -e BASE_URL=http://localhost:3003 \
   -e AUTH_SECRET=$(openssl rand -base64 32) \
-  ghcr.io/richardr1126/openreader:latest
+  ghcr.io/fajis1/openreader:latest
 ```
 
 What this command enables:
@@ -144,20 +144,34 @@ Visit [http://localhost:3003](http://localhost:3003) after startup.
 
 ## 3. Update Docker image
 
-To update your container to the latest release:
+For Compose or Dockge, pull the image configured for the app service, then
+recreate that service with the existing environment, ports, GPU access, and
+`/app/docstore` mount. For example, from the Compose project directory:
 
 ```bash
-docker stop openreader || true && \
-docker rm openreader || true && \
-docker image rm ghcr.io/richardr1126/openreader:latest || true && \
-docker pull ghcr.io/richardr1126/openreader:latest
+docker compose pull openreader
+docker compose up -d --no-deps openreader
 ```
+
+Replace `openreader` with your Compose service name. In Dockge, use **Pull** and
+then recreate/update the service. A Git pull or a container restart alone does
+not replace the image used by the running container.
+
+Check the exact `image:` line: `openreader:latest` and `openreader-cuda:latest`
+have separate publication jobs. A successful standard-image build does not
+establish that a new CUDA image is available. If Pull reports nothing new,
+check the [Docker publication workflow](https://github.com/fajis1/Narratum/actions/workflows/docker-publish.yml)
+for the image family you use.
+
+For a container created with `docker run`, pull its configured image and then
+recreate it with your original settings and data mount. The examples above use
+the standard image; the NVIDIA examples below use `openreader-cuda:latest`.
 
 :::tip
 If you use a mounted volume for `/app/docstore`, your persisted data remains after image updates.
 :::
 
-Legacy image compatibility: `ghcr.io/richardr1126/openreader-webui:latest` remains available as an alias.
+Legacy image compatibility: `ghcr.io/fajis1/openreader-webui:latest` remains available as an alias.
 For external compute mode image details, see [Compute Worker (NATS JetStream)](./deploy/compute-worker).
 
 ### NVIDIA GPU image
@@ -175,7 +189,7 @@ docker run --name openreader \
   -v openreader_docstore:/app/docstore \
   -e BASE_URL=http://localhost:3003 \
   -e AUTH_SECRET='<generate-a-long-random-value>' \
-  ghcr.io/richardr1126/openreader-cuda:latest
+  ghcr.io/fajis1/openreader-cuda:latest
 ```
 
 For an existing Compose deployment, keep the same ports, environment, and
@@ -184,7 +198,7 @@ volumes; change only the image and add GPU access:
 ```yaml
 services:
   openreader:
-    image: ghcr.io/richardr1126/openreader-cuda:latest
+    image: ghcr.io/fajis1/openreader-cuda:latest
     gpus: all
 ```
 
@@ -208,7 +222,7 @@ To fix this, limit ONNX by overriding the visible core count and enabling CPU fa
 ```yaml
 services:
   openreader:
-    image: ghcr.io/richardr1126/openreader-cuda:latest
+    image: ghcr.io/fajis1/openreader-cuda:latest
     gpus: all
     environment:
       - COMPUTE_AVAILABLE_CORES=12 # Set to the actual core limit of your container

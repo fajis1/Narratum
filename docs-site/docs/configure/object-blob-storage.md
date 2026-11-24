@@ -31,6 +31,26 @@ and recreate the container with the same persistent `/app/docstore` mount. Do no
 use `-master.resumeState=false` as a CPU workaround: it discards master Raft state
 on startup.
 
+### Verify the idle CPU fix
+
+SeaweedFS 4.48 could keep its Raft leader loop waking every millisecond after
+resuming existing master state. The 4.53 upgrade fixes that loop while preserving
+the `weed mini` layout and its maintenance services.
+
+After pulling and recreating the app container, check the embedded binary and
+sample CPU while OpenReader is idle:
+
+```bash
+docker exec openreader-webui weed version
+docker stats --no-stream openreader-webui
+```
+
+Replace `openreader-webui` with your container name. The binary should report
+`4.53`. Repeated idle samples are more useful than a single startup reading.
+In local 20-second measurements, the restarted 4.48 process used 15.55% of one
+CPU core; 4.53 used 1.25% after another restart with the same test data and
+service settings. These are local results; verify your own host after updating.
+
 Storage variables are documented in [Environment Variables](../reference/environment-variables#database-and-object-blob-storage).
 
 ## Ports

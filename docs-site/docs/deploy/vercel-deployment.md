@@ -65,7 +65,7 @@ If you also run an external worker service (for example Railway), set these ther
 If your Vercel app uses an external compute worker on Railway with Synadia Cloud (NGS):
 
 1. Deploy a Railway service from:
-   - `ghcr.io/richardr1126/openreader-compute-worker:refactor-ppdoclayoutv3-onnx-layout-parsing`
+   - `ghcr.io/fajis1/openreader-compute-worker:latest`
 2. Enable public networking on that Railway service and set:
    - `COMPUTE_WORKER_URL=https://<railway-worker-domain>` (in Vercel)
 3. Use the same `COMPUTE_WORKER_TOKEN` value in both Vercel and Railway worker env vars.

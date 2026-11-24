@@ -21,8 +21,8 @@ The app server submits work to `POST /ops` and listens for updates on `GET /ops/
 
 ## Container image
 
-- `ghcr.io/richardr1126/openreader-compute-worker:latest`
-- NVIDIA CUDA (Linux amd64): `ghcr.io/richardr1126/openreader-compute-worker-cuda:latest`
+- `ghcr.io/fajis1/openreader-compute-worker:latest`
+- NVIDIA CUDA (Linux amd64): `ghcr.io/fajis1/openreader-compute-worker-cuda:latest`
 
 ## Worker environment
 
