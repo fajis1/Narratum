@@ -1,6 +1,6 @@
-# The ordinary image installs the CPU ONNX Runtime. The CUDA target overrides
-# this with v11 so its embedded worker receives the P100-compatible native
-# provider while the default build remains portable.
+# The Docker target selects the CPU or CUDA native runtime below. Keep the
+# historical build argument accepted by existing publication callers; npm CUDA
+# downloads are skipped in both builds because the old archive is gone.
 ARG ONNXRUNTIME_NODE_INSTALL_CUDA=skip
 
 # Stage 1: extract seaweedfs weed binary (for optional embedded weed mini)
@@ -20,7 +20,7 @@ FROM node:lts-slim AS app-builder
 # Install pnpm globally
 RUN npm install -g pnpm@10.33.4
 ARG ONNXRUNTIME_NODE_INSTALL_CUDA
-ENV ONNXRUNTIME_NODE_INSTALL_CUDA=${ONNXRUNTIME_NODE_INSTALL_CUDA}
+ENV ONNXRUNTIME_NODE_INSTALL_CUDA=skip
 
 # Create app directory
 WORKDIR /app
@@ -32,7 +32,9 @@ COPY compute/worker/package.json ./compute/worker/package.json
 COPY docker/entrypoint-migration-tools/package.json ./docker/entrypoint-migration-tools/package.json
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# npm's historical GPU download URL is gone; CUDA providers are installed below
+# from the last published CUDA image in the CUDA-only runtime stage.
+RUN ONNXRUNTIME_NODE_INSTALL_CUDA=skip pnpm install --frozen-lockfile
 
 # Copy project files
 COPY . .
@@ -40,8 +42,8 @@ COPY . .
 # Build the Next.js application
 RUN pnpm exec next telemetry disable
 RUN AUTH_SECRET=build-placeholder-secret-value-32chars!! BASE_URL=http://localhost:3003 pnpm build
-RUN pnpm --config.inject-workspace-packages=true --filter @openreader/entrypoint-migration-tools deploy /opt/entrypoint-migration-tools
-RUN pnpm --config.inject-workspace-packages=true --filter @openreader/compute-worker deploy /opt/embedded-compute-worker
+RUN ONNXRUNTIME_NODE_INSTALL_CUDA=skip pnpm --config.inject-workspace-packages=true --filter @openreader/entrypoint-migration-tools deploy /opt/entrypoint-migration-tools
+RUN ONNXRUNTIME_NODE_INSTALL_CUDA=skip pnpm --config.inject-workspace-packages=true --filter @openreader/compute-worker deploy /opt/embedded-compute-worker
 # Generate third-party dependency license report plus copied license files.
 RUN mkdir -p /app/THIRD_PARTY_LICENSES && \
     pnpm dlx license-checker-rseidelsohn@4.3.0 \
@@ -149,7 +151,17 @@ CMD ["node", "server.js"]
 # matches onnxruntime-node 1.18.0 and supports the Pascal Tesla P100 (sm_60).
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04@sha256:85fb7ac694079fff1061a0140fd5b5a641997880e12112d92589c3bbb1e8b7ca AS cuda-runtime
 
+# Preserve the exact working P100 native binaries after the upstream GitHub
+# archive disappeared. Only this native bundle is reused, never application code.
+FROM ghcr.io/fajis1/openreader-cuda@sha256:146f8ed852122792cf858943b0a7ef46a1ef757724a77dda63e282c308a36142 AS onnx-cuda-native
+
 FROM runner AS runner-cuda
+
+COPY --from=onnx-cuda-native /app/embedded-compute-worker/node_modules/onnxruntime-node/package.json /opt/onnx-cuda-runtime/package.json
+COPY --from=onnx-cuda-native /app/embedded-compute-worker/node_modules/onnxruntime-node/bin/napi-v3/linux/x64 /opt/onnx-cuda-runtime/native
+COPY --from=app-builder /app/scripts/install-onnx-cuda.mjs /tmp/install-onnx-cuda.mjs
+RUN node /tmp/install-onnx-cuda.mjs /app/embedded-compute-worker /opt/onnx-cuda-runtime && \
+    rm /tmp/install-onnx-cuda.mjs
 
 COPY --from=cuda-runtime /usr/local/cuda-11.8 /usr/local/cuda-11.8
 COPY --from=cuda-runtime /usr/lib/x86_64-linux-gnu/libcudnn* /usr/lib/x86_64-linux-gnu/

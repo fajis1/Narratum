@@ -76,6 +76,8 @@ jobs:
         sudo install -m 0755 /tmp/nats-server-v2.12.1-linux-amd64/nats-server /usr/local/bin/nats-server
         nats-server -v
     - name: Install dependencies
+      env:
+        ONNXRUNTIME_NODE_INSTALL_CUDA: skip
       run: bash scripts/ci-install-with-retry.sh --frozen-lockfile
     - name: Restore PP-DocLayout model cache
       uses: actions/cache@v5

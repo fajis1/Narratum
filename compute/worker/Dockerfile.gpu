@@ -1,7 +1,8 @@
 FROM node:22-bullseye AS deploy-stage
 
 RUN npm install -g pnpm@11.1.2
-ENV ONNXRUNTIME_NODE_INSTALL_CUDA=v11
+# Skip the removed GitHub archive; reuse the pinned CUDA 11 native bundle below.
+ENV ONNXRUNTIME_NODE_INSTALL_CUDA=skip
 
 WORKDIR /workspace
 
@@ -13,6 +14,9 @@ COPY compute/worker compute/worker
 COPY compute/core compute/core
 
 RUN pnpm --config.inject-workspace-packages=true --filter @openreader/compute-worker deploy /opt/compute-worker
+
+# Reuse only native files from the last successfully published CUDA image.
+FROM ghcr.io/fajis1/openreader-cuda@sha256:146f8ed852122792cf858943b0a7ef46a1ef757724a77dda63e282c308a36142 AS onnx-cuda-native
 
 # ONNX Runtime 1.18.0's CUDA 11 package links to CUDA 11 and cuDNN 8 and
 # contains sm_60 device code for the Tesla P100. Pin the CUDA image index so
@@ -28,6 +32,11 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY --from=deploy-stage /opt/compute-worker ./
+COPY --from=onnx-cuda-native /app/embedded-compute-worker/node_modules/onnxruntime-node/package.json /opt/onnx-cuda-runtime/package.json
+COPY --from=onnx-cuda-native /app/embedded-compute-worker/node_modules/onnxruntime-node/bin/napi-v3/linux/x64 /opt/onnx-cuda-runtime/native
+COPY scripts/install-onnx-cuda.mjs /tmp/install-onnx-cuda.mjs
+RUN node /tmp/install-onnx-cuda.mjs /workspace /opt/onnx-cuda-runtime && \
+    rm /tmp/install-onnx-cuda.mjs
 
 ENV COMPUTE_WORKER_HOST=0.0.0.0
 ENV PORT=8081

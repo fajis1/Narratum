@@ -23,6 +23,16 @@ misses use three bounded pull attempts for transient registry failures with
 image names and permanent authorization errors fail immediately. Browser tests
 use local mocked provider endpoints, never a paid production API key.
 
+CPU tests and dependency installation skip ONNX Runtime's optional CUDA
+GitHub download, whose historical archive now returns 404. The CUDA images
+reuse only the complete ONNX Runtime 1.18.0 native bundle from the last successful
+`openreader-cuda` image, pinned by immutable digest in both Dockerfiles. The
+application and worker code are built from the current checkout. This preserves
+CUDA 11.8/cuDNN 8 and P100 support without mixing native libraries from different
+builds. `scripts/install-onnx-cuda.mjs` checks package versions and the complete
+native file set before linking it into the deployed worker. Keep the pinned
+source image available until this bootstrap dependency is replaced.
+
 Ephemeral CI Docker daemons and BuildKit use Google's documented public Docker
 Hub cache (`mirror.gcr.io`), with Docker Hub fallback. Existing daemon settings,
 base-image versions, pinned CUDA digest, TLS/content verification, image layer
