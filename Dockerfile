@@ -4,8 +4,8 @@
 ARG ONNXRUNTIME_NODE_INSTALL_CUDA=skip
 
 # Stage 1: extract seaweedfs weed binary (for optional embedded weed mini)
-# Pin to 4.18 because CI observed upload regressions on 4.19.
-FROM chrislusf/seaweedfs:4.48 AS seaweedfs-builder
+# 4.53 fixes the 1 ms Raft quorum loop after single-master restarts (#12463).
+FROM chrislusf/seaweedfs:4.53 AS seaweedfs-builder
 RUN cp "$(command -v weed)" /tmp/weed && \
     (wget -qO /tmp/SeaweedFS-LICENSE.txt "https://raw.githubusercontent.com/seaweedfs/seaweedfs/master/LICENSE" || \
      wget -qO /tmp/SeaweedFS-LICENSE.txt "https://raw.githubusercontent.com/seaweedfs/seaweedfs/main/LICENSE")

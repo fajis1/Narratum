@@ -59,19 +59,21 @@ brew install seaweedfs
 weed version
 ```
 
-:::warning SeaweedFS Compatibility Note (April 16, 2026)
-If you see intermittent S3 `InternalError` upload failures with embedded storage, use SeaweedFS `4.18`.
-OpenReader currently pins `4.18` in CI and Docker builds while `4.19` compatibility is investigated.
+:::info Embedded SeaweedFS version
+Docker builds and browser CI use SeaweedFS `4.53`. This includes the
+[upstream fix](https://github.com/seaweedfs/seaweedfs/pull/12463) for excessive idle
+CPU after restarting a single master with existing data. Local installations
+should use the same version.
 :::
 
 </TabItem>
 <TabItem value="linux" label="Linux">
 
 ```bash
-# Linux amd64 example (pin 4.18)
+# Linux amd64 example (pin 4.53)
 mkdir -p "$HOME/.local/bin"
 curl -fsSL -o /tmp/seaweedfs.tar.gz \
-  https://github.com/seaweedfs/seaweedfs/releases/download/4.18/linux_amd64.tar.gz
+  https://github.com/seaweedfs/seaweedfs/releases/download/4.53/linux_amd64.tar.gz
 tar -xzf /tmp/seaweedfs.tar.gz -C /tmp weed
 install -m 0755 /tmp/weed "$HOME/.local/bin/weed"
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
@@ -79,9 +81,11 @@ export PATH="$HOME/.local/bin:$PATH"
 weed version
 ```
 
-:::warning SeaweedFS Compatibility Note (April 16, 2026)
-If you see intermittent S3 `InternalError` upload failures with embedded storage, use SeaweedFS `4.18`.
-OpenReader currently pins `4.18` in CI and Docker builds while `4.19` compatibility is investigated.
+:::info Embedded SeaweedFS version
+Docker builds and browser CI use SeaweedFS `4.53`. This includes the
+[upstream fix](https://github.com/seaweedfs/seaweedfs/pull/12463) for excessive idle
+CPU after restarting a single master with existing data. Local installations
+should use the same version.
 :::
 
 </TabItem>

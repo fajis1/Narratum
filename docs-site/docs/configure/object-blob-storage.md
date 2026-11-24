@@ -19,10 +19,17 @@ This page documents storage backends, blob upload routing, and core Docker mount
 
 Metadata database mode (SQLite vs Postgres) is configured separately in [Database](./database).
 
-:::warning SeaweedFS Compatibility Note (April 16, 2026)
-OpenReader currently pins embedded SeaweedFS to `4.18` in CI and Docker builds.
-`4.19` introduced intermittent `InternalError` responses on S3 `PutObject` in our upload flow.
+:::info Embedded SeaweedFS version
+Docker builds and browser CI use SeaweedFS `4.53`. This includes the
+[upstream fix](https://github.com/seaweedfs/seaweedfs/pull/12463) for excessive idle
+CPU after restarting a single master with existing data. Local installations
+should use the same version.
 :::
+
+The fix preserves the existing master state and stored blobs. Update the app image
+and recreate the container with the same persistent `/app/docstore` mount. Do not
+use `-master.resumeState=false` as a CPU workaround: it discards master Raft state
+on startup.
 
 Storage variables are documented in [Environment Variables](../reference/environment-variables#database-and-object-blob-storage).
 

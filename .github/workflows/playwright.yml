@@ -48,16 +48,16 @@ jobs:
       uses: actions/cache@v5
       with:
         path: /tmp/ci-seaweedfs
-        key: seaweedfs-4.18-${{ runner.os }}-${{ runner.arch }}-v1
+        key: seaweedfs-4.53-${{ runner.os }}-${{ runner.arch }}-v1
     - name: Configure trusted Docker Hub cache
       if: steps.weed-cache.outputs.cache-hit != 'true'
       run: bash scripts/ci-configure-docker-mirror.sh
     - name: Retrieve pinned SeaweedFS binary
       if: steps.weed-cache.outputs.cache-hit != 'true'
       run: |
-        bash scripts/ci-docker-pull-with-retry.sh chrislusf/seaweedfs:4.18
-        WEED_PATH=$(docker run --pull=never --rm --entrypoint sh chrislusf/seaweedfs:4.18 -lc 'command -v weed')
-        CID=$(docker create --pull=never chrislusf/seaweedfs:4.18)
+        bash scripts/ci-docker-pull-with-retry.sh chrislusf/seaweedfs:4.53
+        WEED_PATH=$(docker run --pull=never --rm --entrypoint sh chrislusf/seaweedfs:4.53 -lc 'command -v weed')
+        CID=$(docker create --pull=never chrislusf/seaweedfs:4.53)
         trap 'docker rm -f "$CID"' EXIT
         mkdir -p /tmp/ci-seaweedfs
         docker cp "${CID}:${WEED_PATH}" /tmp/ci-seaweedfs/weed
@@ -67,7 +67,7 @@ jobs:
       run: |
         sudo install -m 0755 /tmp/ci-seaweedfs/weed /usr/local/bin/weed
         weed version | tee /tmp/weed-version.txt
-        grep -Eq '(^|[^0-9])4\.18([^0-9]|$)' /tmp/weed-version.txt
+        grep -Eq '(^|[^0-9])4\.53([^0-9]|$)' /tmp/weed-version.txt
     - name: Install NATS server binary
       run: |
         curl --retry 3 --retry-delay 5 --connect-timeout 20 --max-time 120 -fsSL -o /tmp/nats-server.tar.gz \

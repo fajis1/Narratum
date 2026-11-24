@@ -16,9 +16,10 @@ NARRATUM_TEST_PYTHON=/usr/bin/python3 pnpm test:unit
 python3 -I -S tests/fixtures/ocr_source_recovery.py
 ```
 
-Playwright retains SeaweedFS 4.18, caches the binary extracted from its official
-container, and checks its version on every run. Cache misses use three bounded
-pull attempts for transient registry failures with 30/60-second waits. Invalid
+Playwright uses SeaweedFS 4.53, matching the Docker runtime. It caches the binary
+extracted from its official container and checks its version on every run. Cache
+misses use three bounded pull attempts for transient registry failures with
+30/60-second waits. Invalid
 image names and permanent authorization errors fail immediately. Browser tests
 use local mocked provider endpoints, never a paid production API key.
 

@@ -38,10 +38,10 @@ describe('CI workflow resilience', () => {
   });
 
   test('reuses a pinned version-checked SeaweedFS binary without repeat pulls', () => {
-    expect(playwrightWorkflow).toContain('key: seaweedfs-4.18-');
-    expect(playwrightWorkflow).toContain('bash scripts/ci-docker-pull-with-retry.sh chrislusf/seaweedfs:4.18');
+    expect(playwrightWorkflow).toContain('key: seaweedfs-4.53-');
+    expect(playwrightWorkflow).toContain('bash scripts/ci-docker-pull-with-retry.sh chrislusf/seaweedfs:4.53');
     expect(playwrightWorkflow).toContain('docker create --pull=never');
-    expect(playwrightWorkflow).toContain("grep -Eq '(^|[^0-9])4\\.18([^0-9]|$)'");
+    expect(playwrightWorkflow).toContain("grep -Eq '(^|[^0-9])4\\.53([^0-9]|$)'");
     expect(playwrightWorkflow).not.toContain('secrets.DEEPINFRA_API_KEY');
   });
 
